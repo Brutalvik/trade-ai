@@ -457,6 +457,10 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 : `from ${botPos.target ? fmtPrice(botPos.target) : "the target"} it rides the trend`}
               <button className="chip" onClick={() => onOpen(botPos.chain, botPos.pool)}>View</button>
             </div>
+          ) : plan && planOrders.length > 0 && plan.consensus.confidence < (active?.minConfidence ?? 0) ? (
+            <div className="muted">
+              Claude's plan for <b>{plan.symbol}</b> is only {plan.consensus.confidence}% sure, below your {active?.minConfidence}% minimum, so its orders won't be used. Next plan by {fmtTime(Math.min(plan.consensus.expiresAt, (state?.bot.lastAnalysisAt ?? 0) + (active?.analyzeEverySec ?? 1800) * 1000))}, sooner if the market moves. (Lower "How sure Claude must be" to act on plans like this.)
+            </div>
           ) : plan && planOrders.length > 0 ? (
             <div>
               Waiting on <b>{plan.symbol}</b>:

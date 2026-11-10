@@ -516,7 +516,8 @@ function watching() {
   if (state.bot.askNow) return true;
   const sig = state.lastSignal;
   const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
-  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.length > 0 && Date.now() < sig.consensus.expiresAt);
+  // Orders only count if Claude is sure enough for the user's minimum confidence.
+  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.length > 0 && sig.consensus.confidence >= cfg.minConfidence && Date.now() < sig.consensus.expiresAt);
 }
 
 // Serverless: run bot steps every second for up to maxMs (one scheduler call or
