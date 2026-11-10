@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
+import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -33,8 +34,12 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
+  // Re-check status every minute: AI keys, storage, and whether a newer version is deployed.
+  useInterval(() => {
+    api.status().then(setStatus).catch(() => {});
+  }, 60_000);
+
   useEffect(() => {
-    api.status().then(setStatus).catch(() => setStatus(null));
     api.search(DEFAULT_PAIR.query).then((r) => { const p = r.find((x) => x.chain === "solana") ?? r[0]; if (p) setPair(p); }).catch((e) => notify(e.message, true));
   }, [notify]);
 
@@ -95,6 +100,8 @@ export default function App() {
     <div className="app">
       <div className="bg-grid" />
       <TopBar status={status} state={state} onSelect={selectPair} />
+      <BotTradeNotifications state={state} />
+      <UpdateBanner serverCommit={status?.commit} />
       {status?.storage === "temp" && (
         <div className="banner">
           <b>The bot can't stay on yet.</b> This server has nowhere permanent to save the bot and your paper account, so they reset. Add the free Upstash Redis database in Vercel (Storage tab), then redeploy. Steps are in the README.

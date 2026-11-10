@@ -34,6 +34,7 @@ app.get(
     mode: "paper",
     storage: engine.storeKind(), // "redis" | "file" | "temp" (temp = Vercel without Redis: the bot can't stay on)
     serverless: Boolean(process.env.VERCEL), // true = the dashboard must send heartbeats to keep the bot ticking
+    commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").slice(0, 7), // deployed build, so open pages can offer a refresh
     // Only when storage isn't working: names (not values) of database settings the server can see.
     ...(engine.storeKind() === "temp" ? { storageEnvNames: storageEnvNames() } : {}),
   })),

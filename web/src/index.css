@@ -204,6 +204,21 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .log .good { color: var(--up); }
 .log .bad { color: var(--down); }
 
+/* Bot trade notifications: top right, just under the header */
+.bot-notes { position: fixed; top: 68px; right: 20px; z-index: 60; display: flex; flex-direction: column; gap: 8px; width: min(340px, calc(100vw - 24px)); }
+.bot-note { background: #0b1530; border: 1px solid var(--border); border-left: 4px solid var(--cyan); border-radius: 12px; padding: 10px 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55); display: flex; flex-direction: column; gap: 3px; animation: note-in 0.25s ease-out; }
+.bot-note.buy { border-left-color: var(--cyan); box-shadow: 0 0 24px rgba(0, 229, 255, 0.18), 0 12px 40px rgba(0, 0, 0, 0.55); }
+.bot-note.win { border-left-color: var(--up); box-shadow: 0 0 24px rgba(0, 245, 160, 0.18), 0 12px 40px rgba(0, 0, 0, 0.55); }
+.bot-note.loss { border-left-color: var(--down); box-shadow: 0 0 24px rgba(255, 61, 113, 0.18), 0 12px 40px rgba(0, 0, 0, 0.55); }
+.bot-note-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+.bot-note-head .chip { padding: 1px 7px; }
+@keyframes note-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.update-banner { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 20px 0; padding: 8px 14px; border-radius: 12px; border: 1px solid rgba(0, 229, 255, 0.4); background: rgba(0, 229, 255, 0.07); font-size: 13px; }
+@media (max-width: 760px) {
+  .bot-notes { top: 116px; right: 12px; }
+  .update-banner { margin: 10px 10px 0; }
+}
+
 /* Footer + terms */
 .footer { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 20px 18px; font-size: 12px; border-top: 1px solid var(--border); }
 .footer-right { display: flex; align-items: center; gap: 14px; margin-left: auto; }
