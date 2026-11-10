@@ -60,6 +60,9 @@ export type BotConfig = {
   autoCandidates?: number; // how many top coins Claude checks per round
   autoMinLiquidityUsd?: number; // skip thin coins in auto mode
   trailPct?: number; // after the target is hit, sell if price falls this % from its high (default 3)
+  // false = wait for the price to hold past the trigger for the order's confirmSeconds.
+  // Anything else (default) = buy the instant the trigger price is hit.
+  waitForHold?: boolean;
 };
 
 export type Settings = { feePct: number; slippagePct: number };
@@ -490,14 +493,16 @@ export async function tick(persist = true) {
         state.bot.armedSince[i] = null;
         continue;
       }
+      // By default buy the instant the trigger is hit; optionally wait for it to hold.
+      const holdSec = cfg.waitForHold ? o.confirmSeconds : 0;
       if (!state.bot.armedSince[i]) {
         state.bot.armedSince[i] = Date.now();
-        if (o.confirmSeconds > 0) {
-          log(`${t3.symbol} reached the ${label} at ${fmt(pair.priceUsd)}; buying if it holds for ${o.confirmSeconds}s.`);
+        if (holdSec > 0) {
+          log(`${t3.symbol} reached the ${label} at ${fmt(pair.priceUsd)}; buying if it holds for ${holdSec}s.`);
           continue;
         }
       }
-      if (Date.now() - state.bot.armedSince[i]! < o.confirmSeconds * 1000) continue;
+      if (Date.now() - state.bot.armedSince[i]! < holdSec * 1000) continue;
 
       const usd = Math.floor(state.cash * (cfg.positionPct / 100) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");

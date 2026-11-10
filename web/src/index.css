@@ -213,6 +213,8 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .bot-note.pick { border-left-color: var(--violet); box-shadow: 0 0 24px rgba(180, 92, 255, 0.2), 0 12px 40px rgba(0, 0, 0, 0.55); }
 .bot-note .view { align-self: flex-start; margin-top: 4px; }
 .order.dim { opacity: 0.65; }
+.check { display: flex; gap: 8px; align-items: flex-start; margin: 8px 2px 0; cursor: pointer; }
+.check input { width: auto; margin-top: 2px; accent-color: var(--cyan); }
 .bot-note-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
 .bot-note-head .chip { padding: 1px 7px; }
 @keyframes note-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }

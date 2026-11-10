@@ -127,7 +127,7 @@ export default function App() {
         </section>
 
         <aside className="side">
-          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={setAnalysis} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running ? state.bot.config?.minConfidence : undefined} />
+          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={setAnalysis} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running ? state.bot.config?.minConfidence : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
           <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />
         </aside>
 
@@ -239,17 +239,19 @@ function PairHeader({ pair, tf, setTf }: { pair: PairInfo | null; tf: Timeframe;
 
 const STANCE_LABEL = { BUY_NOW: "BUY NOW", WAIT_FOR_TRIGGER: "WAITING", AVOID: "AVOID" } as const;
 
-export function describeOrder(o: CheckedOrder) {
-  if (o.kind === "buy_dip") return `Buy if it dips to ${fmtPrice(o.triggerPrice)}${o.confirmSeconds ? ` and holds ${o.confirmSeconds}s` : ""}`;
-  if (o.kind === "buy_breakout") return `Buy if it breaks above ${fmtPrice(o.triggerPrice)}${o.confirmSeconds ? ` for ${o.confirmSeconds}s` : ""}${o.minVolumeRatio ? ` with ${o.minVolumeRatio}× normal volume` : ""}`;
+// waitForHold: the bot waits for Claude's hold time before buying (off by default: buys instantly).
+export function describeOrder(o: CheckedOrder, waitForHold = false) {
+  const hold = waitForHold && o.confirmSeconds > 0;
+  if (o.kind === "buy_dip") return `Buy ${hold ? "" : "instantly "}if it dips to ${fmtPrice(o.triggerPrice)}${hold ? ` and holds ${o.confirmSeconds}s` : ""}`;
+  if (o.kind === "buy_breakout") return `Buy ${hold ? "" : "instantly "}if it breaks above ${fmtPrice(o.triggerPrice)}${hold ? ` for ${o.confirmSeconds}s` : ""}${o.minVolumeRatio ? ` with ${o.minVolumeRatio}× normal volume` : ""}`;
   return `Buy now, paying up to ${fmtPrice(o.triggerPrice)}`;
 }
 
-function OrderCard({ o, minWin }: { o: CheckedOrder; minWin?: number }) {
+function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: number; waitForHold?: boolean }) {
   const below = minWin !== undefined && o.winChancePct < minWin;
   return (
     <div className={`order ${below ? "dim" : ""}`}>
-      <b>{describeOrder(o)}</b>
+      <b>{describeOrder(o, waitForHold)}</b>
       <span className="tiny">
         <b className={below ? "down" : "up"}>{o.winChancePct}% win chance</b> · expected {o.evPct >= 0 ? "+" : ""}
         {o.evPct.toFixed(1)}% per trade after fees{below ? ` · below your ${minWin}% minimum, won't be used` : ""}
@@ -261,8 +263,8 @@ function OrderCard({ o, minWin }: { o: CheckedOrder; minWin?: number }) {
   );
 }
 
-function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number }) {
-  const { pair, tf, sig, results, onResult, notify, hasAI, multi, botMinWin } = props; // (fees are already applied in each order's numbers)
+function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
+  const { pair, tf, sig, results, onResult, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
   const run = async () => {
     if (!pair) return;
@@ -293,7 +295,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
             <div className="orders">
               <div className="label-sm">Standing orders: the bot buys on its own the moment one triggers</div>
               {sig.orders.map((o, i) => (
-                <OrderCard key={i} o={o} minWin={botMinWin} />
+                <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
               ))}
               <div className="muted tiny">
                 Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then Claude makes a new one.
@@ -386,6 +388,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const active = state?.bot.config;
   const [mode, setMode] = useState<"this" | "auto">("this");
   const [autoChain, setAutoChain] = useState<ScanChain>("all");
+  const [waitForHold, setWaitForHold] = useState(false);
   const shownMode = running && active ? (active.pick ?? "this") : mode;
   const shownChain = running && active ? (active.autoChain ?? "all") : autoChain;
   const candidates = running ? (state?.bot.candidates ?? []) : [];
@@ -418,7 +421,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const start = async () => {
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 1, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3 };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 1, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, waitForHold };
     try {
       await api.startBot(full);
       notify(mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
@@ -479,7 +482,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
               {planOrders.map((o, i) => (
                 <div key={i} className="tiny">
                   {state?.bot.armedSince?.[i] ? <b className="up">Triggered, confirming… </b> : "· "}
-                  {describeOrder(o)} · {o.winChancePct}% win chance{o.winChancePct < (active?.minConfidence ?? 0) ? " (below your minimum)" : ""}
+                  {describeOrder(o, active?.waitForHold)} · {o.winChancePct}% win chance{o.winChancePct < (active?.minConfidence ?? 0) ? " (below your minimum)" : ""}
                 </div>
               ))}
               <div className="muted tiny">Plan cancels at {fmtTime(plan.consensus.expiresAt)} or if the price leaves its range; then Claude makes a new one.</div>
@@ -568,6 +571,13 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         </div>
       )}
 
+      <label className="check small">
+        <input type="checkbox" checked={running ? Boolean(active?.waitForHold) : waitForHold} onChange={(e) => setWaitForHold(e.target.checked)} disabled={running} />
+        <span>
+          Wait for the price to hold before buying
+          <span className="muted tiny"> · Off: buys the instant a trigger price is hit. On: waits the few seconds Claude suggests, so it doesn't buy into a spike or a crash that's still going. Sells are always instant.</span>
+        </span>
+      </label>
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
