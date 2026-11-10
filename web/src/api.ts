@@ -15,12 +15,14 @@ export type PairInfo = {
   dex?: string;
 };
 export type Snapshot = { price: number; ema9: number; ema21: number; ema50: number; rsi14: number; atrPct: number; volRatio: number; change1: number; change12: number; high50: number; low50: number; techScore: number };
-export type Signal = { action: "BUY" | "SELL" | "HOLD"; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyWindowMinutes: number; riskLevel: string; reasoning: string };
+export type PlanOrder = { kind: "buy_now" | "buy_dip" | "buy_breakout"; triggerPrice: number; confirmSeconds: number; minVolumeRatio: number; stopLoss: number; target: number; maxHoldMinutes: number };
+export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number };
+export type Signal = { stance: "BUY_NOW" | "WAIT_FOR_TRIGGER" | "AVOID"; confidence: number; riskLevel: string; reasoning: string; orders: PlanOrder[]; cancelBelow: number; cancelAbove: number; validMinutes: number };
 export type ModelResult = { model: string; ok: true; signal: Signal; ms: number } | { model: string; ok: false; error: string; ms: number };
-export type Consensus = { action: "BUY" | "SELL" | "HOLD"; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
-export type Position = { id: string; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number };
+export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
+export type Position = { id: string; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean };
 export type Trade = { id: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot" };
-export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; goalUsd: number; pick?: "this" | "auto"; autoChain?: ScanChain; autoCandidates?: number; autoMinLiquidityUsd?: number };
+export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; goalUsd: number; pick?: "this" | "auto"; autoChain?: ScanChain; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number };
 export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean };
 export type AppState = {
   mode: "paper";
@@ -38,6 +40,8 @@ export type AppState = {
     config: BotConfig | null;
     lastAnalysisAt: number;
     lastTickAt: number;
+    armedSince: (number | null)[];
+    askNow: boolean;
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];

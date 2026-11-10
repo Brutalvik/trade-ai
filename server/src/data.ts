@@ -15,6 +15,8 @@ export type PairInfo = {
   priceUsd: number;
   change: { m5: number; h1: number; h6: number; h24: number };
   volume24h: number;
+  volume5m?: number; // for breakout volume checks
+  volume1h?: number;
   liquidityUsd: number;
   marketCap: number;
   imageUrl?: string;
@@ -111,6 +113,8 @@ function fromDexScreener(p: any): PairInfo {
     priceUsd: num(p.priceUsd),
     change: { m5: num(p.priceChange?.m5), h1: num(p.priceChange?.h1), h6: num(p.priceChange?.h6), h24: num(p.priceChange?.h24) },
     volume24h: num(p.volume?.h24),
+    volume5m: num(p.volume?.m5),
+    volume1h: num(p.volume?.h1),
     liquidityUsd: num(p.liquidity?.usd),
     marketCap: num(p.marketCap ?? p.fdv),
     imageUrl: p.info?.imageUrl,

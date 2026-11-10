@@ -2,7 +2,7 @@ import { CandlestickSeries, ColorType, createChart, createSeriesMarkers, Histogr
 import { useEffect, useRef } from "react";
 import type { Candle, Trade } from "./api";
 
-type Levels = { entry?: number; tp?: number; sl?: number };
+export type ChartLine = { price: number; color: string; title: string };
 
 function emaLine(c: Candle[], period: number) {
   const k = 2 / (period + 1);
@@ -18,7 +18,7 @@ function precisionFor(p: number) {
   return Math.min(12, -Math.floor(Math.log10(p)) + 3);
 }
 
-export function Chart({ candles, trades, levels, seconds = false, viewKey = "" }: { candles: Candle[]; trades: Trade[]; levels: Levels; seconds?: boolean; viewKey?: string }) {
+export function Chart({ candles, trades, lines: levelLines, seconds = false, viewKey = "" }: { candles: Candle[]; trades: Trade[]; lines: ChartLine[]; seconds?: boolean; viewKey?: string }) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const s = useRef<{ candle: ISeriesApi<"Candlestick">; vol: ISeriesApi<"Histogram">; e9: ISeriesApi<"Line">; e21: ISeriesApi<"Line">; markers: ISeriesMarkersPluginApi<Time> } | null>(null);
@@ -96,13 +96,10 @@ export function Chart({ candles, trades, levels, seconds = false, viewKey = "" }
     if (!cs) return;
     lines.current.forEach((l) => cs.removePriceLine(l));
     lines.current = [];
-    const add = (price: number | undefined, color: string, title: string) => {
-      if (price) lines.current.push(cs.createPriceLine({ price, color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title }));
-    };
-    add(levels.entry, "#00e5ff", "ENTRY");
-    add(levels.tp, "#00f5a0", "TAKE PROFIT");
-    add(levels.sl, "#ff3d71", "STOP");
-  }, [levels.entry, levels.tp, levels.sl, candles.length > 0]);
+    for (const l of levelLines) {
+      if (l.price > 0) lines.current.push(cs.createPriceLine({ price: l.price, color: l.color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: l.title }));
+    }
+  }, [JSON.stringify(levelLines), candles.length > 0]);
 
   // The chart is absolutely positioned inside a wrapper, so its size can't
   // feed back into the layout (that loop made it grow forever).

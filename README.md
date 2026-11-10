@@ -9,11 +9,12 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 - **Live candlestick chart** (1-second to 1-day, with 1s and 5s charts updating every few seconds) with EMA 9/21, volume, AI entry/take-profit/stop lines, and markers for bot trades
 - **AI signal**: Claude (optionally plus ChatGPT) gives entry, take-profit, stop, *buy-by* and *sell-by* times, confidence, and their reasoning
 - **Manual trading**: buy and sell any token at the live price
-- **Auto-pilot bot**: trades the coin on screen, or **auto-picks** the best coin each round (scans trending coins, asks Claude about the top 3, buys the one it's most sure about). Safe / Balanced / Aggressive presets or your own Custom numbers. It watches the price every second, plus
-  - no chasing (it waits for the planned entry price)
-  - a break-even stop once a trade is in profit, so a winner can't turn into a loss
-  - a planned exit time
-  - a drawdown kill-switch that sells everything and stops the bot
+- **Auto-pilot bot**: trades the coin on screen, or **auto-picks** the best coin each round. Safe / Balanced / Aggressive presets or your own Custom numbers. How it works:
+  - **Claude writes a plan of standing orders** rather than one-off calls: *buy now*, *buy the dip* (e.g. "if it dips to $0.96 and holds 60 s"), or *buy the breakout* (e.g. "if it breaks above $1.07 with 1.5× normal volume"). Each order has an exit price, a target and a time limit, and the plan has cancel levels and an expiry. Orders that don't beat the risk after fees are discarded.
+  - **The bot carries the plan out on its own**, checking prices every second (free), and buys the moment an order triggers and holds.
+  - **Exits:** sells at Claude's exit price; once up enough, the stop moves to break-even after fees; at Claude's target it **rides the trend with a trailing stop** (sells if the price falls a set % from its high); it sells after the time limit.
+  - **Claude is asked when something happens**: after each trade, when the plan expires, or when the price leaves the plan's range, plus a slow backup timer. Never more than once every 2 minutes.
+  - **Emergency stop:** sells everything and switches off if the account falls past your limit.
 - **Opportunities**: trending coins on all chains (or Solana / Base / Ethereum / BSC), each with a quick plan: buy below, sell at, exit if below, and buy-by / sell-by times (free, from the chart). "Ask Claude" gives a proper plan for any coin
 - **Growth ladder**: progress from $10 toward $15 / $20 / $100 / $1,000
 - Responsive layout: desktop, tablet and phone

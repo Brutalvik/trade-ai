@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type ScanResult, type Status, type Timeframe } from "./api";
-import { Chart } from "./Chart";
+import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type ScanResult, type Status, type Timeframe } from "./api";
+import { Chart, type ChartLine } from "./Chart";
+import { Footer } from "./Footer";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -72,7 +73,22 @@ export default function App() {
   // Show the bot's last signal on the chart if it is for this pool.
   const sig = analysis?.consensus ?? (state?.lastSignal?.pool === pair?.pool ? state?.lastSignal?.consensus : undefined);
   const results = analysis?.results ?? (state?.lastSignal?.pool === pair?.pool ? state?.lastSignal?.results : undefined);
-  const levels = sig && sig.action === "BUY" ? { entry: sig.entryPrice, tp: sig.takeProfit, sl: sig.stopLoss } : {};
+  // Chart lines: the bot's open trade on this coin, otherwise Claude's standing orders.
+  const lines = useMemo<ChartLine[]>(() => {
+    const pos = state?.positions.find((p) => p.pool === pair?.pool && p.source === "bot");
+    if (pos) {
+      const trail = pos.trailPct ?? 3;
+      return [
+        { price: pos.entryPrice, color: "#00e5ff", title: "BOUGHT" },
+        { price: pos.stopLoss ?? 0, color: "#ff3d71", title: "EXIT" },
+        pos.trailing && pos.peak ? { price: pos.peak * (1 - trail / 100), color: "#ffc857", title: "TRAILING STOP" } : { price: pos.target ?? 0, color: "#00f5a0", title: "TARGET" },
+      ];
+    }
+    if (!sig?.orders?.length) return [];
+    const out: ChartLine[] = sig.orders.map((o) => ({ price: o.triggerPrice, color: "#00e5ff", title: o.kind === "buy_breakout" ? "BUY ABOVE" : "BUY BELOW" }));
+    out.push({ price: sig.orders[0].target, color: "#00f5a0", title: "TARGET" }, { price: sig.orders[0].stopLoss, color: "#ff3d71", title: "EXIT" });
+    return out;
+  }, [state?.positions, pair?.pool, sig]);
   const pairTrades = useMemo(() => (state?.trades ?? []).filter((t) => t.pool === pair?.pool), [state?.trades, pair?.pool]);
 
   return (
@@ -88,11 +104,11 @@ export default function App() {
       <main className="layout">
         <section className="panel chart-panel">
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles([]); } }} />
-          {candles.length ? <Chart candles={candles} trades={pairTrades} levels={levels} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
+          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
           <div className="legend">
             <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
             <span><i style={{ background: "#b45cff" }} />EMA 21</span>
-            {sig?.action === "BUY" && <span className="muted">Dashed lines: AI entry / take-profit / stop</span>}
+            {lines.length > 0 && <span className="muted">Dashed lines: Claude's orders and exits</span>}
             {source && (
               <span className={`source ${source.source === "CoinMarketCap" ? "" : "fallback"}`} title={source.note}>
                 {isSeconds(tf) && source.source === "CoinMarketCap" && <span className="live-dot" />}
@@ -128,6 +144,7 @@ export default function App() {
         </section>
       </main>
 
+      <Footer />
       {toast && <div className={`toast ${toast.bad ? "bad" : ""}`}>{toast.msg}</div>}
     </div>
   );
@@ -213,8 +230,27 @@ function PairHeader({ pair, tf, setTf }: { pair: PairInfo | null; tf: Timeframe;
   );
 }
 
+const STANCE_LABEL = { BUY_NOW: "BUY NOW", WAIT_FOR_TRIGGER: "WAITING", AVOID: "AVOID" } as const;
+
+export function describeOrder(o: CheckedOrder) {
+  if (o.kind === "buy_dip") return `Buy if it dips to ${fmtPrice(o.triggerPrice)}${o.confirmSeconds ? ` and holds ${o.confirmSeconds}s` : ""}`;
+  if (o.kind === "buy_breakout") return `Buy if it breaks above ${fmtPrice(o.triggerPrice)}${o.confirmSeconds ? ` for ${o.confirmSeconds}s` : ""}${o.minVolumeRatio ? ` with ${o.minVolumeRatio}× normal volume` : ""}`;
+  return `Buy now, paying up to ${fmtPrice(o.triggerPrice)}`;
+}
+
+function OrderCard({ o }: { o: CheckedOrder }) {
+  return (
+    <div className="order">
+      <b>{describeOrder(o)}</b>
+      <span className="muted tiny">
+        Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · from <span className="up">{fmtPrice(o.target)}</span> it rides the trend · +{o.netRewardPct.toFixed(1)}% after fees vs {o.netRiskPct.toFixed(1)}% risk · max {Math.round(o.maxHoldMinutes)} min
+      </span>
+    </div>
+  );
+}
+
 function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean }) {
-  const { pair, tf, sig, results, cost, onResult, notify, hasAI, multi } = props;
+  const { pair, tf, sig, results, onResult, notify, hasAI, multi } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
   const run = async () => {
     if (!pair) return;
@@ -236,25 +272,29 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
       {!hasAI && <p className="muted small">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> to enable Claude analysis.</p>}
       {sig ? (
         <>
-          <div className={`verdict ${sig.action.toLowerCase()}`}>
-            <span>{sig.action}</span>
+          <div className={`verdict ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>
+            <span>{STANCE_LABEL[sig.stance ?? "AVOID"]}</span>
             <div className="conf"><div style={{ width: `${sig.confidence}%` }} /></div>
             <small>{sig.confidence}% confidence</small>
           </div>
-          {sig.action === "BUY" && (
-            <div className="levels">
-              <div><small>Entry ≤</small><b className="mono">{fmtPrice(sig.entryPrice)}</b><small>buy by {fmtTime(sig.buyBy)}</small></div>
-              <div><small>Take profit</small><b className="mono up">{fmtPrice(sig.takeProfit)}</b><small>sell by {fmtTime(sig.sellBy)}</small></div>
-              <div><small>Stop</small><b className="mono down">{fmtPrice(sig.stopLoss)}</b><small>net risk {sig.netRiskPct.toFixed(1)}%</small></div>
+          {sig.orders?.length > 0 && (
+            <div className="orders">
+              <div className="label-sm">Standing orders: the bot buys on its own the moment one triggers</div>
+              {sig.orders.map((o, i) => (
+                <OrderCard key={i} o={o} />
+              ))}
+              <div className="muted tiny">
+                Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then Claude makes a new one.
+              </div>
             </div>
           )}
-          <p className="note">{sig.note} {sig.action === "BUY" && <>Net reward after {cost.toFixed(1)}% costs: <b className="up">{sig.netRewardPct.toFixed(1)}%</b>.</>}</p>
+          <p className="note">{sig.note}</p>
           <div className="models">
             {results?.map((r) => (
               <details key={r.model} className="model">
                 <summary>
                   <span>{r.model}</span>
-                  {r.ok ? <span className={`tag ${r.signal.action.toLowerCase()}`}>{r.signal.action} {r.signal.confidence}%</span> : <span className="tag sell">ERROR</span>}
+                  {r.ok ? <span className={`tag ${r.signal.stance === "BUY_NOW" ? "buy" : r.signal.stance === "AVOID" ? "sell" : "hold"}`}>{STANCE_LABEL[r.signal.stance]} {r.signal.confidence}%</span> : <span className="tag sell">ERROR</span>}
                 </summary>
                 {r.ok ? <p className="small">{r.signal.reasoning} <span className="muted">Risk: {r.signal.riskLevel}. {(r.ms / 1000).toFixed(1)}s</span></p> : <p className="small down">{r.error}</p>}
               </details>
@@ -262,7 +302,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
         </>
       ) : (
-        <p className="muted small">Run an analysis to get entry, take-profit and stop levels plus buy-by / sell-by times. {multi ? "Both models must agree before anything is called a BUY." : "Claude only calls BUY when the reward clearly beats the risk after fees."}</p>
+        <p className="muted small">Press Analyze to get Claude's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
       )}
     </div>
   );
@@ -319,14 +359,14 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   );
 }
 
-type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number };
+type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number };
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
-  safe: { label: "Safe", blurb: "Small trades, only very confident calls, tight emergency brake.", positionPct: 50, minConfidence: 80, analyzeMin: 30, maxDrawdownPct: 15, breakEvenAtPct: 4 },
-  balanced: { label: "Balanced", blurb: "Most of your cash per trade, solid confidence required.", positionPct: 90, minConfidence: 70, analyzeMin: 15, maxDrawdownPct: 25, breakEvenAtPct: 6 },
-  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts weaker signals, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 60, analyzeMin: 10, maxDrawdownPct: 40, breakEvenAtPct: 8 },
+  safe: { label: "Safe", blurb: "Small trades, only very confident calls, tight emergency brake.", positionPct: 50, minConfidence: 80, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2 },
+  balanced: { label: "Balanced", blurb: "Most of your cash per trade, solid confidence required.", positionPct: 90, minConfidence: 70, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3 },
+  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts weaker signals, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 60, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5 },
 };
 type PresetKey = keyof typeof PRESETS;
-const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct"];
+const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct"];
 const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
 
 function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void }) {
@@ -339,6 +379,8 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const candidates = running ? (state?.bot.candidates ?? []) : [];
   const target = running ? state?.bot.target : null;
   const botPos = state?.positions.find((p) => p.source === "bot");
+  const plan = running ? state?.lastSignal : null;
+  const planOrders = plan?.consensus.orders ?? [];
   const startCash = state?.startCash ?? 10;
   const [cfg, setCfg] = useState<RiskKnobs & { goalUsd: number }>({ ...PRESETS.balanced, goalUsd: 15 });
   const set = (k: keyof typeof cfg) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -354,7 +396,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
-    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, goalUsd: active.goalUsd } : cfg;
+    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, goalUsd: active.goalUsd } : cfg;
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
@@ -364,7 +406,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const start = async () => {
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 1, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3 };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 1, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3 };
     try {
       await api.startBot(full);
       notify(mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
@@ -409,17 +451,27 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         <div className="bot-status small">
           {botPos ? (
             <div>
-              Holding <b>{botPos.symbol}</b>: {fmtPct(((botPos.lastPrice - botPos.entryPrice) / botPos.entryPrice) * 100)} · sells at {botPos.takeProfit ? fmtPrice(botPos.takeProfit) : "–"}, exits below {botPos.stopLoss ? fmtPrice(botPos.stopLoss) : "–"}
+              Holding <b>{botPos.symbol}</b>: {fmtPct(((botPos.lastPrice - botPos.entryPrice) / botPos.entryPrice) * 100)} · exit below {botPos.stopLoss ? fmtPrice(botPos.stopLoss) : "–"} ·{" "}
+              {botPos.trailing && botPos.peak
+                ? `riding the trend: sells below ${fmtPrice(botPos.peak * (1 - (botPos.trailPct ?? 3) / 100))} (high ${fmtPrice(botPos.peak)})`
+                : `from ${botPos.target ? fmtPrice(botPos.target) : "the target"} it rides the trend`}
               <button className="chip" onClick={() => onOpen(botPos.chain, botPos.pool)}>View</button>
             </div>
-          ) : target ? (
+          ) : plan && planOrders.length > 0 ? (
             <div>
-              Waiting to buy <b>{target.symbol}</b> at the planned price
-              <button className="chip" onClick={() => onOpen(target.chain, target.pool)}>View</button>
+              Waiting on <b>{plan.symbol}</b>:
+              {planOrders.map((o, i) => (
+                <div key={i} className="tiny">
+                  {state?.bot.armedSince?.[i] ? <b className="up">Triggered, confirming… </b> : "· "}
+                  {describeOrder(o)}
+                </div>
+              ))}
+              <div className="muted tiny">Plan cancels at {fmtTime(plan.consensus.expiresAt)} or if the price leaves its range; then Claude makes a new one.</div>
+              <button className="chip" onClick={() => onOpen(active?.pick === "auto" ? (target?.chain ?? "solana") : active!.chain, plan.pool)}>View</button>
             </div>
           ) : (
             <div className="muted">
-              {state?.bot.lastAnalysisAt ? `Last checked ${fmtTime(state.bot.lastAnalysisAt)}. Nothing good enough to buy yet; next check around ${fmtTime(state.bot.lastAnalysisAt + (active?.analyzeEverySec ?? 900) * 1000)}.` : "Starting up: first check within a minute."}
+              {state?.bot.lastAnalysisAt ? `Claude's last plan (${fmtTime(state.bot.lastAnalysisAt)}): no orders worth placing. It will be asked again by ${fmtTime(state.bot.lastAnalysisAt + (active?.analyzeEverySec ?? 1800) * 1000)}, sooner if the market moves.` : "Starting up: getting Claude's first plan."}
             </div>
           )}
           {candidates.length > 0 && !botPos && (
@@ -451,9 +503,10 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
       <ul className="plan small">
         <li>Puts <b>{fmtUsd(perTrade)}</b> into each trade ({shown.positionPct}% of cash)</li>
-        <li>Buys only when Claude is <b>{shown.minConfidence}%+</b> sure, looking for a trade every {shown.analyzeMin} min</li>
-        <li>Watches the price every second (free) to buy and sell on time</li>
-        <li>Locks in no-loss once a trade is up <b>{shown.breakEvenAtPct}%</b></li>
+        <li>Claude writes standing orders ({shown.minConfidence}%+ sure); the bot buys the moment one triggers (checked every second, free)</li>
+        <li>Sells below Claude's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
+        <li>At Claude's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
+        <li>Asks Claude again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
         <li>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
       </ul>
 
@@ -471,9 +524,9 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             <small>If Claude is less sure than this, the bot doesn't buy. Higher = fewer but safer trades.</small>
           </label>
           <label>
-            Ask Claude every (minutes)
+            Backup re-check (minutes)
             <input type="number" value={shown.analyzeMin} onChange={set("analyzeMin")} disabled={running} />
-            <small>How often it looks for a new trade. Each check costs a few cents, so smaller = more cost.</small>
+            <small>Claude is asked after every trade and whenever its plan expires or the price leaves its range. This is the longest it waits otherwise. Each ask costs a few cents.</small>
           </label>
           <label>
             Emergency stop if I lose (%)
@@ -484,6 +537,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             Protect a trade once it's up (%)
             <input type="number" value={shown.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running} />
             <small>Once a trade is up this much, the bot won't let it turn into a loss.</small>
+          </label>
+          <label>
+            Trailing stop (%)
+            <input type="number" value={shown.trailPct} onChange={set("trailPct")} disabled={running} />
+            <small>After Claude's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
           </label>
           <label>
             My target ($)
@@ -617,18 +675,18 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
                   <td className={`hide-sm ${pair.change.h24 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h24)}</td>
                   <td title={plan?.why}>
                     {a && a !== "loading" ? (
-                      <span className={`tag ${a.action.toLowerCase()}`}>Claude: {a.action} {a.confidence}%</span>
+                      <span className={`tag ${a.stance === "BUY_NOW" ? "buy" : a.stance === "AVOID" ? "sell" : "hold"}`}>Claude: {STANCE_LABEL[a.stance ?? "AVOID"]} {a.confidence}%</span>
                     ) : (
                       <span className={`tag ${go ? "buy" : plan?.verdict === "AVOID" ? "sell" : "hold"}`}>{plan?.verdict ?? "DATA BUSY"}</span>
                     )}
                     <div className="muted tiny why">{a && a !== "loading" ? a.note : plan?.why}</div>
                   </td>
-                  {a && a !== "loading" && a.action === "BUY" ? (
+                  {a && a !== "loading" && a.orders?.length > 0 ? (
                     <>
-                      <td className="mono up">{fmtPrice(a.entryPrice)}</td>
-                      <td className="mono up">{fmtPrice(a.takeProfit)}</td>
-                      <td className="mono down hide-sm">{fmtPrice(a.stopLoss)}</td>
-                      <td className="hide-sm small">buy by {fmtTime(a.buyBy)}<br />sell by {fmtTime(a.sellBy)}</td>
+                      <td className="mono up">{a.orders[0].kind === "buy_breakout" ? "above " : ""}{fmtPrice(a.orders[0].triggerPrice)}</td>
+                      <td className="mono up">{fmtPrice(a.orders[0].target)}<div className="muted tiny">then trails</div></td>
+                      <td className="mono down hide-sm">{fmtPrice(a.orders[0].stopLoss)}</td>
+                      <td className="hide-sm small">plan valid until {fmtTime(a.expiresAt)}{a.orders.length > 1 ? <><br />+1 more order</> : null}</td>
                     </>
                   ) : go && plan && !(a && a !== "loading") ? (
                     <>
@@ -638,7 +696,7 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
                       <td className="hide-sm small">buy by {fmtTime(plan.buyBy)}<br />sell by {fmtTime(plan.sellBy)}</td>
                     </>
                   ) : (
-                    <td colSpan={4} className="muted small">{a && a !== "loading" ? "Claude says don't buy now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask Claude." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}</td>
+                    <td colSpan={4} className="muted small">{a && a !== "loading" ? "Claude: no orders worth placing now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask Claude." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}</td>
                   )}
                   <td onClick={(e) => e.stopPropagation()}>
                     <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask Claude"}</button>

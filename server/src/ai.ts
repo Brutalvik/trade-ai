@@ -6,32 +6,57 @@ import { z } from "zod";
 import type { Candle, PairInfo } from "./data.js";
 import type { Snapshot } from "./indicators.js";
 
-export const SignalSchema = z.object({
-  action: z.enum(["BUY", "SELL", "HOLD"]),
-  confidence: z.number().describe("0-100, how confident you are in this call"),
-  entryPrice: z.number().describe("Suggested limit entry price in USD"),
-  takeProfit: z.number().describe("Exit price for profit, USD"),
-  stopLoss: z.number().describe("Exit price to cut the loss, USD"),
-  holdMinutes: z.number().describe("Expected minutes until take-profit or exit"),
-  buyWindowMinutes: z.number().describe("How many minutes from now the entry stays valid"),
-  riskLevel: z.enum(["LOW", "MEDIUM", "HIGH", "EXTREME"]),
-  reasoning: z.string().describe("2-4 short sentences explaining the call"),
+// What Claude returns: a PLAN of standing orders the bot carries out on its own,
+// checking prices every second, without asking Claude again until something changes.
+const OrderSchema = z.object({
+  kind: z
+    .enum(["buy_now", "buy_dip", "buy_breakout"])
+    .describe("buy_now: buy right away at or below triggerPrice. buy_dip: buy when price falls to triggerPrice or lower. buy_breakout: buy when price rises to triggerPrice or higher."),
+  triggerPrice: z.number().describe("USD price that triggers the buy (see kind)"),
+  confirmSeconds: z.number().describe("How many seconds the price must stay past the trigger before buying (0-300). Use ~60 for dips so the bot doesn't catch a falling knife, ~30 for breakouts, 0 for buy_now."),
+  minVolumeRatio: z.number().describe("buy_breakout only: required ratio of last-5-minute volume to the hourly average (e.g. 1.5). 0 = no volume check."),
+  stopLoss: z.number().describe("USD price to sell at a loss if the trade goes wrong; must be below triggerPrice"),
+  target: z.number().describe("USD profit target; must be above triggerPrice. When reached, the bot switches to a trailing stop to ride further gains."),
+  maxHoldMinutes: z.number().describe("Sell after this many minutes in the trade no matter what"),
 });
-export type Signal = z.infer<typeof SignalSchema>;
 
-export type ModelResult = { model: string; ok: true; signal: Signal; ms: number } | { model: string; ok: false; error: string; ms: number };
+export const PlanSchema = z.object({
+  stance: z.enum(["BUY_NOW", "WAIT_FOR_TRIGGER", "AVOID"]).describe("BUY_NOW: good entry right now. WAIT_FOR_TRIGGER: only buy if a trigger below is hit. AVOID: no orders, stay out."),
+  confidence: z.number().describe("0-100, how confident you are in this plan"),
+  riskLevel: z.enum(["LOW", "MEDIUM", "HIGH", "EXTREME"]),
+  reasoning: z.string().describe("2-4 short sentences explaining the plan in plain words"),
+  orders: z.array(OrderSchema).describe("0-2 standing buy orders. Empty for AVOID."),
+  cancelBelow: z.number().describe("Cancel the whole plan if price falls below this USD price (0 = none)"),
+  cancelAbove: z.number().describe("Cancel the whole plan if price rises above this USD price without any order filling (0 = none)"),
+  validMinutes: z.number().describe("How long this plan stays valid (5-720)"),
+});
+export type Plan = z.infer<typeof PlanSchema>;
+export type PlanOrder = z.infer<typeof OrderSchema>;
+// Kept as an alias: the UI and older code call a model's answer its "signal".
+export type Signal = Plan;
+
+export type ModelResult = { model: string; ok: true; signal: Plan; ms: number } | { model: string; ok: false; error: string; ms: number };
+
+// An order the server checked against fees and risk, ready for the bot.
+export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number };
 
 export type Consensus = {
-  action: "BUY" | "SELL" | "HOLD";
+  action: "BUY" | "SELL" | "HOLD"; // BUY = buy now, HOLD = waiting for a trigger (or nothing), SELL = avoid
+  stance: Plan["stance"];
   confidence: number;
+  orders: CheckedOrder[];
+  cancelBelow: number;
+  cancelAbove: number;
+  expiresAt: number; // unix ms
+  // Summary of the first order, for simple displays.
   entryPrice: number;
   takeProfit: number;
   stopLoss: number;
   holdMinutes: number;
-  buyBy: number; // unix ms
-  sellBy: number; // unix ms
-  netRewardPct: number; // after fees
-  netRiskPct: number; // after fees
+  buyBy: number;
+  sellBy: number;
+  netRewardPct: number;
+  netRiskPct: number;
   agreement: boolean;
   note: string;
 };
@@ -46,14 +71,20 @@ export const hasClaude = () => Boolean(process.env.ANTHROPIC_API_KEY);
 // Set ENABLE_OPENAI=true (plus OPENAI_API_KEY) to add it back as a second opinion.
 export const hasOpenAI = () => process.env.ENABLE_OPENAI === "true" && Boolean(process.env.OPENAI_API_KEY);
 
-const SYSTEM = `You are a disciplined short-term crypto trading analyst for small-cap on-chain tokens (often Solana memecoins).
-Your job is to protect capital first and only call BUY when the setup has a clear edge.
+const SYSTEM = `You are a disciplined short-term crypto trading planner for small-cap on-chain tokens (often memecoins).
+You don't place one-off calls: you write a PLAN of standing orders that a bot carries out on its own.
+The bot checks the live price every second and buys the moment an order's trigger is met (and held for confirmSeconds).
+After buying it: sells at stopLoss if wrong; once up enough, moves the stop to break-even after fees;
+when the price reaches target, it switches to a trailing stop (sells if the price falls a set % from its highest point), and sells after maxHoldMinutes.
+You will be asked again after a trade closes, when your plan expires, or when the price leaves your cancel range.
+
 Rules:
-- Round-trip trading costs (fees + slippage) are given. A BUY is only valid if (takeProfit - entry)/entry exceeds costs by a wide margin and reward:risk after costs is at least 2:1.
-- Low liquidity, parabolic pumps, RSI > 80, or collapsing volume are reasons to HOLD.
-- SELL means "exit / avoid, likely to fall". HOLD means "no trade".
+- Protect capital first. Round-trip costs (fees + slippage) are given. For every order, (target - trigger)/trigger must beat costs by a wide margin, and reward:risk after costs must be at least 1.5:1. Orders that fail this are discarded.
+- Prefer patient entries: a buy_dip near support with confirmSeconds ~60, and/or a buy_breakout above resistance with a volume check. Use buy_now only when the entry is good right now.
+- Use AVOID with no orders for rugs, parabolic pumps, collapsing volume, thin liquidity, or no edge.
+- Set cancelBelow/cancelAbove so the plan is dropped when the market moves away from your thesis.
 - Never promise profit. Be honest about uncertainty in confidence.
-- Prices are in USD and may be very small numbers; keep full precision.`;
+- Prices are in USD and may be tiny numbers; keep full precision.`;
 
 function buildPrompt(pair: PairInfo, snap: Snapshot, candles: Candle[], tf: string, costPct: number) {
   const recent = candles.slice(-60).map((c) => [c.time, c.open, c.high, c.low, c.close, Math.round(c.volume)]);
@@ -69,17 +100,17 @@ Current time (unix s): ${Math.floor(Date.now() / 1000)}
 Last 60 candles [time, open, high, low, close, volume]:
 ${JSON.stringify(recent)}
 
-Give your trade call for the next few hours.`;
+Write your trading plan (standing orders) for roughly the next few hours.`;
 }
 
-async function askClaude(prompt: string): Promise<Signal> {
+async function askClaude(prompt: string): Promise<Plan> {
   anthropic ??= new Anthropic();
   const res = await anthropic.beta.messages.parse({
     model: CLAUDE_MODEL,
     max_tokens: 16000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default", // if a safety classifier declines, retry on a fallback model
-    output_config: { effort: "medium", format: betaZodOutputFormat(SignalSchema) },
+    output_config: { effort: "medium", format: betaZodOutputFormat(PlanSchema) },
     system: SYSTEM,
     messages: [{ role: "user", content: prompt }],
   });
@@ -88,19 +119,19 @@ async function askClaude(prompt: string): Promise<Signal> {
   return res.parsed_output;
 }
 
-async function askOpenAI(prompt: string): Promise<Signal> {
+async function askOpenAI(prompt: string): Promise<Plan> {
   openai ??= new OpenAI();
   const res = await openai.responses.parse({
     model: OPENAI_MODEL,
     instructions: SYSTEM,
     input: prompt,
-    text: { format: zodTextFormat(SignalSchema, "trade_signal") },
+    text: { format: zodTextFormat(PlanSchema, "trading_plan") },
   });
   if (!res.output_parsed) throw new Error("OpenAI returned no parseable signal");
   return res.output_parsed;
 }
 
-async function timed(model: string, fn: () => Promise<Signal>): Promise<ModelResult> {
+async function timed(model: string, fn: () => Promise<Plan>): Promise<ModelResult> {
   const t = Date.now();
   try {
     return { model, ok: true, signal: await fn(), ms: Date.now() - t };
@@ -119,47 +150,88 @@ export async function analyze(pair: PairInfo, snap: Snapshot, candles: Candle[],
   return { results, consensus: combine(results, costPct, pair.priceUsd) };
 }
 
-// Conservative combination: BUY only when every model that answered says BUY.
-// With Claude alone, Claude's call is the decision (still checked against fees and risk below).
-export function combine(results: ModelResult[], costPct: number, livePrice: number): Consensus {
-  const sigs = results.filter((r): r is Extract<ModelResult, { ok: true }> => r.ok).map((r) => r.signal);
-  const now = Date.now();
-  const base = { entryPrice: livePrice, takeProfit: livePrice, stopLoss: livePrice, holdMinutes: 0, buyBy: now, sellBy: now, netRewardPct: 0, netRiskPct: 0 };
-  if (!sigs.length) return { ...base, action: "HOLD", confidence: 0, agreement: false, note: "No model answered." };
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
 
-  const avg = (f: (s: Signal) => number) => sigs.reduce((a, s) => a + f(s), 0) / sigs.length;
-  const actions = new Set(sigs.map((s) => s.action));
-  const agreement = actions.size === 1;
-  const action = agreement ? sigs[0].action : "HOLD";
-  const entryPrice = avg((s) => s.entryPrice);
-  // For BUY use the more cautious target and the tighter stop.
-  const takeProfit = action === "BUY" ? Math.min(...sigs.map((s) => s.takeProfit)) : avg((s) => s.takeProfit);
-  const stopLoss = action === "BUY" ? Math.max(...sigs.map((s) => s.stopLoss)) : avg((s) => s.stopLoss);
-  const holdMinutes = avg((s) => s.holdMinutes);
-  const buyWindow = Math.min(...sigs.map((s) => s.buyWindowMinutes));
-  const netRewardPct = ((takeProfit - entryPrice) / entryPrice) * 100 - costPct;
-  const netRiskPct = ((entryPrice - stopLoss) / entryPrice) * 100 + costPct;
-  let confidence = Math.round(avg((s) => s.confidence) * (agreement ? 1 : 0.5));
-  let note = agreement ? `All ${sigs.length} model(s) agree.` : `Models disagree (${[...actions].join(" vs ")}), so standing aside.`;
-
-  let finalAction = action;
-  if (action === "BUY" && (netRewardPct <= 0 || netRewardPct < netRiskPct * 1.5)) {
-    finalAction = "HOLD";
-    note = `Models said BUY but after ${costPct.toFixed(1)}% costs the reward (${netRewardPct.toFixed(1)}%) doesn't justify the risk (${netRiskPct.toFixed(1)}%).`;
-    confidence = Math.min(confidence, 40);
+// Checks each order for sanity and against fees/risk; drops the ones that fail.
+export function checkOrders(orders: PlanOrder[], costPct: number): { kept: CheckedOrder[]; dropped: string[] } {
+  const kept: CheckedOrder[] = [];
+  const dropped: string[] = [];
+  for (const o of orders.slice(0, 2)) {
+    const t = o.triggerPrice;
+    if (!(t > 0 && o.stopLoss > 0 && o.stopLoss < t && o.target > t)) {
+      dropped.push(`${o.kind}: prices don't make sense (stop < trigger < target)`);
+      continue;
+    }
+    const netRewardPct = ((o.target - t) / t) * 100 - costPct;
+    const netRiskPct = ((t - o.stopLoss) / t) * 100 + costPct;
+    if (netRewardPct <= 0 || netRewardPct < 1.5 * netRiskPct) {
+      dropped.push(`${o.kind}: after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) doesn't beat the risk (${netRiskPct.toFixed(1)}%)`);
+      continue;
+    }
+    kept.push({
+      ...o,
+      confirmSeconds: clamp(o.confirmSeconds, 0, 600),
+      minVolumeRatio: o.kind === "buy_breakout" ? clamp(o.minVolumeRatio, 0, 10) : 0,
+      maxHoldMinutes: clamp(o.maxHoldMinutes, 5, 1440),
+      netRewardPct,
+      netRiskPct,
+    });
   }
+  return { kept, dropped };
+}
+
+// Conservative combination: orders only when every model that answered has the same stance
+// (with Claude alone, Claude's plan is used), and every order must pass the fee/risk check.
+export function combine(results: ModelResult[], costPct: number, livePrice: number): Consensus {
+  const plans = results.filter((r): r is Extract<ModelResult, { ok: true }> => r.ok).map((r) => r.signal);
+  const now = Date.now();
+  const empty = {
+    orders: [] as CheckedOrder[], cancelBelow: 0, cancelAbove: 0, expiresAt: now + 30 * 60_000,
+    entryPrice: livePrice, takeProfit: livePrice, stopLoss: livePrice, holdMinutes: 0, buyBy: now, sellBy: now, netRewardPct: 0, netRiskPct: 0,
+  };
+  if (!plans.length) return { ...empty, action: "HOLD", stance: "AVOID", confidence: 0, agreement: false, note: "No model answered." };
+
+  const stances = new Set(plans.map((p) => p.stance));
+  const agreement = stances.size === 1;
+  const confidence = Math.round(plans.reduce((a, p) => a + p.confidence, 0) / plans.length);
+  if (!agreement) return { ...empty, action: "HOLD", stance: "AVOID", confidence: Math.round(confidence / 2), agreement, note: `Models disagree (${[...stances].join(" vs ")}), so standing aside.` };
+
+  const plan = plans[0];
+  const { kept, dropped } = plan.stance === "AVOID" ? { kept: [], dropped: [] } : checkOrders(plan.orders, costPct);
+  const validMs = clamp(plan.validMinutes, 5, 720) * 60_000;
+  // Default cancel range: below the lowest stop, above the highest target.
+  const cancelBelow = plan.cancelBelow > 0 ? plan.cancelBelow : kept.length ? Math.min(...kept.map((o) => o.stopLoss)) : 0;
+  const cancelAbove = plan.cancelAbove > 0 ? plan.cancelAbove : kept.length ? Math.max(...kept.map((o) => o.target)) : 0;
+  const first = kept[0];
+  const stance = plan.stance !== "AVOID" && !kept.length ? "AVOID" : plan.stance;
+  const action = stance === "BUY_NOW" ? "BUY" : stance === "AVOID" ? "SELL" : "HOLD";
+  const describe = (o: CheckedOrder) =>
+    o.kind === "buy_dip" ? `buy if it dips to $${o.triggerPrice.toPrecision(4)}` : o.kind === "buy_breakout" ? `buy if it breaks above $${o.triggerPrice.toPrecision(4)}` : `buy now up to $${o.triggerPrice.toPrecision(4)}`;
+  let note =
+    stance === "AVOID"
+      ? plan.stance === "AVOID"
+        ? "Claude says stay out for now."
+        : `No order passed the fee/risk check (${dropped.join("; ")}).`
+      : `Standing orders: ${kept.map(describe).join(" or ")}.`;
+  if (kept.length && dropped.length) note += ` Dropped: ${dropped.join("; ")}.`;
+  if (plans.length > 1) note += ` All ${plans.length} models agree.`;
 
   return {
-    action: finalAction,
+    action,
+    stance,
     confidence,
-    entryPrice,
-    takeProfit,
-    stopLoss,
-    holdMinutes,
-    buyBy: now + buyWindow * 60_000,
-    sellBy: now + (buyWindow + holdMinutes) * 60_000,
-    netRewardPct,
-    netRiskPct,
+    orders: kept,
+    cancelBelow,
+    cancelAbove,
+    expiresAt: now + validMs,
+    entryPrice: first?.triggerPrice ?? livePrice,
+    takeProfit: first?.target ?? livePrice,
+    stopLoss: first?.stopLoss ?? livePrice,
+    holdMinutes: first?.maxHoldMinutes ?? 0,
+    buyBy: now + validMs,
+    sellBy: now + validMs + (first?.maxHoldMinutes ?? 0) * 60_000,
+    netRewardPct: first?.netRewardPct ?? 0,
+    netRiskPct: first?.netRiskPct ?? 0,
     agreement,
     note,
   };

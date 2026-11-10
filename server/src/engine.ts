@@ -1,7 +1,7 @@
 // Paper-trading broker + automated bot.
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
-import { analyze, type Consensus, type ModelResult } from "./ai.js";
+import { analyze, type CheckedOrder, type Consensus, type ModelResult } from "./ai.js";
 import { getCandles, getPair, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
@@ -21,6 +21,10 @@ export type Position = {
   sellBy?: number;
   source: "manual" | "bot";
   lastPrice: number;
+  target?: number; // when reached, switch to a trailing stop
+  trailPct?: number; // trailing stop distance from the highest price, %
+  peak?: number; // highest price since the trailing stop started
+  trailing?: boolean;
 };
 
 export type Trade = {
@@ -55,6 +59,7 @@ export type BotConfig = {
   autoChain?: string; // all | solana | base | ethereum | bsc
   autoCandidates?: number; // how many top coins Claude checks per round
   autoMinLiquidityUsd?: number; // skip thin coins in auto mode
+  trailPct?: number; // after the target is hit, sell if price falls this % from its high (default 3)
 };
 
 export type Settings = { feePct: number; slippagePct: number };
@@ -73,6 +78,10 @@ type State = {
     config: BotConfig | null;
     lastAnalysisAt: number;
     lastTickAt: number;
+    // When each standing order's trigger was first met (for confirmSeconds); null = not met.
+    armedSince: (number | null)[];
+    // Set after a trade closes, so Claude is asked for a new plan right away.
+    askNow: boolean;
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -94,7 +103,7 @@ function fresh(startCash = 10): State {
     trades: [],
     equity: [{ t: Date.now(), v: startCash }],
     settings: { feePct: 1.0, slippagePct: 0.5 },
-    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, target: null, candidates: [], log: [] },
+    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, target: null, candidates: [], log: [] },
     lastSignal: null,
   };
 }
@@ -105,6 +114,11 @@ function migrate(s: State): State {
   s.bot.candidates ??= [];
   s.bot.target ??= null;
   s.bot.lastTickAt ??= 0;
+  s.bot.armedSince ??= [];
+  s.bot.askNow ??= false;
+  // Plans saved before standing orders existed have no "orders": drop them so
+  // the bot asks Claude for a new-style plan instead of erroring every second.
+  if (s.lastSignal && !Array.isArray(s.lastSignal.consensus?.orders)) s.lastSignal = null;
   return s;
 }
 
@@ -233,6 +247,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
   if (!snap) throw new Error("Not enough candle history for this token yet");
   const { results, consensus } = await analyze(pair, snap, candles, tf, roundTripCostPct());
   state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus };
+  state.bot.armedSince = []; // a new plan: its triggers start fresh
   save();
   return { pair, snapshot: snap, results, consensus };
 }
@@ -259,6 +274,9 @@ export function startBot(cfg: BotConfig) {
   state.bot.lastTickAt = 0;
   state.bot.target = null;
   state.bot.candidates = [];
+  state.bot.armedSince = [];
+  state.bot.askNow = false;
+  cfg.trailPct = clampNum(cfg.trailPct ?? 3, 0.5, 30);
   log(
     isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round Claude checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
@@ -294,43 +312,72 @@ export async function heartbeat() {
 }
 
 // Auto-pick: scan trending coins, ask Claude about the best few, choose the strongest BUY.
+const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
+const MIN_CLAUDE_GAP_MS = 2 * 60_000; // never ask Claude more often than this, whatever happens
+const fmt = (n: number) => `$${n.toPrecision(4)}`;
+
+// Auto-pick: scan trending coins, ask Claude for a plan on the best few, keep the best plan.
 async function autoPick(cfg: BotConfig) {
   const scan = await scanOpportunities(cfg.autoChain ?? "all", roundTripCostPct(), cfg.autoMinLiquidityUsd ?? 50_000);
   const inZone = scan.rows.filter((r) => r.plan?.verdict === "BUY ZONE").slice(0, cfg.autoCandidates ?? 3);
   state.bot.target = null;
   state.bot.candidates = [];
+  state.lastSignal = null;
   if (!inZone.length) {
-    log(`Scanned ${scan.rows.length} trending coins: none in the buy zone right now. Will look again in ${Math.round(cfg.analyzeEverySec / 60)} min.`);
+    log(`Scanned ${scan.rows.length} trending coins: none in the buy zone right now.`);
     return;
   }
-  log(`Asking Claude about ${inZone.map((r) => r.pair.symbol).join(", ")}...`);
+  log(`Asking Claude for plans on ${inZone.map((r) => r.pair.symbol).join(", ")}...`);
   let best: { pair: PairInfo; result: Awaited<ReturnType<typeof runAnalysis>> } | null = null;
+  const rank = (c: Consensus) => (c.stance === "BUY_NOW" ? 1000 : 0) + c.confidence;
   for (const row of inZone) {
     // One at a time, so CoinMarketCap's small allowance isn't used up in a burst.
     try {
       const r = await runAnalysis(row.pair.chain, row.pair.pool, cfg.tf);
       const c = r.consensus;
-      state.bot.candidates.push({ symbol: row.pair.symbol, chain: row.pair.chain, pool: row.pair.pool, action: c.action, confidence: c.confidence, note: c.note });
-      const good = c.action === "BUY" && c.confidence >= cfg.minConfidence;
-      if (good && (!best || c.confidence > best.result.consensus.confidence)) best = { pair: row.pair, result: r };
+      state.bot.candidates.push({ symbol: row.pair.symbol, chain: row.pair.chain, pool: row.pair.pool, action: c.stance === "WAIT_FOR_TRIGGER" ? "WAIT" : c.action, confidence: c.confidence, note: c.note });
+      const usable = c.orders.length > 0 && c.confidence >= cfg.minConfidence;
+      if (usable && (!best || rank(c) > rank(best.result.consensus))) best = { pair: row.pair, result: r };
     } catch (e: any) {
       state.bot.candidates.push({ symbol: row.pair.symbol, chain: row.pair.chain, pool: row.pair.pool, action: "ERROR", confidence: 0, note: String(e?.message ?? e) });
     }
   }
   const summary = state.bot.candidates.map((c) => `${c.symbol} ${c.action}${c.confidence ? ` ${c.confidence}%` : ""}`).join(", ");
+  state.lastSignal = null;
   if (!best) {
-    log(`Claude: ${summary}. No coin good enough to buy yet.`);
-    state.lastSignal = null;
+    log(`Claude: ${summary}. No usable plan yet.`);
     return;
   }
   const { pair, result } = best;
   state.bot.target = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, chosenAt: Date.now() };
   state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus };
-  log(`Claude: ${summary}. Picked ${pair.symbol}; will buy at or below $${result.consensus.entryPrice.toPrecision(5)}.`, "good");
+  log(`Claude: ${summary}. Following ${pair.symbol}'s plan. ${result.consensus.note}`, "good");
 }
 
-// persist=false skips the routine save at the end (buys/sells still save at once).
-// The watch loop uses it so it doesn't write the whole state every second.
+// Why Claude should be asked now (or null). Event-driven, plus a slow backup timer.
+function claudeDue(cfg: BotConfig, price: number | null): string | null {
+  const sig = state.lastSignal;
+  const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
+  if (state.bot.askNow) return "the last trade closed";
+  if (!sig || !tgtPool || sig.pool !== tgtPool) return state.bot.lastAnalysisAt ? "no plan to follow" : "starting up";
+  const c = sig.consensus;
+  if (Date.now() > c.expiresAt) return "the plan expired";
+  if (price !== null && c.cancelBelow > 0 && price < c.cancelBelow) return `the price fell below the plan's cancel level (${fmt(c.cancelBelow)})`;
+  if (price !== null && c.cancelAbove > 0 && price > c.cancelAbove) return `the price rose above the plan's range (${fmt(c.cancelAbove)})`;
+  if (Date.now() - state.bot.lastAnalysisAt >= cfg.analyzeEverySec * 1000) return "backup re-check";
+  return null;
+}
+
+// Is this standing order's trigger met right now?
+function triggerMet(o: CheckedOrder, pair: PairInfo) {
+  if (o.kind === "buy_dip" || o.kind === "buy_now") return pair.priceUsd <= o.triggerPrice;
+  // breakout: price above the trigger, and (if asked) recent volume above normal
+  if (pair.priceUsd < o.triggerPrice) return false;
+  if (!o.minVolumeRatio) return true;
+  const hourlyAvg5m = (pair.volume1h ?? 0) / 12;
+  return hourlyAvg5m > 0 && (pair.volume5m ?? 0) / hourlyAvg5m >= o.minVolumeRatio;
+}
+
 export async function tick(persist = true) {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg || busy) return;
@@ -351,21 +398,34 @@ export async function tick(persist = true) {
         const be = pos.entryPrice * (1 + cost / 100);
         if (!pos.stopLoss || pos.stopLoss < be) {
           pos.stopLoss = be;
-          log(`${pos.symbol} up ${gainPct.toFixed(1)}%: stop moved to break-even after fees ($${be.toPrecision(4)}).`, "good");
+          log(`${pos.symbol} up ${gainPct.toFixed(1)}%: stop moved to break-even after fees (${fmt(be)}).`, "good");
         }
       }
+      // At the target, don't sell yet: ride it with a trailing stop.
+      const trail = pos.trailPct ?? cfg.trailPct ?? 3;
+      if (!pos.trailing && pos.target && price >= pos.target) {
+        pos.trailing = true;
+        pos.peak = price;
+        log(`${pos.symbol} hit its target ${fmt(pos.target)}: now riding it, selling if it falls ${trail}% from its high.`, "good");
+      }
+      if (pos.trailing && price > (pos.peak ?? 0)) {
+        pos.peak = price;
+        dirty = true; // the high matters for the trailing stop; keep it saved
+      }
+      const trailStop = pos.trailing && pos.peak ? pos.peak * (1 - trail / 100) : 0;
       let reason = "";
-      if (pos.takeProfit && price >= pos.takeProfit) reason = "Take-profit hit";
+      if (pos.trailing && price <= trailStop) reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
       else if (pos.stopLoss && price <= pos.stopLoss) reason = gainPct > 0 ? "Break-even stop hit" : "Stop-loss hit";
-      else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Planned exit time reached";
+      else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
+      else if (!pos.target && pos.takeProfit && price >= pos.takeProfit) reason = "Take-profit hit"; // positions from before trailing stops
       if (reason) {
         const t = sell(pos.id, price, 1, reason);
-        log(`SELL ${pos.symbol} @ $${t.price.toPrecision(5)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
-        if (isAuto(cfg)) {
-          // Look for the next coin straight away.
-          state.bot.target = null;
-          state.bot.lastAnalysisAt = 0;
-        }
+        log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+        // Ask Claude for a fresh plan right away.
+        state.lastSignal = null;
+        state.bot.armedSince = [];
+        state.bot.askNow = true;
+        if (isAuto(cfg)) state.bot.target = null;
       }
       return;
     }
@@ -374,48 +434,71 @@ export async function tick(persist = true) {
     if (checkDrawdown(cfg)) return;
     if (equity() >= cfg.goalUsd) log(`Goal of $${cfg.goalUsd} reached (equity $${equity().toFixed(2)}). Consider raising the goal.`, "good");
 
-    // 2. No position: refresh the AI view on schedule (this is what costs money).
-    const due = Date.now() - state.bot.lastAnalysisAt >= cfg.analyzeEverySec * 1000;
-    if (due) {
-      // Save "asked Claude at ..." BEFORE the (slow, paid) call, so no other
-      // request or server can decide a check is due and ask again meanwhile.
+    // 2. No position: get the live price of the coin we're planning for.
+    const tgt = isAuto(cfg) ? state.bot.target : { chain: cfg.chain, pool: cfg.pool, symbol: cfg.symbol };
+    let pair = tgt ? await getPair(tgt.chain, tgt.pool) : null;
+
+    // 3. Ask Claude only when something calls for it (never more than once per 2 min).
+    const why = claudeDue(cfg, pair?.priceUsd ?? null);
+    if (why && Date.now() - state.bot.lastAnalysisAt >= MIN_CLAUDE_GAP_MS) {
+      // Save "asked Claude at ..." BEFORE the slow, paid call, so no other
+      // request or server decides a check is due and asks again meanwhile.
       state.bot.lastAnalysisAt = Date.now();
+      state.bot.askNow = false;
+      state.bot.armedSince = [];
+      log(`Asking Claude for a new plan (${why})...`);
       save();
       await flush();
       if (isAuto(cfg)) {
         await autoPick(cfg);
       } else {
-        log(`Asking Claude about ${cfg.symbol}...`);
         const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf);
-        for (const f of results) if (!f.ok) log(`${f.model} failed: ${f.error}`, "bad");
-        log(`Signal: ${consensus.action} (${consensus.confidence}% sure). ${consensus.note}`);
+        for (const f of results) if (!f.ok) log(`Claude failed: ${f.error}`, "bad");
+        log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
       }
+      const t2 = isAuto(cfg) ? state.bot.target : tgt;
+      pair = t2 ? await getPair(t2.chain, t2.pool) : null;
     }
 
-    // 3. Buy the chosen coin once its price reaches the planned entry.
-    const tgt = isAuto(cfg) ? state.bot.target : { chain: cfg.chain, pool: cfg.pool, symbol: cfg.symbol };
+    // 4. Carry out the plan's standing orders, checked every second.
     const sig = state.lastSignal;
-    if (!tgt || !sig || sig.pool !== tgt.pool) return;
+    const t3 = isAuto(cfg) ? state.bot.target : tgt;
+    if (!pair || !t3 || !sig || sig.pool !== t3.pool) return;
     const c = sig.consensus;
-    if (c.action !== "BUY" || c.confidence < cfg.minConfidence) return;
-    if (Date.now() > c.buyBy) {
-      if (isAuto(cfg)) {
-        log(`${tgt.symbol} never reached the planned buy price in time. Looking for a new coin.`);
-        state.bot.target = null;
-        state.bot.lastAnalysisAt = 0;
+    if (!c.orders.length || Date.now() > c.expiresAt) return;
+    if (c.confidence < cfg.minConfidence) return;
+    for (let i = 0; i < c.orders.length; i++) {
+      const o = c.orders[i];
+      const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;
+      if (!triggerMet(o, pair)) {
+        if (state.bot.armedSince[i]) log(`${t3.symbol} ${label} didn't hold (now ${fmt(pair.priceUsd)}); still waiting.`);
+        state.bot.armedSince[i] = null;
+        continue;
       }
+      if (!state.bot.armedSince[i]) {
+        state.bot.armedSince[i] = Date.now();
+        if (o.confirmSeconds > 0) {
+          log(`${t3.symbol} reached the ${label} at ${fmt(pair.priceUsd)}; buying if it holds for ${o.confirmSeconds}s.`);
+          continue;
+        }
+      }
+      if (Date.now() - state.bot.armedSince[i]! < o.confirmSeconds * 1000) continue;
+
+      const usd = Math.floor(state.cash * (cfg.positionPct / 100) * 100) / 100;
+      if (usd < 1) return log("Not enough cash to open a position.", "bad");
+      const t = buy(pair, usd, "bot", `Claude plan: ${label}`, {
+        stopLoss: o.stopLoss,
+        target: o.target,
+        takeProfit: o.target,
+        trailPct: cfg.trailPct ?? 3,
+        sellBy: Date.now() + o.maxHoldMinutes * 60_000,
+      });
+      log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}; at ${fmt(o.target)} it starts trailing.`, "good");
+      // The plan is used up; Claude plans again after this trade closes.
+      state.lastSignal = { ...sig, consensus: { ...c, orders: [], note: "Plan used for an entry." } };
+      state.bot.armedSince = [];
       return;
     }
-    const pair = await getPair(tgt.chain, tgt.pool);
-    const price = pair.priceUsd;
-    if (price > c.entryPrice * 1.005) return; // don't chase: wait for the planned entry
-    if (price <= c.stopLoss) return;
-
-    const usd = Math.floor(state.cash * (cfg.positionPct / 100) * 100) / 100;
-    if (usd < 1) return log("Not enough cash to open a position.", "bad");
-    const t = buy(pair, usd, "bot", `Claude BUY ${c.confidence}%`, { takeProfit: c.takeProfit, stopLoss: c.stopLoss, sellBy: c.sellBy });
-    log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ $${t.price.toPrecision(5)}. Sell at $${c.takeProfit.toPrecision(5)}, exit below $${c.stopLoss.toPrecision(5)}.`, "good");
-    state.lastSignal = { ...sig, consensus: { ...c, action: "HOLD", note: "Signal used for an entry." } };
   } catch (e: any) {
     log(`Tick error: ${e?.message ?? e}`, "bad");
   } finally {
@@ -424,15 +507,16 @@ export async function tick(persist = true) {
   }
 }
 
-// True while there's something to watch closely: an open bot position, or a
-// coin the bot is waiting to buy at its planned price.
+// True while there's something to watch closely: an open bot position, a plan
+// to fetch, or standing orders waiting to fill.
 function watching() {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg) return false;
   if (state.positions.some((p) => p.source === "bot")) return true;
+  if (state.bot.askNow) return true;
   const sig = state.lastSignal;
   const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
-  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.action === "BUY" && Date.now() < sig.consensus.buyBy);
+  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.length > 0 && Date.now() < sig.consensus.expiresAt);
 }
 
 // Serverless: run bot steps every second for up to maxMs (one scheduler call or
