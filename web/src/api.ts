@@ -43,6 +43,8 @@ export type AppState = {
     armedSince: (number | null)[];
     askNow: boolean;
     skipNoted: boolean[];
+    startedAt: number | null;
+    stoppedAt: number | null;
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];

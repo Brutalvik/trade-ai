@@ -383,6 +383,40 @@ type PresetKey = keyof typeof PRESETS;
 const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct"];
 const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
 
+// "Started 2:33:51 PM · running 12m 05s" (ticks every second), or "Stopped … · ran …".
+function fmtDuration(ms: number) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (d) return `${d}d ${h}h ${pad(m)}m`;
+  if (h) return `${h}h ${pad(m)}m ${pad(s)}s`;
+  return `${m}m ${pad(s)}s`;
+}
+
+function BotTimer({ running, startedAt, stoppedAt }: { running: boolean; startedAt: number | null; stoppedAt: number | null }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  if (!startedAt) return null;
+  const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  if (running) {
+    return (
+      <span className="bot-timer">
+        Started {clock(startedAt)} · running <b>{fmtDuration(now - startedAt)}</b>
+      </span>
+    );
+  }
+  if (!stoppedAt || stoppedAt < startedAt) return null;
+  return (
+    <span className="bot-timer">
+      Stopped {clock(stoppedAt)} · ran {fmtDuration(stoppedAt - startedAt)}
+    </span>
+  );
+}
+
 function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
@@ -439,7 +473,10 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
     <div className={`panel bot ${running ? "live" : ""}`}>
       <div className="panel-title">
         <span>AUTO-PILOT</span>
-        <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "auto" ? (target ? `AUTO-PICK → ${target.symbol}` : "AUTO-PICK · SCANNING") : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
+        <div className="pulse-wrap">
+          <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "auto" ? (target ? `AUTO-PICK → ${target.symbol}` : "AUTO-PICK · SCANNING") : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
+          <BotTimer running={running} startedAt={state?.bot.startedAt ?? null} stoppedAt={state?.bot.stoppedAt ?? null} />
+        </div>
       </div>
 
       <div className="label-sm">What should it trade?</div>

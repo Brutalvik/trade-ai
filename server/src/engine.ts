@@ -87,6 +87,8 @@ type State = {
     askNow: boolean;
     // Orders whose trigger was reached but that were skipped (logged once per plan).
     skipNoted: boolean[];
+    startedAt: number | null; // when the bot was last started (unix ms)
+    stoppedAt: number | null; // when it was last stopped (null while running)
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -108,7 +110,7 @@ function fresh(startCash = 10): State {
     trades: [],
     equity: [{ t: Date.now(), v: startCash }],
     settings: { feePct: 1.0, slippagePct: 0.5 },
-    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], target: null, candidates: [], log: [] },
+    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], startedAt: null, stoppedAt: null, target: null, candidates: [], log: [] },
     lastSignal: null,
   };
 }
@@ -122,6 +124,9 @@ function migrate(s: State): State {
   s.bot.armedSince ??= [];
   s.bot.askNow ??= false;
   s.bot.skipNoted ??= [];
+  // Bots started before start/stop times were saved: recover them from the log.
+  if (s.bot.startedAt === undefined) s.bot.startedAt = s.bot.log.find((l) => l.msg.startsWith("Bot started"))?.t ?? null;
+  if (s.bot.stoppedAt === undefined) s.bot.stoppedAt = s.bot.running ? null : (s.bot.log.find((l) => l.msg.startsWith("Bot stopped"))?.t ?? null);
   // Plans saved before standing orders existed have no "orders": drop them so
   // the bot asks Claude for a new-style plan instead of erroring every second.
   if (s.lastSignal && !Array.isArray(s.lastSignal.consensus?.orders)) s.lastSignal = null;
@@ -285,6 +290,8 @@ export function startBot(cfg: BotConfig) {
   state.bot.candidates = [];
   state.bot.armedSince = [];
   state.bot.askNow = false;
+  state.bot.startedAt = Date.now();
+  state.bot.stoppedAt = null;
   cfg.trailPct = clampNum(cfg.trailPct ?? 3, 0.5, 30);
   log(
     isAuto(cfg)
@@ -298,6 +305,7 @@ export function startBot(cfg: BotConfig) {
 
 export function stopBot(reason = "Stopped by user") {
   state.bot.running = false;
+  state.bot.stoppedAt = Date.now();
   state.bot.target = null;
   log(`Bot stopped: ${reason}`, "bad");
   if (timer) clearInterval(timer);
