@@ -2,7 +2,7 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { analyze, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
-import { getCandles, getPair, getRecentTokenCandles, type PairInfo, type Timeframe } from "./data.js";
+import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { createStore } from "./store.js";
@@ -200,6 +200,8 @@ export async function flush() {
   await pending;
 }
 
+// Saved state stays small and constant-size: newest trades, log lines and equity points only.
+const MAX_TRADES = 1000;
 const uid = () => Math.random().toString(36).slice(2, 10);
 export const roundTripCostPct = () => 2 * (state.settings.feePct + state.settings.slippagePct);
 
@@ -249,6 +251,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   }
   const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, reason, source };
   state.trades.unshift(t);
+  if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES; // keep the newest only
   recordEquity();
   save();
   return t;
@@ -271,6 +274,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
   if (f >= 0.999 || p.qty * price < 0.01) state.positions = state.positions.filter((x) => x.id !== p.id);
   const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, reason, source: p.source };
   state.trades.unshift(t);
+  if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES;
   recordEquity();
   save();
   return t;
@@ -497,11 +501,15 @@ export const CHECK_MS = 5_000;
 type Quote = { pair: PairInfo; price: number; low: number; high: number; source: string };
 
 async function quote(chain: string, pool: string, sinceMs: number): Promise<Quote> {
+  // Fetch the live price and the 5-second candles at the same time (token is known
+  // after the first lookup), so a check takes one network round-trip, not two.
+  const token = knownToken(pool);
+  const candlesP = token ? getRecentTokenCandles(chain, token).catch(() => null) : null;
   const pair = await getPair(chain, pool);
   let price = pair.priceUsd, low = price, high = price, source = "DexScreener";
   try {
     if (pair.tokenAddress) {
-      const candles = await getRecentTokenCandles(chain, pair.tokenAddress);
+      const candles = (candlesP && pair.tokenAddress === token ? await candlesP : null) ?? (await getRecentTokenCandles(chain, pair.tokenAddress));
       const last = candles.at(-1);
       const nowS = Date.now() / 1000;
       // Use CoinMarketCap only if it's current and agrees with this pool's price.

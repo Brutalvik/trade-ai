@@ -17,6 +17,8 @@ export type PairInfo = {
   volume24h: number;
   volume5m?: number; // for breakout volume checks
   volume1h?: number;
+  buys1h?: number; // number of buy / sell trades in the last hour (scanner pressure score)
+  sells1h?: number;
   liquidityUsd: number;
   marketCap: number;
   imageUrl?: string;
@@ -103,6 +105,15 @@ async function cachedJson<T>(url: string, ttlMs: number, opts: FetchOpts = {}): 
 
 const num = (v: unknown) => (v == null || v === "" ? 0 : Number(v));
 
+// pool -> token address. A pool's token never changes, so once known we can fetch the
+// token's candles at the same time as the pool's live price instead of one after the other.
+const tokenOfPool = new Map<string, string>();
+export const knownToken = (pool: string) => tokenOfPool.get(pool);
+const rememberToken = (p: PairInfo) => {
+  if (p.pool && p.tokenAddress) tokenOfPool.set(p.pool, p.tokenAddress);
+  return p;
+};
+
 function fromDexScreener(p: any): PairInfo {
   return {
     chain: p.chainId,
@@ -115,6 +126,8 @@ function fromDexScreener(p: any): PairInfo {
     volume24h: num(p.volume?.h24),
     volume5m: num(p.volume?.m5),
     volume1h: num(p.volume?.h1),
+    buys1h: num(p.txns?.h1?.buys),
+    sells1h: num(p.txns?.h1?.sells),
     liquidityUsd: num(p.liquidity?.usd),
     marketCap: num(p.marketCap ?? p.fdv),
     imageUrl: p.info?.imageUrl,
@@ -136,7 +149,7 @@ export async function getPair(chain: string, pool: string): Promise<PairInfo> {
   const data = await cachedJson<any>(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${pool}`, 900);
   const p = data.pairs?.[0] ?? data.pair;
   if (!p) throw new Error("Pair not found");
-  return fromDexScreener(p);
+  return rememberToken(fromDexScreener(p));
 }
 
 // ---------- Candles, with fallbacks ----------
@@ -230,6 +243,13 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
   };
 
   // Token address + live pool price, used by CoinMarketCap and the sanity checks.
+  // If the token is already known, start the CoinMarketCap request now, in parallel
+  // with the live-price lookup (saves one network round-trip).
+  const token = hint?.tokenAddress ?? knownToken(pool);
+  const early =
+    token && primary === "cmc" && CMC_PLATFORM[chain]
+      ? fromCoinMarketCap(chain, token, tf, limit).then((c) => ({ c }), (e) => ({ e }))
+      : null;
   let info: Hint | null = null;
   try {
     info = hint?.tokenAddress ? hint : await getPair(chain, pool);
@@ -262,6 +282,12 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
 
   const viaCmc = async () => {
     if (!info?.tokenAddress) return null;
+    if (early && info.tokenAddress === token) {
+      const r = await early; // already in flight
+      if ("c" in r) return check("CoinMarketCap", r.c, 0.1) ? done(r.c, "CoinMarketCap") : null;
+      errors.push(`CoinMarketCap: ${String((r.e as Error)?.message ?? r.e)}`);
+      return null;
+    }
     return tryToken("CoinMarketCap", `CoinMarketCap:${info.tokenAddress}`, () => fromCoinMarketCap(chain, info!.tokenAddress!, tf, limit), 0.1, primary === "cmc" ? undefined : "GeckoTerminal was unavailable");
   };
   const viaGecko = async () => {
@@ -336,6 +362,10 @@ function fromGeckoPool(d: any): PairInfo | null {
       h24: num(a.price_change_percentage?.h24),
     },
     volume24h: num(a.volume_usd?.h24),
+    volume5m: num(a.volume_usd?.m5),
+    volume1h: num(a.volume_usd?.h1),
+    buys1h: num(a.transactions?.h1?.buys),
+    sells1h: num(a.transactions?.h1?.sells),
     liquidityUsd: num(a.reserve_in_usd),
     marketCap: num(a.market_cap_usd ?? a.fdv_usd),
     dex: d.relationships?.dex?.data?.id,
@@ -371,7 +401,7 @@ export async function getTrending(chain = "solana"): Promise<{ pairs: PairInfo[]
         ? "https://api.geckoterminal.com/api/v2/networks/trending_pools?page=1"
         : `https://api.geckoterminal.com/api/v2/networks/${GT_NETWORK[chain] ?? chain}/trending_pools?page=1`;
     const data = await cachedJson<any>(url, 120_000, { retries: 0 });
-    const pairs = (data.data ?? []).map(fromGeckoPool).filter(Boolean) as PairInfo[];
+    const pairs = ((data.data ?? []).map(fromGeckoPool).filter(Boolean) as PairInfo[]).map(rememberToken);
     if (pairs.length) return { pairs, source: "trending" };
   } catch {}
   return { pairs: await boostedPairs(chain), source: "boosted" };

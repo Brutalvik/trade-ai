@@ -59,7 +59,7 @@ export default function App() {
 
   useInterval(() => {
     api.state().then(setState).catch(() => {});
-  }, 5_000);
+  }, state?.bot.running ? 2_000 : 5_000, [state?.bot.running]); // faster while the bot trades, so buys/sells show up quickly
 
   // On Vercel nothing runs between requests, so while this page is open it nudges
   // the bot every 20 s (the server only does work when a step is actually due).
@@ -294,7 +294,7 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
 }
 
 function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
-  const { pair, tf, sig, results, onResult, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
+  const { pair, tf, sig, results, cost, onResult, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
   const run = async () => {
     if (!pair) return;
@@ -332,7 +332,33 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               </div>
             </div>
           )}
-          <p className="note">{sig.note}</p>
+          {(() => {
+            // Show Claude's reason right away, and for AVOID say which kind it is.
+            const r = results?.find((x) => x.ok);
+            const why = r && r.ok ? r.signal.reasoning : "";
+            const risk = r && r.ok ? r.signal.riskLevel : "";
+            const kind =
+              sig.stance !== "AVOID"
+                ? null
+                : sig.note.startsWith("No order passed")
+                  ? { label: "No profit after fees", tone: "hold", text: "Claude found trades, but none make money after the ~" + cost.toFixed(1) + "% fees and slippage per trade." }
+                  : risk === "EXTREME" || risk === "HIGH"
+                    ? { label: "Too risky right now", tone: "sell", text: "" }
+                    : { label: "No clear edge", tone: "hold", text: "The coin may be fine, but its moves are too small or unclear to beat the ~" + cost.toFixed(1) + "% cost of a trade." };
+            return (
+              <div className="why-box">
+                {kind && (
+                  <div className="why-kind">
+                    <span className={`tag ${kind.tone}`}>{kind.label}</span>
+                    {risk && <span className="muted tiny">Risk: {risk}</span>}
+                  </div>
+                )}
+                {kind?.text && <p className="small">{kind.text}</p>}
+                {why && <p className="small"><b>Claude:</b> {why}</p>}
+                {!kind && <p className="note">{sig.note}</p>}
+              </div>
+            );
+          })()}
           <div className="models">
             {results?.map((r) => (
               <details key={r.model} className="model">
@@ -447,6 +473,36 @@ function BotTimer({ running, startedAt, stoppedAt }: { running: boolean; started
   );
 }
 
+// Fees and slippage used for every simulated trade (and for Claude's profit checks).
+// Set these to your exchange's real costs (e.g. FOMO's) for realistic results.
+// Controlled by the popup: saved when the user presses Confirm.
+function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: string; setFee: (v: string) => void; setSlip: (v: string) => void }) {
+  const roundTrip = 2 * ((Number(fee) || 0) + (Number(slip) || 0));
+  return (
+    <>
+      <div className="settings-head">
+        <span>Trading costs</span>
+        <span className="muted tiny">Applies to all trades once confirmed</span>
+      </div>
+      <div className="grid2 knobs">
+        <label>
+          Fee per buy or sell (%)
+          <input type="number" step="0.1" min="0" value={fee} onChange={(e) => setFee(e.target.value)} />
+          <small>What your exchange charges on each side of a trade. Check FOMO's real fee and enter it here.</small>
+        </label>
+        <label>
+          Slippage per buy or sell (%)
+          <input type="number" step="0.1" min="0" value={slip} onChange={(e) => setSlip(e.target.value)} />
+          <small>How much worse the fill price usually is than the quoted price. Small coins with thin liquidity slip more.</small>
+        </label>
+      </div>
+      <p className="small">
+        A buy plus a sell costs about <b>{roundTrip.toFixed(1)}%</b>. A trade has to gain more than that just to break even, so lower costs mean Claude finds more trades worth taking.
+      </p>
+    </>
+  );
+}
+
 function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
@@ -454,12 +510,44 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const [autoChain, setAutoChain] = useState<ScanChain>("all");
   const [waitForHold, setWaitForHold] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
+  // Changes in the popup are drafts: Confirm keeps them, Cancel / ✕ / Escape / clicking outside undoes them.
+  const [snap, setSnap] = useState<{ cfg: typeof cfg; custom: boolean; waitForHold: boolean } | null>(null);
+  const [feeDraft, setFeeDraft] = useState("");
+  const [slipDraft, setSlipDraft] = useState("");
+  const openRules = (asCustom = false) => {
+    setSnap({ cfg, custom, waitForHold });
+    setFeeDraft(String(state?.settings.feePct ?? 1));
+    setSlipDraft(String(state?.settings.slippagePct ?? 0.5));
+    if (asCustom) setCustom(true);
+    setRulesOpen(true);
+  };
+  const cancelRules = () => {
+    if (snap) {
+      setCfg(snap.cfg);
+      setCustom(snap.custom);
+      setWaitForHold(snap.waitForHold);
+    }
+    setRulesOpen(false);
+  };
+  const confirmRules = async () => {
+    const feePct = Number(feeDraft), slippagePct = Number(slipDraft);
+    if (!(feePct >= 0 && feePct <= 10 && slippagePct >= 0 && slippagePct <= 10)) return notify("Trading costs must be between 0 and 10%", true);
+    const costsChanged = feePct !== (state?.settings.feePct ?? 1) || slippagePct !== (state?.settings.slippagePct ?? 0.5);
+    try {
+      if (costsChanged) await api.settings({ feePct, slippagePct });
+      setRulesOpen(false);
+      refresh();
+      notify(running ? (costsChanged ? "Trading costs saved." : "No changes: stop the bot to change its settings.") : "Settings confirmed. They'll be used when you start the bot.");
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
   useEffect(() => {
     if (!rulesOpen) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setRulesOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && cancelRules();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rulesOpen]);
+  }, [rulesOpen, snap]); // eslint-disable-line react-hooks/exhaustive-deps
   const shownMode = running && active ? (active.pick ?? "this") : mode;
   const shownChain = running && active ? (active.autoChain ?? "all") : autoChain;
   const candidates = running ? (state?.bot.candidates ?? []) : [];
@@ -518,7 +606,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
       <div className="label-row">
         <div className="label-sm">What should it trade?</div>
-        <button className="chip" onClick={() => setRulesOpen(true)} aria-haspopup="dialog">
+        <button className="chip" onClick={() => openRules()} aria-haspopup="dialog">
           ⓘ How it trades
         </button>
       </div>
@@ -598,18 +686,18 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             </button>
           );
         })}
-        <button role="radio" aria-checked={isCustom} className={`preset custom ${isCustom ? "on" : ""}`} onClick={() => { setCustom(true); setRulesOpen(true); }} disabled={running}>
+        <button role="radio" aria-checked={isCustom} className={`preset custom ${isCustom ? "on" : ""}`} onClick={() => openRules(true)} disabled={running}>
           Custom
         </button>
       </div>
 
 
       {rulesOpen && createPortal(
-        <div className="modal-backdrop" onClick={() => setRulesOpen(false)}>
+        <div className="modal-backdrop" onClick={cancelRules}>
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="rules-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h2 id="rules-title">How the bot trades{isCustom ? " · Custom" : preset ? ` · ${PRESETS[preset].label}` : ""}</h2>
-              <button className="chip" onClick={() => setRulesOpen(false)} aria-label="Close">
+              <button className="chip" onClick={cancelRules} aria-label="Close">
                 ✕
               </button>
             </div>
@@ -691,6 +779,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                   <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
                 </label>
               </div>
+              <TradingCosts fee={feeDraft} slip={slipDraft} setFee={setFeeDraft} setSlip={setSlipDraft} />
+            </div>
+            <div className="modal-foot">
+              <button className="btn ghost" onClick={cancelRules}>Cancel</button>
+              <button className="btn buy" onClick={confirmRules}>Confirm</button>
             </div>
           </div>
         </div>,
@@ -782,7 +875,7 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
         {data?.source === "boosted" ? (
           <span className="warn">Trending data is busy, so this list shows tokens <b>promoted (paid) on DexScreener</b>. Be extra careful.</span>
         ) : (
-          <span>Top trending coins with a quick plan from the chart (free, no AI). Click <b>Ask Claude</b> for a proper plan before buying.</span>
+          <span>Top trending coins with a quick plan from their live trading stats (free, no AI). Click <b>Ask Claude</b> for a proper plan before buying.</span>
         )}
       </div>
       {err && <p className="down small pad">{err}</p>}

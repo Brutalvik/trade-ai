@@ -228,6 +228,9 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .bot-note.pick { border-left-color: var(--violet); box-shadow: 0 0 24px rgba(180, 92, 255, 0.2), 0 12px 40px rgba(0, 0, 0, 0.55); }
 .bot-note .view { align-self: flex-start; margin-top: 4px; }
 .order.dim { opacity: 0.65; }
+.why-box { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+.why-box p { margin: 0; color: #c6d2f0; line-height: 1.45; }
+.why-kind { display: flex; align-items: center; gap: 8px; }
 .blocked { margin: 6px 0 4px; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(255, 200, 87, 0.45); background: rgba(255, 200, 87, 0.08); color: #ffe2a3; }
 .track { margin: 0 4px 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.2); }
 .track-title { font-family: Orbitron, sans-serif; font-size: 11px; letter-spacing: 1.5px; color: var(--cyan); margin-bottom: 8px; }
@@ -257,6 +260,8 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .modal-head h2 { margin: 0; font-family: Orbitron, sans-serif; font-size: 15px; letter-spacing: 1.5px; color: var(--cyan); }
 .modal-body { padding: 4px 18px 18px; overflow-y: auto; font-size: 13px; line-height: 1.55; color: #c6d2f0; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--border); background: rgba(0, 0, 0, 0.2); border-radius: 0 0 16px 16px; }
+.modal-foot .btn { min-width: 110px; }
 .modal-body h3 { font-size: 13px; color: var(--text); margin: 16px 0 4px; }
 .modal-body p { margin: 0 0 6px; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #0b1a33; border: 1px solid var(--cyan); padding: 10px 16px; border-radius: 12px; box-shadow: 0 0 30px rgba(0, 229, 255, 0.25); z-index: 50; max-width: 90vw; }
