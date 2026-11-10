@@ -6,15 +6,15 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 
 ## Features
 
-- **Live candlestick chart** (1m–1d) with EMA 9/21, volume, AI entry/take-profit/stop lines, and markers for bot trades
+- **Live candlestick chart** (1-second to 1-day, with 1s and 5s charts updating every few seconds) with EMA 9/21, volume, AI entry/take-profit/stop lines, and markers for bot trades
 - **AI signal**: Claude (optionally plus ChatGPT) gives entry, take-profit, stop, *buy-by* and *sell-by* times, confidence, and their reasoning
 - **Manual trading**: buy and sell any token at the live price
-- **Auto-pilot bot**: trades on the AI consensus, with
+- **Auto-pilot bot**: trades on Claude's calls, with Safe / Balanced / Aggressive presets and plain-English settings, plus
   - no chasing (it waits for the planned entry price)
   - a break-even stop once a trade is in profit, so a winner can't turn into a loss
   - a planned exit time
   - a drawdown kill-switch that sells everything and stops the bot
-- **Opportunity scanner**: trending Solana pools ranked by a quick technical score (no AI cost)
+- **Opportunities**: trending coins on all chains (or Solana / Base / Ethereum / BSC), each with a quick plan: buy below, sell at, exit if below, and buy-by / sell-by times (free, from the chart). "Ask Claude" gives a proper plan for any coin
 - **Growth ladder**: progress from $10 toward $15 / $20 / $100 / $1,000
 - Responsive layout: desktop, tablet and phone
 
@@ -33,7 +33,7 @@ All logic lives in the Express API, so a future **React Native** app can use the
 | GET | `/api/search?q=` | Find tokens/pools (DexScreener) |
 | GET | `/api/pair/:chain/:pool` | Live price & stats |
 | GET | `/api/candles/:chain/:pool?tf=5m` | OHLCV candles (GeckoTerminal) |
-| GET | `/api/scan` | Trending pools + technical score |
+| GET | `/api/scan?chain=all` | Trending coins (`all`, `solana`, `base`, `ethereum`, `bsc`) with a quick buy/sell plan |
 | POST | `/api/analyze` | `{chain, pool, tf}` → AI signal and final decision |
 | GET | `/api/state` | Cash, positions, trades, equity, bot status and log |
 | POST | `/api/trade` | `{side:"BUY", chain, pool, usd}` or `{side:"SELL", chain, pool, positionId, fraction}` |
@@ -74,12 +74,14 @@ FOMO (fomo.family) doesn't offer a public trading or data API. Its tokens are or
 
 Candles come from the first source that answers:
 
-1. **GeckoTerminal**: free, exact pool, about 30 calls a minute. That limit is shared per IP address, which can bite on Vercel.
-2. **CoinMarketCap**: candles by token address, free with no key. This covers memecoins on Solana and Base that exchanges don't list. Only used when its latest price is within 10% of the pool's live price and the data is current.
-3. **Coinbase, then OKX**: exchange candles for coins listed there (SOL, BONK, WIF…). Only used when the exchange price is within 3% of the pool's live price, so a copycat token can't borrow a real coin's chart.
+1. **CoinMarketCap** (primary): candles by token address, free with no key, including 1-second and 5-second candles. Its free access allows roughly one request per second, so the server spaces its calls 1.1 s apart and shares fresh results between viewers.
+2. **GeckoTerminal**: candles for the exact pool, 1 minute and up, free, about 30 calls a minute (shared per IP address).
+3. **Coinbase, then OKX**: exchange candles for listed coins (SOL, BONK, WIF…).
 4. **The last candles that loaded**, so the chart doesn't go blank.
 
-After a rate-limit reply, the server skips that source for 30 seconds. The chart legend shows which source is in use, in amber when it's a backup.
+Token-level sources (CoinMarketCap, the exchanges) are only used when their latest price matches the pool's live price and the data is current, so a copycat token can't borrow a real coin's chart. After a rate-limit reply, the server skips that source for a short while. The scanner never uses CoinMarketCap, so its burst of requests can't eat the allowance the live chart needs. The chart legend shows which source is in use, in amber when it's a backup.
+
+Small coins only get a 1-second candle in seconds when someone trades, so their 1s chart has gaps. That's real, not missing data.
 
 ## Important: realistic expectations
 

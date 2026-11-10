@@ -1,4 +1,4 @@
-export type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+export type Timeframe = "1s" | "5s" | "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 export type Candle = { time: number; open: number; high: number; low: number; close: number; volume: number };
 export type PairInfo = {
   chain: string;
@@ -35,6 +35,9 @@ export type AppState = {
   bot: { running: boolean; config: BotConfig | null; lastAnalysisAt: number; log: { t: number; msg: string; level: "info" | "good" | "bad" }[] };
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus } | null;
 };
+export type Plan = { verdict: "BUY ZONE" | "WAIT" | "AVOID"; buyBelow: number; sellAt: number; exitBelow: number; buyBy: number; sellBy: number; netGainPct: number; why: string };
+export type ScanChain = "all" | "solana" | "base" | "ethereum" | "bsc";
+export type ScanResult = { source: "trending" | "boosted"; chain: ScanChain; rows: { pair: PairInfo; snap: Snapshot | null; plan: Plan | null }[] };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
 
 async function req<T>(path: string, body?: unknown): Promise<T> {
@@ -54,7 +57,7 @@ export const api = {
     if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
     return { candles: data as Candle[], source: res.headers.get("X-Candle-Source") ?? "unknown", note: res.headers.get("X-Candle-Note") ?? "" };
   },
-  scan: () => req<{ pair: PairInfo; snap: Snapshot | null }[]>("/scan"),
+  scan: (chain: ScanChain) => req<ScanResult>(`/scan?chain=${chain}`),
   analyze: (chain: string, pool: string, tf: Timeframe) => req<Analysis>("/analyze", { chain, pool, tf }),
   state: () => req<AppState>("/state"),
   buy: (chain: string, pool: string, usd: number) => req("/trade", { side: "BUY", chain, pool, usd }),

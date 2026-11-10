@@ -18,7 +18,7 @@ function precisionFor(p: number) {
   return Math.min(12, -Math.floor(Math.log10(p)) + 3);
 }
 
-export function Chart({ candles, trades, levels }: { candles: Candle[]; trades: Trade[]; levels: Levels }) {
+export function Chart({ candles, trades, levels, seconds = false, viewKey = "" }: { candles: Candle[]; trades: Trade[]; levels: Levels; seconds?: boolean; viewKey?: string }) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const s = useRef<{ candle: ISeriesApi<"Candlestick">; vol: ISeriesApi<"Histogram">; e9: ISeriesApi<"Line">; e21: ISeriesApi<"Line">; markers: ISeriesMarkersPluginApi<Time> } | null>(null);
@@ -50,6 +50,10 @@ export function Chart({ candles, trades, levels }: { candles: Candle[]; trades: 
   }, []);
 
   useEffect(() => {
+    chart.current?.applyOptions({ timeScale: { secondsVisible: seconds } });
+  }, [seconds]);
+
+  useEffect(() => {
     if (!s.current || !candles.length) return;
     const prec = precisionFor(candles.at(-1)!.close);
     const pf = { type: "price" as const, precision: prec, minMove: Math.pow(10, -prec) };
@@ -60,10 +64,11 @@ export function Chart({ candles, trades, levels }: { candles: Candle[]; trades: 
     s.current.vol.setData(candles.map((c) => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? "rgba(0,245,160,0.35)" : "rgba(255,61,113,0.35)" })));
     s.current.e9.setData(emaLine(candles, 9));
     s.current.e21.setData(emaLine(candles, 21));
-    const key = `${candles[0].time}-${candles.length > 0}`;
-    if (fitted.current !== key) {
+    // Zoom to fit only when the coin or timeframe changes, so live updates
+    // don't keep resetting a view you have scrolled or zoomed.
+    if (fitted.current !== viewKey) {
       chart.current?.timeScale().fitContent();
-      fitted.current = key;
+      fitted.current = viewKey;
     }
   }, [candles]);
 

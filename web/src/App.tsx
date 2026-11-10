@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type Snapshot, type Timeframe } from "./api";
+import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type ScanResult, type Timeframe } from "./api";
 import { Chart } from "./Chart";
 
-const TFS: Timeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
+const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
+const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
 // Official wrapped-SOL mint, so the default never lands on a copycat token.
 const DEFAULT_PAIR = { chain: "solana", pool: "", query: "So11111111111111111111111111111111111111112" };
 
@@ -46,7 +47,7 @@ export default function App() {
       })
       .catch((e) => setSource({ source: "unavailable", note: e.message }));
     api.pair(pair.chain, pair.pool).then((p) => setPair((cur) => (cur && cur.pool === p.pool ? { ...cur, ...p } : cur))).catch(() => {});
-  }, 15_000, [pair?.pool, tf]);
+  }, tf === "1s" ? 3_000 : tf === "5s" ? 5_000 : 15_000, [pair?.pool, tf]);
 
   useInterval(() => {
     api.state().then(setState).catch(() => {});
@@ -72,16 +73,17 @@ export default function App() {
 
       <main className="layout">
         <section className="panel chart-panel">
-          <PairHeader pair={pair} tf={tf} setTf={setTf} />
-          {candles.length ? <Chart candles={candles} trades={pairTrades} levels={levels} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
+          <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles([]); } }} />
+          {candles.length ? <Chart candles={candles} trades={pairTrades} levels={levels} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
           <div className="legend">
             <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
             <span><i style={{ background: "#b45cff" }} />EMA 21</span>
             {sig?.action === "BUY" && <span className="muted">Dashed lines: AI entry / take-profit / stop</span>}
             {source && (
-              <span className={`source ${source.source === "GeckoTerminal" ? "" : "fallback"}`} title={source.note}>
+              <span className={`source ${source.source === "CoinMarketCap" ? "" : "fallback"}`} title={source.note}>
+                {isSeconds(tf) && source.source === "CoinMarketCap" && <span className="live-dot" />}
                 Data: {source.source}
-                {source.source !== "GeckoTerminal" && source.note ? ` · ${source.note}` : ""}
+                {source.source !== "CoinMarketCap" && source.note ? ` · ${source.note}` : ""}
               </span>
             )}
           </div>
@@ -105,7 +107,7 @@ export default function App() {
               </button>
             ))}
           </div>
-          {tab === "scanner" && <Scanner onSelect={selectPair} />}
+          {tab === "scanner" && <Scanner onSelect={selectPair} notify={notify} tf={tf} />}
           {tab === "positions" && <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {tab === "trades" && <Trades state={state} />}
           {tab === "log" && <BotLog state={state} />}
@@ -303,18 +305,38 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   );
 }
 
+type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number };
+const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
+  safe: { label: "Safe", blurb: "Small trades, only very confident calls, tight emergency brake.", positionPct: 50, minConfidence: 80, analyzeMin: 30, maxDrawdownPct: 15, breakEvenAtPct: 4 },
+  balanced: { label: "Balanced", blurb: "Most of your cash per trade, solid confidence required.", positionPct: 90, minConfidence: 70, analyzeMin: 15, maxDrawdownPct: 25, breakEvenAtPct: 6 },
+  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts weaker signals, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 60, analyzeMin: 10, maxDrawdownPct: 40, breakEvenAtPct: 8 },
+};
+type PresetKey = keyof typeof PRESETS;
+const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct"];
+const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
+
 function BotPanel({ pair, tf, state, notify, refresh, multi }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
-  const [cfg, setCfg] = useState({ positionPct: 90, minConfidence: 70, analyzeMin: 15, maxDrawdownPct: 25, breakEvenAtPct: 6, goalUsd: 15 });
+  const startCash = state?.startCash ?? 10;
+  const [cfg, setCfg] = useState<RiskKnobs & { goalUsd: number }>({ ...PRESETS.balanced, goalUsd: 15 });
   const set = (k: keyof typeof cfg) => (e: React.ChangeEvent<HTMLInputElement>) => setCfg({ ...cfg, [k]: Number(e.target.value) });
+  const pick = (p: PresetKey) => setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
+
+  // While running, describe what the bot is actually using.
+  const shown: RiskKnobs & { goalUsd: number } =
+    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, goalUsd: active.goalUsd } : cfg;
+  const preset = matchPreset(shown);
+  const cash = state?.cash ?? startCash;
+  const perTrade = (cash * shown.positionPct) / 100;
+  const floor = startCash * (1 - shown.maxDrawdownPct / 100);
 
   const start = async () => {
     if (!pair) return;
     const full: BotConfig = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 20, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, goalUsd: cfg.goalUsd };
     try {
       await api.startBot(full);
-      notify(`Bot started on ${pair.symbol}`);
+      notify(`Bot started on ${pair.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
       refresh();
     } catch (e: any) {
       notify(e.message, true);
@@ -331,20 +353,65 @@ function BotPanel({ pair, tf, state, notify, refresh, multi }: { pair: PairInfo 
         <span>AUTO-PILOT</span>
         <span className={`pulse ${running ? "on" : ""}`}>{running ? `RUNNING · ${active?.symbol} ${active?.tf}` : "IDLE"}</span>
       </div>
-      <div className="grid2">
-        <label>Position size %<input type="number" value={cfg.positionPct} onChange={set("positionPct")} disabled={running} /></label>
-        <label>Min confidence<input type="number" value={cfg.minConfidence} onChange={set("minConfidence")} disabled={running} /></label>
-        <label>AI check every (min)<input type="number" value={cfg.analyzeMin} onChange={set("analyzeMin")} disabled={running} /></label>
-        <label>Kill-switch drawdown %<input type="number" value={cfg.maxDrawdownPct} onChange={set("maxDrawdownPct")} disabled={running} /></label>
-        <label>Lock break-even at +%<input type="number" value={cfg.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running} /></label>
-        <label>Goal $<input type="number" value={cfg.goalUsd} onChange={set("goalUsd")} disabled={running} /></label>
+
+      <div className="presets" role="radiogroup" aria-label="Risk level">
+        {(Object.keys(PRESETS) as PresetKey[]).map((p) => (
+          <button key={p} role="radio" aria-checked={preset === p} className={`preset ${p} ${preset === p ? "on" : ""}`} onClick={() => pick(p)} disabled={running}>
+            {PRESETS[p].label}
+          </button>
+        ))}
       </div>
+      <p className="preset-blurb small">{preset ? PRESETS[preset].blurb : "Custom settings."}</p>
+
+      <ul className="plan small">
+        <li>Puts <b>{fmtUsd(perTrade)}</b> into each trade ({shown.positionPct}% of cash)</li>
+        <li>Buys only when Claude is <b>{shown.minConfidence}%+</b> sure, checking every {shown.analyzeMin} min</li>
+        <li>Locks in no-loss once a trade is up <b>{shown.breakEvenAtPct}%</b></li>
+        <li>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
+      </ul>
+
+      <details className="advanced" open={!running && !preset ? true : undefined}>
+        <summary className="small">Customize (what each setting means)</summary>
+        <div className="grid2 knobs">
+          <label>
+            Money per trade (% of cash)
+            <input type="number" value={shown.positionPct} onChange={set("positionPct")} disabled={running} />
+            <small>{shown.positionPct}% of {fmtUsd(cash)} = {fmtUsd(perTrade)} per trade. The rest stays safe as cash.</small>
+          </label>
+          <label>
+            How sure Claude must be (%)
+            <input type="number" value={shown.minConfidence} onChange={set("minConfidence")} disabled={running} />
+            <small>If Claude is less sure than this, the bot doesn't buy. Higher = fewer but safer trades.</small>
+          </label>
+          <label>
+            Ask Claude every (minutes)
+            <input type="number" value={shown.analyzeMin} onChange={set("analyzeMin")} disabled={running} />
+            <small>How often it looks for a new trade. Each check costs a few cents, so smaller = more cost.</small>
+          </label>
+          <label>
+            Emergency stop if I lose (%)
+            <input type="number" value={shown.maxDrawdownPct} onChange={set("maxDrawdownPct")} disabled={running} />
+            <small>If your {fmtUsd(startCash)} drops below {fmtUsd(floor)}, it sells everything and switches off.</small>
+          </label>
+          <label>
+            Protect a trade once it's up (%)
+            <input type="number" value={shown.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running} />
+            <small>Once a trade is up this much, the bot won't let it turn into a loss.</small>
+          </label>
+          <label>
+            My target ($)
+            <input type="number" value={shown.goalUsd} onChange={set("goalUsd")} disabled={running} />
+            <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
+          </label>
+        </div>
+      </details>
+
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
         <button className="btn buy wide" onClick={start} disabled={!pair}>START BOT ON {pair?.symbol ?? "…"}</button>
       )}
-      <p className="muted small">{multi ? "Each AI check calls both models (costs a few cents). The bot buys only when both agree, the price is at the planned entry, and reward beats risk after fees." : "Claude is in charge: each check asks Claude (costs a few cents). The bot buys only when Claude says BUY with enough confidence, the price is at the planned entry, and reward beats risk after fees."}</p>
+      <p className="muted small">{multi ? "Each AI check calls Claude and ChatGPT (a few cents). The bot buys only when both agree and reward beats risk after fees." : "Claude is in charge. Each check is a paid Claude call (a few cents), and it only buys when reward beats risk after fees."}</p>
     </div>
   );
 }
@@ -378,42 +445,123 @@ function GoalLadder({ state }: { state: AppState | null }) {
   );
 }
 
-function Scanner({ onSelect }: { onSelect: (p: PairInfo) => void }) {
-  const [rows, setRows] = useState<{ pair: PairInfo; snap: Snapshot | null }[] | null>(null);
+const CHAIN_TABS: { id: ScanChain; label: string }[] = [
+  { id: "all", label: "All chains" },
+  { id: "solana", label: "Solana" },
+  { id: "base", label: "Base" },
+  { id: "ethereum", label: "Ethereum" },
+  { id: "bsc", label: "BSC" },
+];
+
+function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; notify: (m: string, bad?: boolean) => void; tf: Timeframe }) {
+  const [chain, setChain] = useState<ScanChain>("all");
+  const [data, setData] = useState<ScanResult | null>(null);
   const [err, setErr] = useState("");
-  const load = () => {
-    setRows(null);
+  const [ai, setAi] = useState<Record<string, Analysis["consensus"] | "loading">>({});
+
+  const load = (c = chain) => {
+    setData(null);
     setErr("");
-    api.scan().then(setRows).catch(() => setTimeout(() => api.scan().then(setRows).catch((e) => setErr(e.message)), 8000));
+    api.scan(c).then(setData).catch(() => setTimeout(() => api.scan(c).then(setData).catch((e) => setErr(e.message)), 8000));
   };
-  useEffect(load, []);
-  if (err) return <p className="down small pad">{err}</p>;
-  if (!rows) return <p className="muted small pad">Scanning trending Solana pools…</p>;
+  useEffect(() => load(chain), [chain]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const askClaude = async (p: PairInfo) => {
+    setAi((m) => ({ ...m, [p.pool]: "loading" }));
+    try {
+      const r = await api.analyze(p.chain, p.pool, tf);
+      setAi((m) => ({ ...m, [p.pool]: r.consensus }));
+    } catch (e: any) {
+      setAi((m) => {
+        const { [p.pool]: _, ...rest } = m;
+        return rest;
+      });
+      notify(e.message, true);
+    }
+  };
+
   return (
     <div className="table-wrap">
-      <div className="scan-head muted small">Trending pools ranked by a quick technical score (no AI cost). Click one, then press <b>Analyze</b> for a real entry/exit plan. <button className="chip" onClick={load}>Rescan</button></div>
-      <table>
-        <thead><tr><th>Token</th><th>Price</th><th>5m</th><th>1h</th><th>24h</th><th className="hide-sm">Liquidity</th><th className="hide-sm">RSI</th><th>Score</th><th /></tr></thead>
-        <tbody>
-          {rows.map(({ pair, snap }) => {
-            const score = snap?.techScore;
-            const label = score == null ? "n/a" : score >= 50 ? "WATCH BUY" : score <= -30 ? "AVOID" : "NEUTRAL";
-            return (
-              <tr key={pair.pool} onClick={() => onSelect(pair)}>
-                <td><b>{pair.symbol}</b></td>
-                <td className="mono">{fmtPrice(pair.priceUsd)}</td>
-                <td className={pair.change.m5 >= 0 ? "up" : "down"}>{fmtPct(pair.change.m5)}</td>
-                <td className={pair.change.h1 >= 0 ? "up" : "down"}>{fmtPct(pair.change.h1)}</td>
-                <td className={pair.change.h24 >= 0 ? "up" : "down"}>{fmtPct(pair.change.h24)}</td>
-                <td className="hide-sm">{fmtBig(pair.liquidityUsd)}</td>
-                <td className="hide-sm">{snap ? snap.rsi14.toFixed(0) : "–"}</td>
-                <td><span className={`tag ${label === "WATCH BUY" ? "buy" : label === "AVOID" ? "sell" : "hold"}`}>{label}{score != null ? ` ${score}` : ""}</span></td>
-                <td><button className="chip">Open →</button></td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="chain-tabs">
+        {CHAIN_TABS.map((t) => (
+          <button key={t.id} className={`chip ${chain === t.id ? "on" : ""}`} onClick={() => setChain(t.id)}>{t.label}</button>
+        ))}
+        <button className="chip" onClick={() => load()}>↻ Rescan</button>
+      </div>
+      <div className="scan-head muted small">
+        {data?.source === "boosted" ? (
+          <span className="warn">Trending data is busy, so this list shows tokens <b>promoted (paid) on DexScreener</b>. Be extra careful.</span>
+        ) : (
+          <span>Top trending coins with a quick plan from the chart (free, no AI). Click <b>Ask Claude</b> for a proper plan before buying.</span>
+        )}
+      </div>
+      {err && <p className="down small pad">{err}</p>}
+      {!data && !err && <p className="muted small pad">Scanning trending coins…</p>}
+      {data && !data.rows.length && <p className="muted small pad">No coins with enough liquidity right now. Try another chain.</p>}
+      {data && data.rows.length > 0 && (
+        <table className="scan">
+          <thead>
+            <tr>
+              <th>Coin</th>
+              <th>Price</th>
+              <th className="hide-sm">1h</th>
+              <th className="hide-sm">24h</th>
+              <th>Signal</th>
+              <th title="Buy only at or below this price">Buy below</th>
+              <th title="Sell for profit at this price">Sell at</th>
+              <th className="hide-sm" title="Get out if price falls below this">Exit if below</th>
+              <th className="hide-sm" title="Buy before this time, sell by this time">When</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map(({ pair, plan }) => {
+              const a = ai[pair.pool];
+              const go = plan?.verdict === "BUY ZONE";
+              return (
+                <tr key={pair.pool} onClick={() => onSelect(pair)}>
+                  <td>
+                    <b>{pair.symbol}</b>
+                    <div className="muted tiny">{pair.chain} · liq {fmtBig(pair.liquidityUsd)}</div>
+                  </td>
+                  <td className="mono">{fmtPrice(pair.priceUsd)}</td>
+                  <td className={`hide-sm ${pair.change.h1 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h1)}</td>
+                  <td className={`hide-sm ${pair.change.h24 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h24)}</td>
+                  <td title={plan?.why}>
+                    {a && a !== "loading" ? (
+                      <span className={`tag ${a.action.toLowerCase()}`}>Claude: {a.action} {a.confidence}%</span>
+                    ) : (
+                      <span className={`tag ${go ? "buy" : plan?.verdict === "AVOID" ? "sell" : "hold"}`}>{plan?.verdict ?? "DATA BUSY"}</span>
+                    )}
+                    <div className="muted tiny why">{a && a !== "loading" ? a.note : plan?.why}</div>
+                  </td>
+                  {a && a !== "loading" && a.action === "BUY" ? (
+                    <>
+                      <td className="mono up">{fmtPrice(a.entryPrice)}</td>
+                      <td className="mono up">{fmtPrice(a.takeProfit)}</td>
+                      <td className="mono down hide-sm">{fmtPrice(a.stopLoss)}</td>
+                      <td className="hide-sm small">buy by {fmtTime(a.buyBy)}<br />sell by {fmtTime(a.sellBy)}</td>
+                    </>
+                  ) : go && plan && !(a && a !== "loading") ? (
+                    <>
+                      <td className="mono">{fmtPrice(plan.buyBelow)}</td>
+                      <td className="mono up">{fmtPrice(plan.sellAt)}<div className="muted tiny">+{plan.netGainPct.toFixed(1)}% after fees</div></td>
+                      <td className="mono down hide-sm">{fmtPrice(plan.exitBelow)}</td>
+                      <td className="hide-sm small">buy by {fmtTime(plan.buyBy)}<br />sell by {fmtTime(plan.sellBy)}</td>
+                    </>
+                  ) : (
+                    <td colSpan={4} className="muted small">{a && a !== "loading" ? "Claude says don't buy now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask Claude." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}</td>
+                  )}
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask Claude"}</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      <p className="muted tiny pad">Quick plans are chart estimates, not predictions. Prices can move against any plan, especially on small coins.</p>
     </div>
   );
 }
