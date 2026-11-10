@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtPrice, fmtUsd, type AppState, type Trade } from "./api";
+import { playTradeSound } from "./sounds";
 
 type Note = { id: string; trade?: Trade; pick?: { symbol: string; chain: string; pool: string; detail: string } };
 const SHOW_MS = 20_000;
@@ -44,6 +45,9 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
     const fresh = botTrades.filter((t) => !seen.current!.has(t.id)).reverse(); // oldest first
     if (!fresh.length) return;
     for (const t of fresh) seen.current.add(t.id);
+    // One sound per batch (the newest trade): buy, profitable sell, or losing sell.
+    const latest = fresh[fresh.length - 1];
+    playTradeSound(latest.side === "BUY" ? "buy" : (latest.pnlUsd ?? 0) >= 0 ? "profit" : "loss");
     setNotes((n) => [...fresh.map((t) => ({ id: t.id, trade: t })), ...n].slice(0, 4));
     for (const t of fresh) setTimeout(() => dismiss(t.id), SHOW_MS);
   }, [state?.trades]);

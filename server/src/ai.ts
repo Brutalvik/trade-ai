@@ -97,7 +97,7 @@ export type Frame = { tf: string; label: string; candles: Candle[]; snap: Snapsh
 
 const sig6 = (n: number) => Number(n.toPrecision(6)); // keep prompts compact; tiny prices keep full detail
 
-function buildPrompt(pair: PairInfo, frames: Frame[], costPct: number) {
+function buildPrompt(pair: PairInfo, frames: Frame[], costPct: number, context = "") {
   const sections = frames.map((f) => {
     const rows = f.candles.slice(-f.show).map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
     const ind = f.snap
@@ -115,7 +115,7 @@ Current time (unix s): ${Math.floor(Date.now() / 1000)}
 Chart data on several timeframes (newest candle last). Use the longer timeframes for the trend and real support/resistance, and the 5-second candles for precise entry and exit levels. The bot checks prices every 5 seconds using 5-second candles.
 
 ${sections.join("\n\n")}
-
+${context ? `\n${context}\n` : ""}
 Write your trading plan (standing orders) for roughly the next few hours.`;
 }
 
@@ -156,8 +156,8 @@ async function timed(model: string, fn: () => Promise<Plan>): Promise<ModelResul
   }
 }
 
-export async function analyze(pair: PairInfo, frames: Frame[], costPct: number) {
-  const prompt = buildPrompt(pair, frames, costPct);
+export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "") {
+  const prompt = buildPrompt(pair, frames, costPct, context);
   const jobs: Promise<ModelResult>[] = [];
   if (hasClaude()) jobs.push(timed(`Claude (${CLAUDE_MODEL})`, () => askClaude(prompt)));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));

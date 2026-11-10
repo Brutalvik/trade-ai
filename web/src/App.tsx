@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
+import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -157,6 +159,33 @@ export default function App() {
   );
 }
 
+// Speaker button before the PAPER MODE chip: mutes/unmutes the bot's trade sounds.
+function SoundToggle() {
+  const [muted, setMutedState] = useState(isMuted());
+  useEffect(() => unlockAudioOnFirstGesture(), []);
+  const toggle = () => {
+    const next = !muted;
+    setMuted(next);
+    setMutedState(next);
+    if (!next) playTradeSound("buy"); // a quick preview so you know sounds are on
+  };
+  return (
+    <button className="sound-toggle" onClick={toggle} aria-pressed={muted} aria-label={muted ? "Unmute trade sounds" : "Mute trade sounds"} title={muted ? "Trade sounds off (click to turn on)" : "Trade sounds on (click to mute)"}>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" fillOpacity="0.15" />
+        {muted ? (
+          <line x1="3" y1="3" x2="21" y2="21" />
+        ) : (
+          <>
+            <path d="M15.5 9a4 4 0 0 1 0 6" />
+            <path d="M18 6.5a7.5 7.5 0 0 1 0 11" />
+          </>
+        )}
+      </svg>
+    </button>
+  );
+}
+
 function TopBar({ status, state, onSelect }: { status: Status | null; state: AppState | null; onSelect: (p: PairInfo) => void }) {
   const [q, setQ] = useState("");
   const [res, setRes] = useState<PairInfo[]>([]);
@@ -193,6 +222,7 @@ function TopBar({ status, state, onSelect }: { status: Status | null; state: App
         )}
       </div>
       <div className="stats">
+        <SoundToggle />
         <span className="badge paper">PAPER MODE</span>
         <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="Claude API key">Claude</span>
         {status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
@@ -373,14 +403,14 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   );
 }
 
-type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number };
+type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number };
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
-  safe: { label: "Safe", blurb: "Small trades, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2 },
-  balanced: { label: "Balanced", blurb: "Most of your cash per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3 },
-  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5 },
+  safe: { label: "Safe", blurb: "Small trades, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7 },
+  balanced: { label: "Balanced", blurb: "Most of your cash per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10 },
+  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15 },
 };
 type PresetKey = keyof typeof PRESETS;
-const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct"];
+const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct"];
 const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
 
 // "Started 2:33:51 PM · running 12m 05s" (ticks every second), or "Stopped … · ran …".
@@ -423,6 +453,13 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const [mode, setMode] = useState<"this" | "auto">("this");
   const [autoChain, setAutoChain] = useState<ScanChain>("all");
   const [waitForHold, setWaitForHold] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  useEffect(() => {
+    if (!rulesOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setRulesOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [rulesOpen]);
   const shownMode = running && active ? (active.pick ?? "this") : mode;
   const shownChain = running && active ? (active.autoChain ?? "all") : autoChain;
   const candidates = running ? (state?.bot.candidates ?? []) : [];
@@ -445,7 +482,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
-    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, goalUsd: active.goalUsd } : cfg;
+    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, goalUsd: active.goalUsd } : cfg;
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
@@ -455,7 +492,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const start = async () => {
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, waitForHold };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct };
     try {
       await api.startBot(full);
       notify(mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
@@ -479,7 +516,12 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         </div>
       </div>
 
-      <div className="label-sm">What should it trade?</div>
+      <div className="label-row">
+        <div className="label-sm">What should it trade?</div>
+        <button className="chip" onClick={() => setRulesOpen(true)} aria-haspopup="dialog">
+          ⓘ How it trades
+        </button>
+      </div>
       <div className="presets two" role="radiogroup" aria-label="What to trade">
         <button role="radio" aria-checked={shownMode === "this"} className={`preset balanced ${shownMode === "this" ? "on" : ""}`} onClick={() => setMode("this")} disabled={running}>
           {running && shownMode === "this" ? active?.symbol : `This coin${pair ? ` (${pair.symbol})` : ""}`}
@@ -499,6 +541,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         </>
       )}
 
+      {running && state?.bot.blocked && (
+        <div className="blocked small">
+          <b>Not trading right now:</b> {state.bot.blocked}.
+        </div>
+      )}
       {running && (
         <div className="bot-status small">
           {botPos ? (
@@ -555,16 +602,6 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
           Custom
         </button>
       </div>
-      <p className="preset-blurb small">{isCustom ? "Your own numbers. Type them below; each box explains what it does." : PRESETS[preset!].blurb}</p>
-
-      <ul className="plan small">
-        <li>Puts <b>{fmtUsd(perTrade)}</b> into each trade ({shown.positionPct}% of cash)</li>
-        <li>Claude writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
-        <li>Sells below Claude's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
-        <li>At Claude's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
-        <li>Asks Claude again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
-        <li>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
-      </ul>
 
       {isCustom && (
         <div className="custom-box">
@@ -600,6 +637,21 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             <small>After Claude's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
           </label>
           <label>
+            Skip dips if it fell more than (% in 1 hour)
+            <input type="number" value={shown.maxDrop1hPct} onChange={set("maxDrop1hPct")} disabled={running} />
+            <small>A crash is not a dip. If the coin dropped more than this in the last hour (or its 1-hour trend is down), the bot won't buy dips. Breakout buys are still allowed.</small>
+          </label>
+          <label>
+            Cool-down after a loss (minutes)
+            <input type="number" value={shown.cooldownMin} onChange={set("cooldownMin")} disabled={running} />
+            <small>After a losing trade, the bot won't buy that coin again for this long. After 2 losses in a row it skips the coin for the rest of the day.</small>
+          </label>
+          <label>
+            Daily loss limit (%)
+            <input type="number" value={shown.dailyLossPct} onChange={set("dailyLossPct")} disabled={running} />
+            <small>If the account loses this much in one day, the bot stops opening new trades until midnight UTC ({new Date(Date.UTC(2000, 0, 1)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} your time). Open trades still sell normally.</small>
+          </label>
+          <label>
             My target ($)
             <input type="number" value={shown.goalUsd} onChange={set("goalUsd")} disabled={running} />
             <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
@@ -608,13 +660,41 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         </div>
       )}
 
-      <label className="check small">
-        <input type="checkbox" checked={running ? Boolean(active?.waitForHold) : waitForHold} onChange={(e) => setWaitForHold(e.target.checked)} disabled={running} />
-        <span>
-          Wait for the price to hold before buying
-          <span className="muted tiny"> · Off: buys the instant a trigger price is hit. On: waits the few seconds Claude suggests, so it doesn't buy into a spike or a crash that's still going. Sells are always instant.</span>
-        </span>
-      </label>
+      {rulesOpen && createPortal(
+        <div className="modal-backdrop" onClick={() => setRulesOpen(false)}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="rules-title" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2 id="rules-title">How the bot trades{isCustom ? " · Custom" : preset ? ` · ${PRESETS[preset].label}` : ""}</h2>
+              <button className="chip" onClick={() => setRulesOpen(false)} aria-label="Close">
+                ✕
+              </button>
+            </div>
+            <div className="modal-body rules-body">
+              <p className="preset-blurb small">{isCustom ? "Your own numbers. Type them below; each box explains what it does." : PRESETS[preset!].blurb}</p>
+
+              <ul className="plan small">
+                <li>Puts <b>{fmtUsd(perTrade)}</b> into each trade ({shown.positionPct}% of cash)</li>
+                <li>Claude writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
+                <li>Sells below Claude's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
+                <li>At Claude's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
+                <li>Asks Claude again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
+                <li>No dip buys while a coin is falling (down more than <b>{shown.maxDrop1hPct}%</b> in an hour, or a 1-hour downtrend)</li>
+                <li>After a losing trade, waits <b>{shown.cooldownMin} min</b> before re-buying that coin; skips it for the day after 2 losses in a row</li>
+                <li>Stops opening trades for the day after losing <b>{shown.dailyLossPct}%</b> in a day</li>
+                <li>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
+              </ul>
+              <label className="check small">
+                <input type="checkbox" checked={running ? Boolean(active?.waitForHold) : waitForHold} onChange={(e) => setWaitForHold(e.target.checked)} disabled={running} />
+                <span>
+                  Wait for the price to hold before buying
+                  <span className="muted tiny"> · Off: buys the instant a trigger price is hit. On: waits the few seconds Claude suggests, so it doesn't buy into a spike or a crash that's still going. Sells are always instant.</span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>,
+        document.body, // render at page level: the panel's blur effect would otherwise trap the popup inside it
+      )}
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
@@ -804,6 +884,36 @@ function Positions({ state, notify, refresh }: { state: AppState | null; notify:
   );
 }
 
+// Claude's track record: predicted win chance vs how often bot trades actually reached the target.
+function TrackRecord({ state }: { state: AppState | null }) {
+  const sells = (state?.trades ?? []).filter((t) => t.source === "bot" && t.side === "SELL");
+  if (!sells.length) return null;
+  const scored = sells.filter((t) => typeof t.predictedWinPct === "number");
+  const pnl = sells.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+  const avgPred = scored.length ? scored.reduce((a, t) => a + t.predictedWinPct!, 0) / scored.length : null;
+  const hitRate = scored.length ? (scored.filter((t) => t.reachedTarget).length / scored.length) * 100 : null;
+  const profitable = sells.filter((t) => (t.pnlUsd ?? 0) > 0).length;
+  return (
+    <div className="track">
+      <div className="track-title">Claude's track record</div>
+      <div className="track-grid">
+        <div><small>Bot trades</small><b>{sells.length}</b></div>
+        <div><small>Profitable</small><b>{profitable} of {sells.length}</b></div>
+        <div><small>Bot P&amp;L</small><b className={pnl >= 0 ? "up" : "down"}>{pnl >= 0 ? "+" : ""}{fmtUsd(pnl)}</b></div>
+        <div><small>Claude predicted</small><b>{avgPred === null ? "–" : `${avgPred.toFixed(0)}% win`}</b></div>
+        <div><small>Actually reached target</small><b>{hitRate === null ? "–" : `${hitRate.toFixed(0)}%`}</b></div>
+      </div>
+      <p className="muted tiny">
+        {scored.length < 20
+          ? `Only ${scored.length} scored trade${scored.length === 1 ? "" : "s"} so far: too few to judge. After 20–30, compare "predicted" with "actually reached": if the real rate stays well below the prediction, Claude's odds are too optimistic for this market.`
+          : avgPred !== null && hitRate !== null && hitRate < avgPred - 10
+            ? "Claude's odds have been too optimistic: real results are clearly below its predictions. Raise the minimum win chance or trade less."
+            : "Real results are close to Claude's predictions so far."}
+      </p>
+    </div>
+  );
+}
+
 function Trades({ state }: { state: AppState | null }) {
   if (!state?.trades.length) return <p className="muted small pad">No trades yet.</p>;
   const closed = state.trades.filter((t) => t.pnlUsd != null);
@@ -811,6 +921,7 @@ function Trades({ state }: { state: AppState | null }) {
   const fees = state.trades.reduce((s, t) => s + t.feeUsd, 0);
   return (
     <div className="table-wrap">
+      <TrackRecord state={state} />
       <div className="scan-head muted small">Win rate {closed.length ? ((wins / closed.length) * 100).toFixed(0) : 0}% over {closed.length} closed trades · fees paid {fmtUsd(fees)}</div>
       <table>
         <thead><tr><th>Time</th><th>Side</th><th>Token</th><th>Price</th><th>USD</th><th>P&L</th><th className="hide-sm">Reason</th></tr></thead>

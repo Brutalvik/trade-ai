@@ -25,6 +25,7 @@ export type Position = {
   trailPct?: number; // trailing stop distance from the highest price, %
   peak?: number; // highest price since the trailing stop started
   trailing?: boolean;
+  predictedWinPct?: number; // Claude's win chance for the order that opened it
 };
 
 export type Trade = {
@@ -40,6 +41,10 @@ export type Trade = {
   pnlUsd?: number;
   reason: string;
   source: "manual" | "bot";
+  // Bot trades: Claude's predicted win chance for the order, and (on the sell)
+  // whether the price actually reached the target before the trade closed.
+  predictedWinPct?: number;
+  reachedTarget?: boolean;
 };
 
 export type BotConfig = {
@@ -63,6 +68,10 @@ export type BotConfig = {
   // false = wait for the price to hold past the trigger for the order's confirmSeconds.
   // Anything else (default) = buy the instant the trigger price is hit.
   waitForHold?: boolean;
+  // Safety rules (defaults apply when missing, including bots started before they existed).
+  cooldownMin?: number; // after a losing trade, don't re-buy that coin for this long (default 30)
+  dailyLossPct?: number; // stop opening trades for the rest of the UTC day after losing this % (default 10)
+  maxDrop1hPct?: number; // no dip buys if the coin fell more than this % in the last hour (default 10)
 };
 
 export type Settings = { feePct: number; slippagePct: number };
@@ -89,12 +98,17 @@ type State = {
     skipNoted: boolean[];
     startedAt: number | null; // when the bot was last started (unix ms)
     stoppedAt: number | null; // when it was last stopped (null while running)
+    // Per-coin losing streaks (for the cool-down) and today's starting equity (for the daily limit).
+    coinStats: Record<string, { losses: number; lastLossAt: number; lossDay: string }>;
+    day: { date: string; startEquity: number } | null;
+    blocked: string | null; // why the bot isn't trading right now (shown in the panel)
+    noted: Record<string, number>; // one-time log messages already written
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean } | null;
 };
 
 const store = createStore();
@@ -110,7 +124,7 @@ function fresh(startCash = 10): State {
     trades: [],
     equity: [{ t: Date.now(), v: startCash }],
     settings: { feePct: 1.0, slippagePct: 0.5 },
-    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], startedAt: null, stoppedAt: null, target: null, candidates: [], log: [] },
+    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], startedAt: null, stoppedAt: null, coinStats: {}, day: null, blocked: null, noted: {}, target: null, candidates: [], log: [] },
     lastSignal: null,
   };
 }
@@ -129,6 +143,25 @@ function migrate(s: State): State {
   s.bot.startedAt ??= s.bot.log.find((l) => l.msg.startsWith("Bot started"))?.t ?? null;
   if (s.bot.running) s.bot.stoppedAt = null;
   else s.bot.stoppedAt ??= s.bot.log.find((l) => l.msg.startsWith("Bot stopped"))?.t ?? null;
+  s.bot.noted ??= {};
+  s.bot.blocked ??= null;
+  if (!s.bot.coinStats || !Object.keys(s.bot.coinStats).length) {
+    // Rebuild today's losing streaks from the bot's trade history.
+    s.bot.coinStats = {};
+    const today = utcDay();
+    for (const tr of s.trades.slice().reverse()) {
+      if (tr.source !== "bot" || tr.side !== "SELL" || utcDay(tr.time) !== today) continue;
+      const cs = (s.bot.coinStats[tr.pool] ??= { losses: 0, lastLossAt: 0, lossDay: today });
+      if ((tr.pnlUsd ?? 0) < 0) {
+        cs.losses++;
+        cs.lastLossAt = tr.time;
+      } else cs.losses = 0;
+    }
+  }
+  if (!s.bot.day) {
+    const dayStart = Date.parse(utcDay() + "T00:00:00Z");
+    s.bot.day = { date: utcDay(), startEquity: s.equity.find((e) => e.t >= dayStart)?.v ?? s.startCash };
+  }
   // Plans saved before standing orders existed have no "orders": drop them so
   // the bot asks Claude for a new-style plan instead of erroring every second.
   if (s.lastSignal && !Array.isArray(s.lastSignal.consensus?.orders)) s.lastSignal = null;
@@ -283,8 +316,18 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
   const primary = frames.find((f) => f.tf === "5m" && f.snap) ?? frames.find((f) => f.snap);
   if (!primary?.snap) throw new Error("Not enough candle history for this token yet");
   const snap = primary.snap;
-  const { results, consensus } = await analyze(pair, frames, roundTripCostPct());
-  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus };
+  const recent = state.trades.filter((t) => t.pool === pool && t.source === "bot" && t.side === "SELL").slice(0, 5);
+  const context = [
+    recent.length
+      ? `Recent bot trades on this coin (newest first): ${recent.map((t) => `${new Date(t.time).toISOString().slice(11, 16)} UTC ${(t.pnlUsd ?? 0) >= 0 ? "+" : ""}$${(t.pnlUsd ?? 0).toFixed(2)} (${t.reason})`).join("; ")}.`
+      : "No recent bot trades on this coin.",
+    "Bot rules: it will NOT fill dip or buy-now orders while the 1-hour trend is down or the coin fell more than ~10% in the last hour (a crash is not a dip); breakout orders are still allowed. After a losing trade it waits before re-buying the coin, and skips the coin for the day after 2 losses in a row.",
+  ].join("\n");
+  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context);
+  // Downtrend on the 1-hour chart: fast average below slow average and price below the slow one.
+  const h1 = frames.find((f) => f.tf === "1h")?.snap;
+  const trendDown = h1 ? h1.ema9 < h1.ema21 && h1.price < h1.ema21 : false;
+  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
   save();
@@ -354,6 +397,42 @@ export async function heartbeat() {
 }
 
 // Auto-pick: scan trending coins, ask Claude about the best few, choose the strongest BUY.
+// ---------- Safety rules ----------
+const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);
+const clock = (ms: number) => new Date(ms).toISOString().slice(11, 16) + " UTC";
+
+// Write a log line only once per key (keys include a day / plan / loss time so they reset naturally).
+function noteOnce(key: string, msg: string, level: "info" | "good" | "bad" = "info") {
+  if (state.bot.noted[key]) return;
+  state.bot.noted[key] = Date.now();
+  for (const [k, at] of Object.entries(state.bot.noted)) if (Date.now() - at > 2 * 86_400_000) delete state.bot.noted[k];
+  log(msg, level);
+}
+
+function setBlocked(reason: string | null, key?: string) {
+  if (state.bot.blocked !== reason) dirty = true;
+  state.bot.blocked = reason;
+  if (reason && key) noteOnce(key, `Not trading: ${reason}.`, "bad");
+}
+
+// Daily loss limit: no new trades for the rest of the UTC day after losing this much since midnight.
+function dailyBlock(cfg: BotConfig): string | null {
+  const today = utcDay();
+  if (!state.bot.day || state.bot.day.date !== today) state.bot.day = { date: today, startEquity: equity() };
+  const limit = cfg.dailyLossPct ?? 10;
+  const lostPct = ((state.bot.day.startEquity - equity()) / state.bot.day.startEquity) * 100;
+  return lostPct >= limit ? `daily loss limit reached (down ${lostPct.toFixed(1)}% today, limit ${limit}%); resumes at 00:00 UTC` : null;
+}
+
+// Cool-down: after a loss, wait before re-buying the coin; after 2 losses in a row, skip it for the day.
+function coinBlock(cfg: BotConfig, pool: string, symbol: string): string | null {
+  const cs = state.bot.coinStats[pool];
+  if (!cs || !cs.losses) return null;
+  if (cs.losses >= 2 && cs.lossDay === utcDay()) return `${symbol} lost ${cs.losses} trades in a row today, so it's skipped until 00:00 UTC`;
+  const until = cs.lastLossAt + (cfg.cooldownMin ?? 30) * 60_000;
+  return Date.now() < until ? `cooling down on ${symbol} after a losing trade, until ${clock(until)}` : null;
+}
+
 const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
 const MIN_CLAUDE_GAP_MS = 2 * 60_000; // never ask Claude more often than this, whatever happens
 const fmt = (n: number) => `$${n.toPrecision(4)}`;
@@ -361,7 +440,7 @@ const fmt = (n: number) => `$${n.toPrecision(4)}`;
 // Auto-pick: scan trending coins, ask Claude for a plan on the best few, keep the best plan.
 async function autoPick(cfg: BotConfig) {
   const scan = await scanOpportunities(cfg.autoChain ?? "all", roundTripCostPct(), cfg.autoMinLiquidityUsd ?? 50_000);
-  const inZone = scan.rows.filter((r) => r.plan?.verdict === "BUY ZONE").slice(0, cfg.autoCandidates ?? 3);
+  const inZone = scan.rows.filter((r) => r.plan?.verdict === "BUY ZONE" && !coinBlock(cfg, r.pair.pool, r.pair.symbol)).slice(0, cfg.autoCandidates ?? 3);
   state.bot.target = null;
   state.bot.candidates = [];
   state.lastSignal = null;
@@ -517,6 +596,14 @@ export async function tick(persist = true) {
       }
       if (reason) {
         const t = sell(pos.id, sellAt, 1, reason);
+        t.predictedWinPct = pos.predictedWinPct;
+        t.reachedTarget = Boolean(pos.trailing); // trailing only starts once the target was reached
+        const cs = (state.bot.coinStats[pos.pool] ??= { losses: 0, lastLossAt: 0, lossDay: utcDay() });
+        if (t.pnlUsd! < 0) {
+          cs.losses = cs.lossDay === utcDay() ? cs.losses + 1 : 1;
+          cs.lastLossAt = Date.now();
+          cs.lossDay = utcDay();
+        } else cs.losses = 0;
         log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
         // Ask Claude for a fresh plan right away.
         state.lastSignal = null;
@@ -529,10 +616,19 @@ export async function tick(persist = true) {
 
     recordEquity();
     if (checkDrawdown(cfg)) return;
-    if (equity() >= cfg.goalUsd) log(`Goal of $${cfg.goalUsd} reached (equity $${equity().toFixed(2)}). Consider raising the goal.`, "good");
+    if (equity() >= cfg.goalUsd) noteOnce(`goal:${utcDay()}`, `Goal of $${cfg.goalUsd} reached (equity $${equity().toFixed(2)}). Consider raising the goal.`, "good");
 
-    // 2. No position: get the live price of the coin we're planning for.
+    // 2. Safety rules: daily loss limit for the whole account, cool-down per coin.
+    const daily = dailyBlock(cfg);
+    if (daily) return setBlocked(daily, `daily:${utcDay()}`);
+    if (isAuto(cfg) && state.bot.target && coinBlock(cfg, state.bot.target.pool, state.bot.target.symbol)) {
+      state.bot.target = null; // pick another coin
+      state.lastSignal = null;
+    }
     const tgt = isAuto(cfg) ? state.bot.target : { chain: cfg.chain, pool: cfg.pool, symbol: cfg.symbol };
+    const coin = tgt ? coinBlock(cfg, tgt.pool, tgt.symbol) : null;
+    if (coin) return setBlocked(coin, `coin:${tgt!.pool}:${state.bot.coinStats[tgt!.pool]?.lastLossAt}`);
+    setBlocked(null);
     // Only count price moves after the current plan was made.
     const planSince = () => Math.max(windowStart, state.lastSignal?.at ?? 0);
     let q = tgt ? await quote(tgt.chain, tgt.pool, planSince()) : null;
@@ -571,6 +667,16 @@ export async function tick(persist = true) {
       const o = c.orders[i];
       const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;
       // Orders below the user's minimum win chance are never used, but say so when their trigger is hit.
+      // Trend filter: a crash is not a dip.
+      if (o.kind !== "buy_breakout") {
+        const drop = pair.change.h1;
+        const maxDrop = cfg.maxDrop1hPct ?? 10;
+        if (sig.trendDown || drop <= -maxDrop) {
+          if (triggerMet(o, q))
+            noteOnce(`trend:${sig.at}:${i}`, `${t3.symbol} reached the ${label}, but it's falling (${sig.trendDown ? "1-hour trend is down" : `${drop.toFixed(1)}% in the last hour`}), so dip orders are paused. A crash is not a dip.`);
+          continue;
+        }
+      }
       if (o.winChancePct < cfg.minConfidence) {
         if (triggerMet(o, q) && !state.bot.skipNoted[i]) {
           state.bot.skipNoted[i] = true;
@@ -603,6 +709,7 @@ export async function tick(persist = true) {
         takeProfit: o.target,
         trailPct: cfg.trailPct ?? 3,
         sellBy: Date.now() + o.maxHoldMinutes * 60_000,
+        predictedWinPct: o.winChancePct,
       });
       log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}; at ${fmt(o.target)} it starts trailing.`, "good");
       // The plan is used up; Claude plans again after this trade closes.
