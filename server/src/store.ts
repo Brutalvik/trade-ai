@@ -31,11 +31,28 @@ const localLock = {
 
 const KEY = "trade-ai:state";
 
+// Finds Upstash's REST settings under any prefix: Vercel's integration lets you
+// pick one (KV_REST_API_URL, STORAGE_KV_REST_API_URL, ...); Upstash's own docs
+// use UPSTASH_REDIS_REST_URL. The token must share the URL's prefix.
 function redisFromEnv(): Redis | null {
-  // Vercel's Upstash integration sets KV_REST_API_*; Upstash's own docs use UPSTASH_REDIS_REST_*.
-  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-  return url && token ? new Redis({ url, token }) : null;
+  const env = process.env;
+  const pairs: [string, string][] = [["KV_REST_API_URL", "KV_REST_API_TOKEN"], ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"]];
+  for (const name of Object.keys(env)) {
+    if (name.endsWith("_REST_API_URL")) pairs.push([name, name.replace(/_URL$/, "_TOKEN")]);
+    if (name.endsWith("_REDIS_REST_URL")) pairs.push([name, name.replace(/_URL$/, "_TOKEN")]);
+  }
+  for (const [u, t] of pairs) {
+    const url = env[u], token = env[t];
+    if (url?.startsWith("https://") && token) return new Redis({ url, token });
+  }
+  return null;
+}
+
+// Names (never values) of database-looking settings, to diagnose a missing connection.
+export function storageEnvNames() {
+  return Object.keys(process.env)
+    .filter((n) => /REDIS|^KV_|_KV_|UPSTASH|_REST_API_/i.test(n))
+    .sort();
 }
 
 function fileStore(): Store {

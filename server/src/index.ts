@@ -5,6 +5,7 @@ import { hasClaude, hasOpenAI } from "./ai.js";
 import { getCandlesWithSource, getPair, searchPairs, type Timeframe } from "./data.js";
 import * as engine from "./engine.js";
 import { scanOpportunities } from "./scan.js";
+import { storageEnvNames } from "./store.js";
 
 const app = express();
 app.use(cors());
@@ -33,6 +34,8 @@ app.get(
     mode: "paper",
     storage: engine.storeKind(), // "redis" | "file" | "temp" (temp = Vercel without Redis: the bot can't stay on)
     serverless: Boolean(process.env.VERCEL), // true = the dashboard must send heartbeats to keep the bot ticking
+    // Only when storage isn't working: names (not values) of database settings the server can see.
+    ...(engine.storeKind() === "temp" ? { storageEnvNames: storageEnvNames() } : {}),
   })),
 );
 app.get("/api/search", wrap(async (req) => searchPairs(String(req.query.q ?? ""))));
