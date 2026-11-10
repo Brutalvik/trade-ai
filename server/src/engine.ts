@@ -1,7 +1,7 @@
 // Paper-trading broker + automated bot.
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
-import { analyze, type CheckedOrder, type Consensus, type ModelResult } from "./ai.js";
+import { analyze, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
 import { getCandles, getPair, getRecentTokenCandles, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
@@ -255,12 +255,35 @@ export function reset(startCash: number) {
 
 // ---------- AI signal (shared by UI and bot) ----------
 
+// What Claude sees for each plan: zoomed in for timing, zoomed out for the bigger picture.
+const PLAN_FRAMES: { tf: Timeframe; label: string; show: number }[] = [
+  { tf: "5s", label: "5-second candles (last ~5 minutes): precise timing", show: 60 },
+  { tf: "5m", label: "5-minute candles (last ~5 hours): today's swings, support and resistance", show: 60 },
+  { tf: "1h", label: "1-hour candles (last ~2 days): the trend", show: 48 },
+  { tf: "1d", label: "1-day candles (last ~month): the big picture", show: 30 },
+];
+
 export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
   const pair = await getPair(chain, pool);
-  const candles = await getCandles(chain, pool, tf, 300, pair);
-  const snap = snapshot(candles);
-  if (!snap) throw new Error("Not enough candle history for this token yet");
-  const { results, consensus } = await analyze(pair, snap, candles, tf, roundTripCostPct());
+  // One timeframe at a time (CoinMarketCap allows ~1 request/second); skip any that fail,
+  // e.g. no daily candles yet for a brand-new coin.
+  const frames: Frame[] = [];
+  for (const f of PLAN_FRAMES) {
+    // Try twice: a free data source can briefly refuse (rate limit); don't silently drop a timeframe.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const candles = await getCandles(chain, pool, f.tf, 300, pair);
+        if (candles.length) frames.push({ ...f, candles, snap: snapshot(candles) });
+        break;
+      } catch {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+  const primary = frames.find((f) => f.tf === "5m" && f.snap) ?? frames.find((f) => f.snap);
+  if (!primary?.snap) throw new Error("Not enough candle history for this token yet");
+  const snap = primary.snap;
+  const { results, consensus } = await analyze(pair, frames, roundTripCostPct());
   state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];

@@ -92,19 +92,29 @@ Rules:
 - Never promise profit. Be honest about uncertainty in confidence.
 - Prices are in USD and may be tiny numbers; keep full precision.`;
 
-function buildPrompt(pair: PairInfo, snap: Snapshot, candles: Candle[], tf: string, costPct: number) {
-  const recent = candles.slice(-60).map((c) => [c.time, c.open, c.high, c.low, c.close, Math.round(c.volume)]);
+// One timeframe of chart data for Claude.
+export type Frame = { tf: string; label: string; candles: Candle[]; snap: Snapshot | null; show: number };
+
+const sig6 = (n: number) => Number(n.toPrecision(6)); // keep prompts compact; tiny prices keep full detail
+
+function buildPrompt(pair: PairInfo, frames: Frame[], costPct: number) {
+  const sections = frames.map((f) => {
+    const rows = f.candles.slice(-f.show).map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
+    const ind = f.snap
+      ? `Indicators: EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} EMA50 ${sig6(f.snap.ema50)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} | volume ratio (last5 vs prior20) ${f.snap.volRatio.toFixed(2)} | 50-candle range ${sig6(f.snap.low50)} - ${sig6(f.snap.high50)}`
+      : "Indicators: not enough history";
+    return `## ${f.label}\n${ind}\nLast ${rows.length} candles [unix time, open, high, low, close, volume]:\n${JSON.stringify(rows)}`;
+  });
   return `Token: ${pair.symbol} (${pair.name}) on ${pair.chain}, pool ${pair.pool}
 Live price: $${pair.priceUsd}
 Liquidity: $${Math.round(pair.liquidityUsd)} | 24h volume: $${Math.round(pair.volume24h)} | Market cap: $${Math.round(pair.marketCap)}
 Change: 5m ${pair.change.m5}% | 1h ${pair.change.h1}% | 6h ${pair.change.h6}% | 24h ${pair.change.h24}%
-Timeframe: ${tf}
-Indicators: EMA9 ${snap.ema9} EMA21 ${snap.ema21} EMA50 ${snap.ema50} RSI14 ${snap.rsi14.toFixed(1)} ATR% ${snap.atrPct.toFixed(2)}
-Volume ratio (last5 vs prior20): ${snap.volRatio.toFixed(2)} | 50-candle range: ${snap.low50} - ${snap.high50}
 Round-trip cost (fees+slippage both sides): ${costPct.toFixed(2)}%
 Current time (unix s): ${Math.floor(Date.now() / 1000)}
-Last 60 candles [time, open, high, low, close, volume]:
-${JSON.stringify(recent)}
+
+Chart data on several timeframes (newest candle last). Use the longer timeframes for the trend and real support/resistance, and the 5-second candles for precise entry and exit levels. The bot checks prices every 5 seconds using 5-second candles.
+
+${sections.join("\n\n")}
 
 Write your trading plan (standing orders) for roughly the next few hours.`;
 }
@@ -146,8 +156,8 @@ async function timed(model: string, fn: () => Promise<Plan>): Promise<ModelResul
   }
 }
 
-export async function analyze(pair: PairInfo, snap: Snapshot, candles: Candle[], tf: string, costPct: number) {
-  const prompt = buildPrompt(pair, snap, candles, tf, costPct);
+export async function analyze(pair: PairInfo, frames: Frame[], costPct: number) {
+  const prompt = buildPrompt(pair, frames, costPct);
   const jobs: Promise<ModelResult>[] = [];
   if (hasClaude()) jobs.push(timed(`Claude (${CLAUDE_MODEL})`, () => askClaude(prompt)));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
