@@ -75,7 +75,7 @@ FOMO (fomo.family) doesn't offer a public trading or data API. Its tokens are or
 Candles come from the first source that answers:
 
 1. **GeckoTerminal**: free, exact pool, about 30 calls a minute. That limit is shared per IP address, which can bite on Vercel.
-2. **CoinGecko on-chain API**: same pool data with your own quota. Only used if you set `COINGECKO_API_KEY`; a free demo key works. Set `COINGECKO_PLAN=pro` for a paid key.
+2. **CoinMarketCap**: candles by token address, free with no key. This covers memecoins on Solana and Base that exchanges don't list. Only used when its latest price is within 10% of the pool's live price and the data is current.
 3. **Coinbase, then OKX**: exchange candles for coins listed there (SOL, BONK, WIF…). Only used when the exchange price is within 3% of the pool's live price, so a copycat token can't borrow a real coin's chart.
 4. **The last candles that loaded**, so the chart doesn't go blank.
 

@@ -130,12 +130,13 @@ export async function getPair(chain: string, pool: string): Promise<PairInfo> {
 
 // ---------- Candles, with fallbacks ----------
 // 1. GeckoTerminal (free, exact pool, ~30 calls/min shared per IP)
-// 2. CoinGecko on-chain API (exact pool, own quota) if COINGECKO_API_KEY is set
-// 3. Coinbase / OKX exchange candles by symbol, only when the exchange price
-//    matches the pool's live price (so a copycat token never borrows a real chart)
+// 2. CoinMarketCap DEX candles by token address (free, no key needed)
+// 3. Coinbase / OKX exchange candles by symbol
+// 2 and 3 are only used when their latest price matches the pool's live price
+// and their data is current, so a copycat token never borrows a real chart.
 // 4. The last candles that loaded successfully
 
-export type CandleSource = "GeckoTerminal" | "CoinGecko" | "Coinbase" | "OKX" | "cached";
+export type CandleSource = "GeckoTerminal" | "CoinMarketCap" | "Coinbase" | "OKX" | "cached";
 export type CandleResult = { candles: Candle[]; source: CandleSource; note?: string };
 
 const sortCandles = (c: Candle[]) => c.filter((x) => Number.isFinite(x.close) && x.close > 0).sort((a, b) => a.time - b.time);
@@ -149,15 +150,25 @@ async function fromGeckoTerminal(net: string, pool: string, tf: Timeframe, limit
   return fromOhlcvList(await cachedJson<any>(url, ttlFor(tf), { retries: 0, allowStale: false }));
 }
 
-async function fromCoinGecko(net: string, pool: string, tf: Timeframe, limit: number) {
-  const key = process.env.COINGECKO_API_KEY;
-  if (!key) throw new Error("no COINGECKO_API_KEY");
-  const pro = process.env.COINGECKO_PLAN === "pro";
-  const base = pro ? "https://pro-api.coingecko.com/api/v3/onchain" : "https://api.coingecko.com/api/v3/onchain";
-  const { unit, agg } = TF_MAP[tf];
-  const url = `${base}/networks/${net}/pools/${pool}/ohlcv/${unit}?aggregate=${agg}&limit=${limit}&currency=usd`;
-  const headers = { [pro ? "x-cg-pro-api-key" : "x-cg-demo-api-key"]: key };
-  return fromOhlcvList(await cachedJson<any>(url, ttlFor(tf), { retries: 0, allowStale: false, headers }));
+// CoinMarketCap's public k-line endpoint. Verified behaviour (2026-11):
+// it needs the TOKEN address (a pool address returns stale data), works without
+// a key only when no from/to range is sent, and returns
+// [open, high, low, close, volume, timestamp_ms, traders] oldest-first.
+const CMC_PLATFORM: Record<string, string> = { solana: "solana", base: "base", ethereum: "ethereum", bsc: "bsc", arbitrum: "arbitrum" };
+const CMC_INTERVAL: Record<Timeframe, string> = { "1m": "1min", "5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h", "1d": "1d" };
+
+async function fromCoinMarketCap(chain: string, tokenAddress: string, tf: Timeframe, limit: number) {
+  const platform = CMC_PLATFORM[chain];
+  if (!platform || !tokenAddress) throw new Error(`no CoinMarketCap platform for ${chain}`);
+  const url = `https://pro-api.coinmarketcap.com/public-api/v1/k-line/candles?platform=${platform}&address=${tokenAddress}&interval=${CMC_INTERVAL[tf]}&limit=${Math.min(limit, 300)}`;
+  const data = await cachedJson<any>(url, ttlFor(tf), { retries: 0, allowStale: false });
+  if (!Array.isArray(data?.data)) throw new Error(data?.status?.error_message ?? "no data");
+  return sortCandles(
+    (data.data as unknown[][]).map((r) => {
+      const ts = Number(r[5]);
+      return { time: Math.floor(ts > 1e12 ? ts / 1000 : ts), open: +r[0]!, high: +r[1]!, low: +r[2]!, close: +r[3]!, volume: +r[4]! };
+    }),
+  );
 }
 
 // Exchange tickers for wrapped/bridged tokens.
@@ -189,7 +200,10 @@ async function fromOkx(sym: string, tf: Timeframe, limit: number) {
 
 const lastGood = new Map<string, Candle[]>();
 
-export async function getCandlesWithSource(chain: string, pool: string, tf: Timeframe, limit = 300, hint?: { symbol: string; priceUsd: number }): Promise<CandleResult> {
+const TF_SECONDS: Record<Timeframe, number> = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 };
+type Hint = { symbol: string; priceUsd: number; tokenAddress?: string };
+
+export async function getCandlesWithSource(chain: string, pool: string, tf: Timeframe, limit = 300, hint?: Hint): Promise<CandleResult> {
   const net = GT_NETWORK[chain] ?? chain;
   if (!TF_MAP[tf]) tf = "5m";
   const key = `${chain}:${pool}:${tf}`;
@@ -199,43 +213,44 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
     return { candles, source, note };
   };
 
-  for (const [name, fn] of [
-    ["GeckoTerminal", () => fromGeckoTerminal(net, pool, tf, limit)],
-    ["CoinGecko", () => fromCoinGecko(net, pool, tf, limit)],
-  ] as const) {
-    try {
-      const c = await fn();
-      if (c.length) return done(c, name);
-    } catch (e: any) {
-      errors.push(`${name}: ${e?.message ?? e}`);
-    }
+  try {
+    const c = await fromGeckoTerminal(net, pool, tf, limit);
+    if (c.length) return done(c, "GeckoTerminal");
+  } catch (e: any) {
+    errors.push(`GeckoTerminal: ${e?.message ?? e}`);
   }
 
-  // Exchange fallback: same coin, not this exact pool, so check the price first.
+  // Backups aren't for this exact pool, so check price and freshness first.
+  let info: Hint | null = null;
   try {
-    const info = hint ?? (await getPair(chain, pool));
+    info = hint?.tokenAddress ? hint : await getPair(chain, pool);
+  } catch (e: any) {
+    errors.push(`price check: ${e?.message ?? e}`);
+  }
+  if (info) {
     const sym = exchangeSymbol(info.symbol);
-    for (const [name, fn] of [
-      ["Coinbase", () => fromCoinbase(sym, tf)],
-      ["OKX", () => fromOkx(sym, tf, limit)],
-    ] as const) {
-      const missKey = `${name}:${sym}`;
+    const backups: [CandleSource, number, () => Promise<Candle[]>, string][] = [
+      ["CoinMarketCap", 0.1, () => fromCoinMarketCap(chain, info!.tokenAddress ?? "", tf, limit), "CoinMarketCap token candles (pool data was unavailable)"],
+      ["Coinbase", 0.03, () => fromCoinbase(sym, tf), `${sym} exchange candles (pool data was unavailable)`],
+      ["OKX", 0.03, () => fromOkx(sym, tf, limit), `${sym} exchange candles (pool data was unavailable)`],
+    ];
+    for (const [name, maxDiff, fn, note] of backups) {
+      const missKey = `${name}:${name === "CoinMarketCap" ? info.tokenAddress : sym}`;
       if ((missing.get(missKey) ?? 0) > Date.now()) continue;
       try {
         const c = await fn();
-        const last = c.at(-1)?.close ?? 0;
-        const diff = info.priceUsd ? Math.abs(last - info.priceUsd) / info.priceUsd : 1;
-        if (c.length && diff <= 0.03) return done(c, name, `${sym} exchange candles (pool data was unavailable)`);
-        errors.push(`${name}: ${sym} price doesn't match this pool`);
+        const lastC = c.at(-1);
+        const diff = info.priceUsd && lastC ? Math.abs(lastC.close - info.priceUsd) / info.priceUsd : 1;
+        const fresh = lastC ? Date.now() / 1000 - lastC.time < TF_SECONDS[tf] * 3 + 600 : false;
+        if (c.length && diff <= maxDiff && fresh) return done(c, name, note);
+        errors.push(`${name}: ${!fresh ? "data is out of date" : "price doesn't match this pool"}`);
       } catch (e: any) {
         const msg = String(e?.message ?? e);
         // Remember "not listed" answers; retry temporary failures next time.
-        if (/^(400|404) |has no/.test(msg)) missing.set(missKey, Date.now() + 30 * 60_000);
+        if (/^(400|404) |has no|no CoinMarketCap platform/.test(msg)) missing.set(missKey, Date.now() + 30 * 60_000);
         errors.push(`${name}: ${msg}`);
       }
     }
-  } catch (e: any) {
-    errors.push(`price check: ${e?.message ?? e}`);
   }
 
   const stale = lastGood.get(key);
@@ -243,7 +258,7 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
   throw new Error(`No candle data right now (${errors.join("; ")})`);
 }
 
-export async function getCandles(chain: string, pool: string, tf: Timeframe, limit = 300, hint?: { symbol: string; priceUsd: number }): Promise<Candle[]> {
+export async function getCandles(chain: string, pool: string, tf: Timeframe, limit = 300, hint?: Hint): Promise<Candle[]> {
   return (await getCandlesWithSource(chain, pool, tf, limit, hint)).candles;
 }
 
