@@ -125,8 +125,10 @@ function migrate(s: State): State {
   s.bot.askNow ??= false;
   s.bot.skipNoted ??= [];
   // Bots started before start/stop times were saved: recover them from the log.
-  if (s.bot.startedAt === undefined) s.bot.startedAt = s.bot.log.find((l) => l.msg.startsWith("Bot started"))?.t ?? null;
-  if (s.bot.stoppedAt === undefined) s.bot.stoppedAt = s.bot.running ? null : (s.bot.log.find((l) => l.msg.startsWith("Bot stopped"))?.t ?? null);
+  // (The defaults above already filled these with null, so check for null, not undefined.)
+  s.bot.startedAt ??= s.bot.log.find((l) => l.msg.startsWith("Bot started"))?.t ?? null;
+  if (s.bot.running) s.bot.stoppedAt = null;
+  else s.bot.stoppedAt ??= s.bot.log.find((l) => l.msg.startsWith("Bot stopped"))?.t ?? null;
   // Plans saved before standing orders existed have no "orders": drop them so
   // the bot asks Claude for a new-style plan instead of erroring every second.
   if (s.lastSignal && !Array.isArray(s.lastSignal.consensus?.orders)) s.lastSignal = null;
