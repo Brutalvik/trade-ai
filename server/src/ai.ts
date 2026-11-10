@@ -7,7 +7,7 @@ import type { Candle, PairInfo } from "./data.js";
 import type { Snapshot } from "./indicators.js";
 
 // What Claude returns: a PLAN of standing orders the bot carries out on its own,
-// checking prices every second, without asking Claude again until something changes.
+// checking prices every 5 seconds, without asking Claude again until something changes.
 const OrderSchema = z.object({
   kind: z
     .enum(["buy_now", "buy_dip", "buy_breakout"])
@@ -78,7 +78,7 @@ export const hasOpenAI = () => process.env.ENABLE_OPENAI === "true" && Boolean(p
 
 const SYSTEM = `You are a disciplined short-term crypto trading planner for small-cap on-chain tokens (often memecoins).
 You don't place one-off calls: you write a PLAN of standing orders that a bot carries out on its own.
-The bot checks the live price every second and buys the moment an order's trigger is met (and held for confirmSeconds).
+The bot checks prices every 5 seconds, including the low and high of each 5-second candle, and buys the moment an order's trigger is touched (a dip order fills at its trigger price like a limit order).
 After buying it: sells at stopLoss if wrong; once up enough, moves the stop to break-even after fees;
 when the price reaches target, it switches to a trailing stop (sells if the price falls a set % from its highest point), and sells after maxHoldMinutes.
 You will be asked again after a trade closes, when your plan expires, or when the price leaves your cancel range.

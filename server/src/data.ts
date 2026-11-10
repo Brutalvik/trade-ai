@@ -132,7 +132,7 @@ export async function searchPairs(q: string): Promise<PairInfo[]> {
 }
 
 export async function getPair(chain: string, pool: string): Promise<PairInfo> {
-  // Short cache: the bot watches prices every second (DexScreener allows ~300 calls/min).
+  // Short cache: the bot checks prices every 5 s (DexScreener allows ~300 calls/min).
   const data = await cachedJson<any>(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${pool}`, 900);
   const p = data.pairs?.[0] ?? data.pair;
   if (!p) throw new Error("Pair not found");
@@ -300,6 +300,12 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
   const stale = lastGood.get(key);
   if (stale?.length) return { candles: stale, source: "cached", note: "Showing the last candles that loaded; live sources are busy." };
   throw new Error(`No candle data right now (${errors.join("; ")})`);
+}
+
+// The bot's price check: CoinMarketCap 5-second candles for the token. Same URL as
+// the chart's 5s view, so both share one cached request (CoinMarketCap allows ~1/s).
+export async function getRecentTokenCandles(chain: string, tokenAddress: string): Promise<Candle[]> {
+  return fromCoinMarketCap(chain, tokenAddress, "5s", 300);
 }
 
 export async function getCandles(chain: string, pool: string, tf: Timeframe, limit = 300, hint?: Hint, primary: Primary = "cmc"): Promise<Candle[]> {

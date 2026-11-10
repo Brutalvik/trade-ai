@@ -95,7 +95,7 @@ app.get(
       res.status(401);
       throw new Error("Unauthorized");
     }
-    // A scheduler calls this about once a minute; watch every second for ~50 s.
+    // A scheduler calls this about once a minute; watch every 5 s for ~50 s.
     const r = await engine.watch(50_000);
     return { ok: true, ...r, running: engine.getState().bot.running };
   }),

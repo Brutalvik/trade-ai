@@ -2,7 +2,7 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { analyze, type CheckedOrder, type Consensus, type ModelResult } from "./ai.js";
-import { getCandles, getPair, type PairInfo, type Timeframe } from "./data.js";
+import { getCandles, getPair, getRecentTokenCandles, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { createStore } from "./store.js";
@@ -320,8 +320,8 @@ function schedule() {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg) return;
   if (process.env.VERCEL) return; // driven by heartbeat / tick requests instead
-  // Every second; tick(false) saves only when something happens (not 1 write per second).
-  timer = setInterval(() => void tick(false), Math.max(1, cfg.checkEverySec) * 1000);
+  // Every 5 s; tick(false) saves only when something happens (not on every check).
+  timer = setInterval(() => void tick(false), CHECK_MS);
   void tick();
 }
 
@@ -388,26 +388,64 @@ function claudeDue(cfg: BotConfig, price: number | null): string | null {
   return null;
 }
 
-// Is this standing order's trigger met right now?
-function triggerMet(o: CheckedOrder, pair: PairInfo) {
-  if (o.kind === "buy_dip" || o.kind === "buy_now") return pair.priceUsd <= o.triggerPrice;
-  // breakout: price above the trigger, and (if asked) recent volume above normal
-  if (pair.priceUsd < o.triggerPrice) return false;
+// ---------- Price checks (every 5 seconds) ----------
+// Each check looks at the 5-second candles since the last check, so a brief dip
+// or spike between checks still counts, the way a real limit/stop order would fill.
+export const CHECK_MS = 5_000;
+type Quote = { pair: PairInfo; price: number; low: number; high: number; source: string };
+
+async function quote(chain: string, pool: string, sinceMs: number): Promise<Quote> {
+  const pair = await getPair(chain, pool);
+  let price = pair.priceUsd, low = price, high = price, source = "DexScreener";
+  try {
+    if (pair.tokenAddress) {
+      const candles = await getRecentTokenCandles(chain, pair.tokenAddress);
+      const last = candles.at(-1);
+      const nowS = Date.now() / 1000;
+      // Use CoinMarketCap only if it's current and agrees with this pool's price.
+      if (last && nowS - last.time < 30 && price > 0 && Math.abs(last.close - price) / price < 0.1) {
+        const recent = candles.filter((c) => c.time + 5 > sinceMs / 1000); // candles overlapping the window
+        price = last.close;
+        low = Math.min(price, ...recent.map((c) => c.low));
+        high = Math.max(price, ...recent.map((c) => c.high));
+        source = "CoinMarketCap 5s candles";
+      }
+    }
+  } catch {
+    // fall back to the DexScreener snapshot
+  }
+  return { pair: { ...pair, priceUsd: price }, price, low, high, source };
+}
+
+// Was this standing order's trigger touched since the last check?
+function triggerMet(o: CheckedOrder, q: Quote) {
+  if (o.kind === "buy_dip" || o.kind === "buy_now") return q.low <= o.triggerPrice;
+  // breakout: price went above the trigger, and (if asked) recent volume above normal
+  if (q.high < o.triggerPrice) return false;
   if (!o.minVolumeRatio) return true;
-  const hourlyAvg5m = (pair.volume1h ?? 0) / 12;
-  return hourlyAvg5m > 0 && (pair.volume5m ?? 0) / hourlyAvg5m >= o.minVolumeRatio;
+  const hourlyAvg5m = (q.pair.volume1h ?? 0) / 12;
+  return hourlyAvg5m > 0 && (q.pair.volume5m ?? 0) / hourlyAvg5m >= o.minVolumeRatio;
+}
+
+// Fill price like a real order: a dip (limit) order fills at its price or better;
+// a breakout (stop-buy) fills at its price or worse.
+function buyFillPrice(o: CheckedOrder, q: Quote) {
+  return o.kind === "buy_breakout" ? Math.max(o.triggerPrice, q.price) : Math.min(o.triggerPrice, q.price);
 }
 
 export async function tick(persist = true) {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg || busy) return;
   busy = true;
+  // Look at candles since the previous check (at most the last minute).
+  const windowStart = Math.max(Date.now() - 60_000, (state.bot.lastTickAt || Date.now()) - CHECK_MS);
   state.bot.lastTickAt = Date.now();
   try {
-    // 1. Manage an open bot position (every tick, no AI cost).
+    // 1. Manage an open bot position (every check, no AI cost).
     const pos = state.positions.find((p) => p.source === "bot");
     if (pos) {
-      const price = (await getPair(pos.chain, pos.pool)).priceUsd;
+      const q = await quote(pos.chain, pos.pool, Math.max(pos.openedAt, windowStart));
+      const price = q.price;
       pos.lastPrice = price;
       recordEquity();
       if (checkDrawdown(cfg)) return;
@@ -423,23 +461,39 @@ export async function tick(persist = true) {
       }
       // At the target, don't sell yet: ride it with a trailing stop.
       const trail = pos.trailPct ?? cfg.trailPct ?? 3;
-      if (!pos.trailing && pos.target && price >= pos.target) {
+      let newHighThisCheck = false;
+      if (!pos.trailing && pos.target && q.high >= pos.target) {
         pos.trailing = true;
-        pos.peak = price;
+        pos.peak = q.high;
+        newHighThisCheck = true;
         log(`${pos.symbol} hit its target ${fmt(pos.target)}: now riding it, selling if it falls ${trail}% from its high.`, "good");
       }
-      if (pos.trailing && price > (pos.peak ?? 0)) {
-        pos.peak = price;
+      if (pos.trailing && q.high > (pos.peak ?? 0)) {
+        pos.peak = q.high;
+        newHighThisCheck = true;
         dirty = true; // the high matters for the trailing stop; keep it saved
       }
       const trailStop = pos.trailing && pos.peak ? pos.peak * (1 - trail / 100) : 0;
+      // Stops sell like real stop orders: at the stop price if the price touched it,
+      // or at the current price if it has already fallen further.
       let reason = "";
-      if (pos.trailing && price <= trailStop) reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
-      else if (pos.stopLoss && price <= pos.stopLoss) reason = gainPct > 0 ? "Break-even stop hit" : "Stop-loss hit";
-      else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
-      else if (!pos.target && pos.takeProfit && price >= pos.takeProfit) reason = "Take-profit hit"; // positions from before trailing stops
+      let sellAt = price;
+      // If the high was set in this same check we can't tell whether the low came
+      // before or after it, so judge the trailing stop on the latest price instead.
+      const trailLow = newHighThisCheck ? price : q.low;
+      if (pos.trailing && trailLow <= trailStop) {
+        reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
+        sellAt = Math.min(trailStop, price);
+      } else if (pos.stopLoss && q.low <= pos.stopLoss) {
+        reason = pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
+        sellAt = Math.min(pos.stopLoss, price);
+      } else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
+      else if (!pos.target && pos.takeProfit && q.high >= pos.takeProfit) {
+        reason = "Take-profit hit"; // positions from before trailing stops
+        sellAt = Math.max(pos.takeProfit, price);
+      }
       if (reason) {
-        const t = sell(pos.id, price, 1, reason);
+        const t = sell(pos.id, sellAt, 1, reason);
         log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
         // Ask Claude for a fresh plan right away.
         state.lastSignal = null;
@@ -456,10 +510,12 @@ export async function tick(persist = true) {
 
     // 2. No position: get the live price of the coin we're planning for.
     const tgt = isAuto(cfg) ? state.bot.target : { chain: cfg.chain, pool: cfg.pool, symbol: cfg.symbol };
-    let pair = tgt ? await getPair(tgt.chain, tgt.pool) : null;
+    // Only count price moves after the current plan was made.
+    const planSince = () => Math.max(windowStart, state.lastSignal?.at ?? 0);
+    let q = tgt ? await quote(tgt.chain, tgt.pool, planSince()) : null;
 
     // 3. Ask Claude only when something calls for it (never more than once per 2 min).
-    const why = claudeDue(cfg, pair?.priceUsd ?? null);
+    const why = claudeDue(cfg, q?.price ?? null);
     if (why && Date.now() - state.bot.lastAnalysisAt >= MIN_CLAUDE_GAP_MS) {
       // Save "asked Claude at ..." BEFORE the slow, paid call, so no other
       // request or server decides a check is due and asks again meanwhile.
@@ -478,13 +534,14 @@ export async function tick(persist = true) {
         log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
       }
       const t2 = isAuto(cfg) ? state.bot.target : tgt;
-      pair = t2 ? await getPair(t2.chain, t2.pool) : null;
+      q = t2 ? await quote(t2.chain, t2.pool, planSince()) : null;
     }
 
-    // 4. Carry out the plan's standing orders, checked every second.
+    // 4. Carry out the plan's standing orders, checked every 5 seconds.
     const sig = state.lastSignal;
     const t3 = isAuto(cfg) ? state.bot.target : tgt;
-    if (!pair || !t3 || !sig || sig.pool !== t3.pool) return;
+    if (!q || !t3 || !sig || sig.pool !== t3.pool) return;
+    const pair = q.pair;
     const c = sig.consensus;
     if (!c.orders.length || Date.now() > c.expiresAt) return;
     for (let i = 0; i < c.orders.length; i++) {
@@ -492,13 +549,13 @@ export async function tick(persist = true) {
       const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;
       // Orders below the user's minimum win chance are never used, but say so when their trigger is hit.
       if (o.winChancePct < cfg.minConfidence) {
-        if (triggerMet(o, pair) && !state.bot.skipNoted[i]) {
+        if (triggerMet(o, q) && !state.bot.skipNoted[i]) {
           state.bot.skipNoted[i] = true;
-          log(`${t3.symbol} reached the ${label} at ${fmt(pair.priceUsd)}, but Claude gives it only a ${o.winChancePct}% win chance, below your ${cfg.minConfidence}% minimum. Not buying.`);
+          log(`${t3.symbol} reached the ${label} (touched ${fmt(o.kind === "buy_breakout" ? q.high : q.low)}), but Claude gives it only a ${o.winChancePct}% win chance, below your ${cfg.minConfidence}% minimum. Not buying.`);
         }
         continue;
       }
-      if (!triggerMet(o, pair)) {
+      if (!triggerMet(o, q)) {
         if (state.bot.armedSince[i]) log(`${t3.symbol} ${label} didn't hold (now ${fmt(pair.priceUsd)}); still waiting.`);
         state.bot.armedSince[i] = null;
         continue;
@@ -516,7 +573,8 @@ export async function tick(persist = true) {
 
       const usd = Math.floor(state.cash * (cfg.positionPct / 100) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
-      const t = buy(pair, usd, "bot", `Claude plan: ${label}`, {
+      // Fill like a real order at the trigger price (or better/worse, see buyFillPrice).
+      const t = buy({ ...pair, priceUsd: buyFillPrice(o, q) }, usd, "bot", `Claude plan: ${label}`, {
         stopLoss: o.stopLoss,
         target: o.target,
         takeProfit: o.target,
@@ -550,7 +608,7 @@ function watching() {
   return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.some((o) => o.winChancePct >= cfg.minConfidence) && Date.now() < sig.consensus.expiresAt);
 }
 
-// Serverless: run bot steps every second for up to maxMs (one scheduler call or
+// Serverless: run bot steps every 5 seconds for up to maxMs (one scheduler call or
 // dashboard ping keeps watch for a while). A lock stops two windows overlapping.
 // Stops early when there's nothing to watch.
 export async function watch(maxMs: number) {
@@ -567,7 +625,7 @@ export async function watch(maxMs: number) {
       ticks++;
       await flush();
       if (!watching()) break; // nothing to watch closely; the next scheduled check will come
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, CHECK_MS));
     }
     return { ticks, reason: state.bot.running ? (watching() ? "window ended" : "nothing to watch") : "bot stopped" };
   } finally {

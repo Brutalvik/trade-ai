@@ -11,7 +11,7 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 - **Manual trading**: buy and sell any token at the live price
 - **Auto-pilot bot**: trades the coin on screen, or **auto-picks** the best coin each round. Safe / Balanced / Aggressive presets or your own Custom numbers. How it works:
   - **Claude writes a plan of standing orders** rather than one-off calls: *buy now*, *buy the dip* (e.g. "if it dips to $0.96 and holds 60 s"), or *buy the breakout* (e.g. "if it breaks above $1.07 with 1.5× normal volume"). Each order has an exit price, a target, a time limit and Claude's **win chance** (the odds it reaches the target before the exit price); the plan has cancel levels and an expiry. Orders are only used if they make money on average after fees (win chance × gain − loss chance × loss > 0), their gain is at least their loss, and their win chance meets your minimum. When a trigger is reached but an order is skipped, the log says why.
-  - **The bot carries the plan out on its own**, checking prices every second (free), and buys the instant an order's trigger price is hit. Optionally ("Wait for the price to hold before buying") it waits the few seconds Claude suggests first. Sells are always instant.
+  - **The bot carries the plan out on its own**, checking prices every 5 seconds (free) using 5-second candles, so even a brief dip or spike between checks counts. A dip order fills at its trigger price like a limit order; stops sell at the stop price, or lower if the price fell straight through. Optionally ("Wait for the price to hold before buying") it waits the few seconds Claude suggests first. Sells are always instant.
   - **Exits:** sells at Claude's exit price; once up enough, the stop moves to break-even after fees; at Claude's target it **rides the trend with a trailing stop** (sells if the price falls a set % from its high); it sells after the time limit.
   - **Claude is asked when something happens**: after each trade, when the plan expires, or when the price leaves the plan's range, plus a slow backup timer. Never more than once every 2 minutes.
   - **Emergency stop:** sells everything and switches off if the account falls past your limit.
@@ -39,8 +39,8 @@ All logic lives in the Express API, so a future **React Native** app can use the
 | GET | `/api/state` | Cash, positions, trades, equity, bot status and log |
 | POST | `/api/trade` | `{side:"BUY", chain, pool, usd}` or `{side:"SELL", chain, pool, positionId, fraction}` |
 | POST | `/api/bot/start` / `/api/bot/stop` | Control the auto-pilot (`pick: "this"` or `"auto"`, `autoChain`) |
-| POST | `/api/bot/heartbeat` | Sent by an open dashboard every ~20 s on Vercel: watches every second for ~18 s |
-| GET | `/api/bot/tick` | For a scheduler (needs `Authorization: Bearer $CRON_SECRET`): watches every second for ~50 s |
+| POST | `/api/bot/heartbeat` | Sent by an open dashboard every ~20 s on Vercel: watches every 5 s for ~18 s |
+| GET | `/api/bot/tick` | For a scheduler (needs `Authorization: Bearer $CRON_SECRET`): watches every 5 s for ~50 s |
 | POST | `/api/settings` | `{feePct, slippagePct}` |
 | POST | `/api/reset` | `{startCash}` resets the paper account |
 
@@ -79,10 +79,10 @@ Vercel runs the API as short-lived copies that don't share memory or disk, so tw
 3. Redeploy.
 
 **2. Something to wake the bot.**
-- While the dashboard is open, it does this itself every 20 s, and the bot watches prices every second.
-- To keep trading with the tab closed, use a free scheduler such as cron-job.org. Have it call `GET https://<your-site>/api/bot/tick` every minute with the header `Authorization: Bearer <your CRON_SECRET>`. Each call watches every second for about 50 s.
+- While the dashboard is open, it does this itself every 20 s, and the bot checks prices every 5 seconds.
+- To keep trading with the tab closed, use a free scheduler such as cron-job.org. Have it call `GET https://<your-site>/api/bot/tick` every minute with the header `Authorization: Bearer <your CRON_SECRET>`. Each call watches every 5 s for about 50 s.
 
-Storage use: while it's holding or about to buy a coin, the bot reads the saved state once a second (so a Stop from the dashboard always wins). That's about 3,600 Redis reads per hour of active watching. Check that against your Upstash plan's monthly allowance. When there's nothing to watch, it only does a quick check per wake-up.
+Storage use: while it's holding or about to buy a coin, the bot reads the saved state every 5 seconds (so a Stop from the dashboard always wins). That's about 720 Redis reads per hour of active watching. Check that against your Upstash plan's monthly allowance. When there's nothing to watch, it only does a quick check per wake-up.
 
 ## Data sources
 
