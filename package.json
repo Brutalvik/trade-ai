@@ -1,0 +1,11 @@
+{
+  "name": "trade-ai",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix web install",
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm --prefix server run dev\" \"npm --prefix web run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7"
+  }
+}
