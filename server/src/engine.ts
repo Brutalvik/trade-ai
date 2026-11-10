@@ -67,7 +67,9 @@ type State = {
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus } | null;
 };
 
-const DATA_DIR = path.resolve("data");
+// Vercel functions can only write to /tmp, and it is wiped between instances.
+// For real persistence on Vercel, swap this for a database (see README).
+const DATA_DIR = process.env.VERCEL ? "/tmp/trade-ai" : path.resolve("data");
 const FILE = path.join(DATA_DIR, "state.json");
 
 function fresh(startCash = 10): State {
@@ -221,11 +223,12 @@ function schedule() {
   if (timer) clearInterval(timer);
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg) return;
+  if (process.env.VERCEL) return void tick(); // no long-lived timers on Vercel; /api/bot/tick drives it
   timer = setInterval(() => void tick(), Math.max(10, cfg.checkEverySec) * 1000);
   void tick();
 }
 
-async function tick() {
+export async function tick() {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg || busy) return;
   busy = true;

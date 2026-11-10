@@ -57,6 +57,17 @@ Keys go in `server/.env` (git ignores this file):
 - `OPENAI_API_KEY`: from platform.openai.com
 - Optional: `CLAUDE_MODEL` (default `claude-opus-5-5`), `OPENAI_MODEL` (default `gpt-5`)
 
+## Deploy to Vercel
+
+`vercel.json` deploys this repo as one Vercel project with two services:
+
+- `web` (Vite) is public at `/`
+- `server` (Express) is public at `/api/*` and receives the full `/api/...` path
+
+The browser calls `/api` on the same domain, so the services don't call each other directly and need no bindings. Add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `CRON_SECRET` in the Vercel project's environment variables. Run `vercel dev` to test both services together.
+
+**The bot on Vercel:** Vercel functions don't stay running, so the bot can't loop on a timer there. Something has to call `GET /api/bot/tick` (with `Authorization: Bearer $CRON_SECRET`) on a schedule. Also, paper-account state is saved to `/tmp`, which Vercel can wipe at any time. For a bot that runs reliably on Vercel, move the state to a database (Upstash Redis, Neon Postgres) and add a scheduler. To run the bot on a normal server, use `npm run dev` or `npm --prefix server start`; there it loops by itself.
+
 ## Data sources
 
 FOMO (fomo.family) doesn't offer a public trading or data API. Its tokens are ordinary on-chain Solana tokens, though, so this app reads the same pools from DexScreener and GeckoTerminal. Both are free and need no key. GeckoTerminal limits you to about 30 calls a minute, so the server throttles and caches its requests.

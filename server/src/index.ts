@@ -69,7 +69,27 @@ app.post("/api/reset", wrap(async (req) => engine.reset(Number(req.body.startCas
 app.post("/api/bot/start", wrap(async (req) => engine.startBot(req.body)));
 app.post("/api/bot/stop", wrap(async () => engine.stopBot()));
 
-const port = Number(process.env.PORT ?? 8787);
-app.listen(port, () => {
-  console.log(`API on http://localhost:${port}  | Claude: ${hasClaude() ? "on" : "off"}  ChatGPT: ${hasOpenAI() ? "on" : "off"}  | PAPER mode`);
-});
+// One bot step. Locally a timer calls this; on Vercel (no long-lived process)
+// a scheduler must hit it. Protected by CRON_SECRET when that is set.
+app.get(
+  "/api/bot/tick",
+  wrap(async (req, res) => {
+    const secret = process.env.CRON_SECRET;
+    if (secret && req.headers.authorization !== `Bearer ${secret}`) {
+      res.status(401);
+      return { error: "Unauthorized" };
+    }
+    await engine.tick();
+    return { ok: true, running: engine.getState().bot.running };
+  }),
+);
+
+// Vercel runs the exported app as a function; locally we listen on a port.
+if (!process.env.VERCEL) {
+  const port = Number(process.env.PORT ?? 8787);
+  app.listen(port, () => {
+    console.log(`API on http://localhost:${port}  | Claude: ${hasClaude() ? "on" : "off"}  ChatGPT: ${hasOpenAI() ? "on" : "off"}  | PAPER mode`);
+  });
+}
+
+export default app;
