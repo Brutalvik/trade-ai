@@ -20,6 +20,7 @@ export default function App() {
   const [pair, setPair] = useState<PairInfo | null>(null);
   const [tf, setTf] = useState<Timeframe>("5m");
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [source, setSource] = useState<{ source: string; note: string } | null>(null);
   const [state, setState] = useState<AppState | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
@@ -37,7 +38,13 @@ export default function App() {
 
   useInterval(() => {
     if (!pair) return;
-    api.candles(pair.chain, pair.pool, tf).then(setCandles).catch(() => {});
+    api
+      .candles(pair.chain, pair.pool, tf)
+      .then((r) => {
+        setCandles(r.candles);
+        setSource({ source: r.source, note: r.note });
+      })
+      .catch((e) => setSource({ source: "unavailable", note: e.message }));
     api.pair(pair.chain, pair.pool).then((p) => setPair((cur) => (cur && cur.pool === p.pool ? { ...cur, ...p } : cur))).catch(() => {});
   }, 15_000, [pair?.pool, tf]);
 
@@ -48,6 +55,7 @@ export default function App() {
   const selectPair = (p: PairInfo) => {
     setPair(p);
     setCandles([]);
+    setSource(null);
     setAnalysis(null);
   };
 
@@ -70,6 +78,12 @@ export default function App() {
             <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
             <span><i style={{ background: "#b45cff" }} />EMA 21</span>
             {sig?.action === "BUY" && <span className="muted">Dashed lines: AI entry / take-profit / stop</span>}
+            {source && (
+              <span className={`source ${source.source === "GeckoTerminal" ? "" : "fallback"}`} title={source.note}>
+                Data: {source.source}
+                {source.source !== "GeckoTerminal" && source.note ? ` · ${source.note}` : ""}
+              </span>
+            )}
           </div>
         </section>
 

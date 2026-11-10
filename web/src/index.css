@@ -85,6 +85,8 @@ code { color: var(--cyan); }
 .chart-wrap .chart { position: absolute; inset: 0; }
 .chart.empty { flex: 1; min-height: 420px; display: grid; place-items: center; color: var(--muted); }
 .legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); padding-top: 8px; flex-wrap: wrap; }
+.legend .source { margin-left: auto; }
+.legend .source.fallback { color: var(--amber); }
 .legend i { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
 
 /* Buttons */

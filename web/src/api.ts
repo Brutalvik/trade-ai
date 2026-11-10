@@ -48,7 +48,12 @@ export const api = {
   status: () => req<{ claude: boolean; openai: boolean; mode: string }>("/status"),
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
-  candles: (chain: string, pool: string, tf: Timeframe) => req<Candle[]>(`/candles/${chain}/${pool}?tf=${tf}`),
+  candles: async (chain: string, pool: string, tf: Timeframe) => {
+    const res = await fetch(`/api/candles/${chain}/${pool}?tf=${tf}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+    return { candles: data as Candle[], source: res.headers.get("X-Candle-Source") ?? "unknown", note: res.headers.get("X-Candle-Note") ?? "" };
+  },
   scan: () => req<{ pair: PairInfo; snap: Snapshot | null }[]>("/scan"),
   analyze: (chain: string, pool: string, tf: Timeframe) => req<Analysis>("/analyze", { chain, pool, tf }),
   state: () => req<AppState>("/state"),

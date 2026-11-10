@@ -188,7 +188,8 @@ export function reset(startCash: number) {
 // ---------- AI signal (shared by UI and bot) ----------
 
 export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
-  const [pair, candles] = await Promise.all([getPair(chain, pool), getCandles(chain, pool, tf)]);
+  const pair = await getPair(chain, pool);
+  const candles = await getCandles(chain, pool, tf, 300, pair);
   const snap = snapshot(candles);
   if (!snap) throw new Error("Not enough candle history for this token yet");
   const { results, consensus } = await analyze(pair, snap, candles, tf, roundTripCostPct());

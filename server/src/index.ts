@@ -2,7 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express, { type Request, type Response } from "express";
 import { hasClaude, hasOpenAI } from "./ai.js";
-import { getCandles, getPair, getTrending, searchPairs, type Timeframe } from "./data.js";
+import { getCandles, getCandlesWithSource, getPair, getTrending, searchPairs, type Timeframe } from "./data.js";
 import * as engine from "./engine.js";
 import { snapshot } from "./indicators.js";
 
@@ -21,7 +21,16 @@ const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (r
 app.get("/api/status", wrap(async () => ({ claude: hasClaude(), openai: hasOpenAI(), mode: "paper" })));
 app.get("/api/search", wrap(async (req) => searchPairs(String(req.query.q ?? ""))));
 app.get("/api/pair/:chain/:pool", wrap(async (req) => getPair(String(req.params.chain), String(req.params.pool))));
-app.get("/api/candles/:chain/:pool", wrap(async (req) => getCandles(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m")));
+// Returns the candle array; the X-Candle-Source header says where it came from.
+app.get(
+  "/api/candles/:chain/:pool",
+  wrap(async (req, res) => {
+    const r = await getCandlesWithSource(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m");
+    res.setHeader("X-Candle-Source", r.source);
+    if (r.note) res.setHeader("X-Candle-Note", r.note);
+    return r.candles;
+  }),
+);
 
 // Opportunity scanner: trending pools ranked by a quick technical score.
 // This is a cheap pre-filter (no AI cost). Run the AI on the ones you like.
@@ -33,7 +42,7 @@ app.get(
     const rows = await Promise.all(
       trending.map(async (p) => {
         try {
-          const snap = snapshot(await getCandles(chain, p.pool, "5m", 120));
+          const snap = snapshot(await getCandles(chain, p.pool, "5m", 120, p));
           return { pair: p, snap };
         } catch {
           return { pair: p, snap: null };
