@@ -42,7 +42,9 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 let anthropic: Anthropic | null = null;
 let openai: OpenAI | null = null;
 export const hasClaude = () => Boolean(process.env.ANTHROPIC_API_KEY);
-export const hasOpenAI = () => Boolean(process.env.OPENAI_API_KEY);
+// ChatGPT is off by default: Claude alone makes the trading calls.
+// Set ENABLE_OPENAI=true (plus OPENAI_API_KEY) to add it back as a second opinion.
+export const hasOpenAI = () => process.env.ENABLE_OPENAI === "true" && Boolean(process.env.OPENAI_API_KEY);
 
 const SYSTEM = `You are a disciplined short-term crypto trading analyst for small-cap on-chain tokens (often Solana memecoins).
 Your job is to protect capital first and only call BUY when the setup has a clear edge.
@@ -112,12 +114,13 @@ export async function analyze(pair: PairInfo, snap: Snapshot, candles: Candle[],
   const jobs: Promise<ModelResult>[] = [];
   if (hasClaude()) jobs.push(timed(`Claude (${CLAUDE_MODEL})`, () => askClaude(prompt)));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
-  if (!jobs.length) throw new Error("No AI keys configured. Add ANTHROPIC_API_KEY and/or OPENAI_API_KEY to server/.env");
+  if (!jobs.length) throw new Error("Claude is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
   const results = await Promise.all(jobs);
   return { results, consensus: combine(results, costPct, pair.priceUsd) };
 }
 
 // Conservative combination: BUY only when every model that answered says BUY.
+// With Claude alone, Claude's call is the decision (still checked against fees and risk below).
 export function combine(results: ModelResult[], costPct: number, livePrice: number): Consensus {
   const sigs = results.filter((r): r is Extract<ModelResult, { ok: true }> => r.ok).map((r) => r.signal);
   const now = Date.now();

@@ -59,7 +59,7 @@ code { color: var(--cyan); }
 
 /* Layout: desktop = chart | signal+trade | bot+ladder, bottom row full width */
 .layout { position: relative; display: grid; gap: 14px; padding: 14px 20px 30px; grid-template-columns: minmax(0, 1fr) 340px 320px; grid-template-areas: "chart s1 s2" "bottom bottom bottom"; }
-.chart-panel { grid-area: chart; display: flex; flex-direction: column; min-height: 560px; }
+.chart-panel { grid-area: chart; display: flex; flex-direction: column; min-height: 560px; max-height: 80vh; }
 .layout > .side:nth-of-type(1) { grid-area: s1; }
 .layout > .side:nth-of-type(2) { grid-area: s2; }
 .bottom { grid-area: bottom; }
@@ -81,8 +81,9 @@ code { color: var(--cyan); }
 .tf { margin-left: auto; display: flex; gap: 4px; background: rgba(0, 0, 0, 0.3); padding: 3px; border-radius: 10px; border: 1px solid var(--border); }
 .tf button { background: none; border: 0; padding: 4px 10px; border-radius: 7px; font-size: 12px; color: var(--muted); }
 .tf button.on { background: rgba(0, 229, 255, 0.15); color: var(--cyan); }
-.chart { flex: 1; min-height: 420px; width: 100%; }
-.chart.empty { display: grid; place-items: center; color: var(--muted); }
+.chart-wrap { position: relative; flex: 1; min-height: 420px; }
+.chart-wrap .chart { position: absolute; inset: 0; }
+.chart.empty { flex: 1; min-height: 420px; display: grid; place-items: center; color: var(--muted); }
 .legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); padding-top: 8px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
 
@@ -179,7 +180,7 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
   .ai-dot { display: none; }
   .layout { grid-template-columns: 1fr; grid-template-areas: "chart" "s1" "s2" "bottom"; padding: 10px; gap: 10px; }
   .chart-panel { min-height: 0; }
-  .chart { min-height: 320px; }
+  .chart-wrap, .chart.empty { min-height: 340px; }
   .tf { margin-left: 0; width: 100%; justify-content: space-between; }
   .kpis { gap: 12px; }
   .hide-sm { display: none; }

@@ -74,12 +74,12 @@ export default function App() {
         </section>
 
         <aside className="side">
-          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={setAnalysis} notify={notify} hasAI={!!(status?.claude || status?.openai)} />
+          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={setAnalysis} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} />
           <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />
         </aside>
 
         <aside className="side">
-          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} />
+          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} />
           <GoalLadder state={state} />
         </aside>
 
@@ -141,7 +141,7 @@ function TopBar({ status, state, onSelect }: { status: { claude: boolean; openai
       <div className="stats">
         <span className="badge paper">PAPER MODE</span>
         <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="Claude API key">Claude</span>
-        <span className={`ai-dot ${status?.openai ? "on" : ""}`} title="OpenAI API key">GPT</span>
+        {status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
         <div className="equity">
           <small>EQUITY</small>
           <b>{fmtUsd(eq)}</b>
@@ -183,8 +183,8 @@ function PairHeader({ pair, tf, setTf }: { pair: PairInfo | null; tf: Timeframe;
   );
 }
 
-function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean }) {
-  const { pair, tf, sig, results, cost, onResult, notify, hasAI } = props;
+function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean }) {
+  const { pair, tf, sig, results, cost, onResult, notify, hasAI, multi } = props;
   const [loading, setLoading] = useState(false);
   const run = async () => {
     if (!pair) return;
@@ -203,7 +203,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         <span>AI SIGNAL</span>
         <button className="btn ghost" onClick={run} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : "Analyze"}</button>
       </div>
-      {!hasAI && <p className="muted small">Add API keys to <code>server/.env</code> to enable Claude + ChatGPT analysis.</p>}
+      {!hasAI && <p className="muted small">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> to enable Claude analysis.</p>}
       {sig ? (
         <>
           <div className={`verdict ${sig.action.toLowerCase()}`}>
@@ -232,7 +232,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
         </>
       ) : (
-        <p className="muted small">Run an analysis to get entry, take-profit and stop levels plus buy-by / sell-by times. Both models must agree before anything is called a BUY.</p>
+        <p className="muted small">Run an analysis to get entry, take-profit and stop levels plus buy-by / sell-by times. {multi ? "Both models must agree before anything is called a BUY." : "Claude only calls BUY when the reward clearly beats the risk after fees."}</p>
       )}
     </div>
   );
@@ -289,7 +289,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   );
 }
 
-function BotPanel({ pair, tf, state, notify, refresh }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
+function BotPanel({ pair, tf, state, notify, refresh, multi }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
   const [cfg, setCfg] = useState({ positionPct: 90, minConfidence: 70, analyzeMin: 15, maxDrawdownPct: 25, breakEvenAtPct: 6, goalUsd: 15 });
@@ -330,7 +330,7 @@ function BotPanel({ pair, tf, state, notify, refresh }: { pair: PairInfo | null;
       ) : (
         <button className="btn buy wide" onClick={start} disabled={!pair}>START BOT ON {pair?.symbol ?? "…"}</button>
       )}
-      <p className="muted small">Each AI check calls both models (costs a few cents). The bot buys only when both agree, the price is at the planned entry, and reward beats risk after fees.</p>
+      <p className="muted small">{multi ? "Each AI check calls both models (costs a few cents). The bot buys only when both agree, the price is at the planned entry, and reward beats risk after fees." : "Claude is in charge: each check asks Claude (costs a few cents). The bot buys only when Claude says BUY with enough confidence, the price is at the planned entry, and reward beats risk after fees."}</p>
     </div>
   );
 }

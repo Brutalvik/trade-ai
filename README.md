@@ -1,13 +1,13 @@
 # trade-ai — NEXUS//TRADE
 
-An AI-assisted crypto trading dashboard. Claude and ChatGPT both analyze a token's live candles. A trade is called a **BUY** only when both models agree and the reward still beats the risk after fees. An auto-pilot bot can then trade the signal for you.
+An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles and calls **BUY** only when the reward clearly beats the risk after fees. An auto-pilot bot can then trade the signal for you. ChatGPT can be switched on as a second opinion (`ENABLE_OPENAI=true`); then both models must agree before a BUY.
 
 > **Paper mode only (for now).** Every trade is simulated with realistic fees and slippage. No real money moves. See [Going live](#going-live) below.
 
 ## Features
 
 - **Live candlestick chart** (1m–1d) with EMA 9/21, volume, AI entry/take-profit/stop lines, and markers for bot trades
-- **AI signal**: Claude + ChatGPT run in parallel and give entry, take-profit, stop, *buy-by* and *sell-by* times, confidence, and their reasoning
+- **AI signal**: Claude (optionally plus ChatGPT) gives entry, take-profit, stop, *buy-by* and *sell-by* times, confidence, and their reasoning
 - **Manual trading**: buy and sell any token at the live price
 - **Auto-pilot bot**: trades on the AI consensus, with
   - no chasing (it waits for the planned entry price)
@@ -34,7 +34,7 @@ All logic lives in the Express API, so a future **React Native** app can use the
 | GET | `/api/pair/:chain/:pool` | Live price & stats |
 | GET | `/api/candles/:chain/:pool?tf=5m` | OHLCV candles (GeckoTerminal) |
 | GET | `/api/scan` | Trending pools + technical score |
-| POST | `/api/analyze` | `{chain, pool, tf}` → Claude + GPT signal and consensus |
+| POST | `/api/analyze` | `{chain, pool, tf}` → AI signal and final decision |
 | GET | `/api/state` | Cash, positions, trades, equity, bot status and log |
 | POST | `/api/trade` | `{side:"BUY", chain, pool, usd}` or `{side:"SELL", chain, pool, positionId, fraction}` |
 | POST | `/api/bot/start` / `/api/bot/stop` | Control the auto-pilot |
@@ -54,8 +54,8 @@ Open http://localhost:5173. The API runs on http://localhost:8787.
 Keys go in `server/.env` (git ignores this file):
 
 - `ANTHROPIC_API_KEY`: from console.anthropic.com
-- `OPENAI_API_KEY`: from platform.openai.com
-- Optional: `CLAUDE_MODEL` (default `claude-opus-5-5`), `OPENAI_MODEL` (default `gpt-5`)
+- Optional: `CLAUDE_MODEL` (default `claude-opus-5-5`)
+- Optional, off by default: `ENABLE_OPENAI=true` with `OPENAI_API_KEY` (from platform.openai.com) adds ChatGPT as a second opinion; `OPENAI_MODEL` defaults to `gpt-5`
 
 ## Deploy to Vercel
 
@@ -64,7 +64,7 @@ Keys go in `server/.env` (git ignores this file):
 - `web` (Vite) is public at `/`
 - `server` (Express) is public at `/api/*` and receives the full `/api/...` path
 
-The browser calls `/api` on the same domain, so the services don't call each other directly and need no bindings. Add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `CRON_SECRET` in the Vercel project's environment variables. Run `vercel dev` to test both services together.
+The browser calls `/api` on the same domain, so the services don't call each other directly and need no bindings. Add `ANTHROPIC_API_KEY` and `CRON_SECRET` in the Vercel project's environment variables. Run `vercel dev` to test both services together.
 
 **The bot on Vercel:** Vercel functions don't stay running, so the bot can't loop on a timer there. Something has to call `GET /api/bot/tick` (with `Authorization: Bearer $CRON_SECRET`) on a schedule. Also, paper-account state is saved to `/tmp`, which Vercel can wipe at any time. For a bot that runs reliably on Vercel, move the state to a database (Upstash Redis, Neon Postgres) and add a scheduler. To run the bot on a normal server, use `npm run dev` or `npm --prefix server start`; there it loops by itself.
 
@@ -76,7 +76,7 @@ FOMO (fomo.family) doesn't offer a public trading or data API. Its tokens are or
 
 - **No system can guarantee "no loss".** Small-cap tokens can drop 50% in minutes or be rugged. The bot reduces risk with stops, a break-even lock and a kill-switch. It cannot remove the risk.
 - **Fees matter a lot at $10.** With a 1% fee and 0.5% slippage on each side, a round trip costs about 3%, so the token has to rise more than 3% just to break even.
-- **AI calls cost money too.** Each analysis calls two models, and on a $10 account that can be a real share of your profit. Keep the AI check interval long (15 min or more).
+- **AI calls cost money too.** Each analysis is a paid Claude call, and on a $10 account that can be a real share of your profit. Keep the AI check interval long (15 min or more).
 - Run it in paper mode for a while and look at the win rate in *Trade history* before you consider real funds.
 
 ## Going live

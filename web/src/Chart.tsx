@@ -99,5 +99,11 @@ export function Chart({ candles, trades, levels }: { candles: Candle[]; trades: 
     add(levels.sl, "#ff3d71", "STOP");
   }, [levels.entry, levels.tp, levels.sl, candles.length > 0]);
 
-  return <div ref={el} className="chart" />;
+  // The chart is absolutely positioned inside a wrapper, so its size can't
+  // feed back into the layout (that loop made it grow forever).
+  return (
+    <div className="chart-wrap">
+      <div ref={el} className="chart" />
+    </div>
+  );
 }
