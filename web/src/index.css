@@ -174,6 +174,18 @@ code { color: var(--cyan); }
 .tabs button { background: none; border: 0; padding: 8px 14px; border-radius: 10px; color: var(--muted); white-space: nowrap; }
 .tabs button.on { background: rgba(0, 229, 255, 0.1); color: var(--cyan); }
 .table-wrap { overflow-x: auto; }
+.presets.four { grid-template-columns: repeat(4, 1fr); }
+.preset.on.custom { background: rgba(180, 92, 255, 0.14); color: var(--violet); box-shadow: inset 0 0 0 1px rgba(180, 92, 255, 0.45); }
+.custom-box { margin: 4px 0 6px; padding: 10px; border-radius: 12px; border: 1px solid rgba(180, 92, 255, 0.3); background: rgba(180, 92, 255, 0.05); }
+.custom-box .grid2 { margin-top: 0; }
+.presets.two { grid-template-columns: 1fr 1fr; margin-bottom: 8px; }
+.label-sm { font-size: 11px; color: var(--muted); margin: 0 2px 6px; }
+.chain-tabs.compact { padding: 0 0 4px; gap: 4px; }
+.chain-tabs.compact .chip { font-size: 11px; padding: 3px 7px; }
+.bot-status { background: rgba(0, 0, 0, 0.25); border-radius: 10px; padding: 8px 10px; margin: 6px 0 10px; display: flex; flex-direction: column; gap: 6px; }
+.bot-status .chip { margin-left: 8px; }
+.cands { display: flex; flex-wrap: wrap; gap: 4px; }
+.banner { position: relative; margin: 12px 20px 0; padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255, 200, 87, 0.45); background: rgba(255, 200, 87, 0.08); color: #ffe2a3; font-size: 13px; }
 .chain-tabs { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 10px; }
 .chip.on { border-color: var(--cyan); color: var(--cyan); background: rgba(0, 229, 255, 0.1); }
 .tiny { font-size: 10.5px; }

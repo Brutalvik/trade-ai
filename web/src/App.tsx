@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type ScanResult, type Timeframe } from "./api";
+import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart } from "./Chart";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
@@ -17,7 +17,7 @@ function useInterval(fn: () => void, ms: number, deps: unknown[] = []) {
 }
 
 export default function App() {
-  const [status, setStatus] = useState<{ claude: boolean; openai: boolean } | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
   const [pair, setPair] = useState<PairInfo | null>(null);
   const [tf, setTf] = useState<Timeframe>("5m");
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -53,6 +53,15 @@ export default function App() {
     api.state().then(setState).catch(() => {});
   }, 5_000);
 
+  // On Vercel nothing runs between requests, so while this page is open it nudges
+  // the bot every 20 s (the server only does work when a step is actually due).
+  const botRunning = state?.bot.running ?? false;
+  useInterval(() => {
+    if (status?.serverless && botRunning) api.heartbeat().catch(() => {});
+  }, 20_000, [status?.serverless, botRunning]);
+
+  const openPool = (chain: string, pool: string) => api.pair(chain, pool).then(selectPair).catch((e) => notify(e.message, true));
+
   const selectPair = (p: PairInfo) => {
     setPair(p);
     setCandles([]);
@@ -70,6 +79,11 @@ export default function App() {
     <div className="app">
       <div className="bg-grid" />
       <TopBar status={status} state={state} onSelect={selectPair} />
+      {status?.storage === "temp" && (
+        <div className="banner">
+          <b>The bot can't stay on yet.</b> This server has nowhere permanent to save the bot and your paper account, so they reset. Add the free Upstash Redis database in Vercel (Storage tab), then redeploy. Steps are in the README.
+        </div>
+      )}
 
       <main className="layout">
         <section className="panel chart-panel">
@@ -95,7 +109,7 @@ export default function App() {
         </aside>
 
         <aside className="side">
-          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} />
+          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} />
           <GoalLadder state={state} />
         </aside>
 
@@ -119,7 +133,7 @@ export default function App() {
   );
 }
 
-function TopBar({ status, state, onSelect }: { status: { claude: boolean; openai: boolean } | null; state: AppState | null; onSelect: (p: PairInfo) => void }) {
+function TopBar({ status, state, onSelect }: { status: Status | null; state: AppState | null; onSelect: (p: PairInfo) => void }) {
   const [q, setQ] = useState("");
   const [res, setRes] = useState<PairInfo[]>([]);
   const [open, setOpen] = useState(false);
@@ -315,28 +329,45 @@ type PresetKey = keyof typeof PRESETS;
 const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct"];
 const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
 
-function BotPanel({ pair, tf, state, notify, refresh, multi }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean }) {
+function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
+  const [mode, setMode] = useState<"this" | "auto">("this");
+  const [autoChain, setAutoChain] = useState<ScanChain>("all");
+  const shownMode = running && active ? (active.pick ?? "this") : mode;
+  const shownChain = running && active ? (active.autoChain ?? "all") : autoChain;
+  const candidates = running ? (state?.bot.candidates ?? []) : [];
+  const target = running ? state?.bot.target : null;
+  const botPos = state?.positions.find((p) => p.source === "bot");
   const startCash = state?.startCash ?? 10;
   const [cfg, setCfg] = useState<RiskKnobs & { goalUsd: number }>({ ...PRESETS.balanced, goalUsd: 15 });
-  const set = (k: keyof typeof cfg) => (e: React.ChangeEvent<HTMLInputElement>) => setCfg({ ...cfg, [k]: Number(e.target.value) });
-  const pick = (p: PresetKey) => setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
+  const set = (k: keyof typeof cfg) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    setCustom(true);
+    setCfg({ ...cfg, [k]: Number(e.target.value) });
+  };
+  // "Custom" shows the input boxes; picking a preset goes back to the summary view.
+  const [custom, setCustom] = useState(false);
+  const pick = (p: PresetKey) => {
+    setCustom(false);
+    setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
+  };
 
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
     running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, goalUsd: active.goalUsd } : cfg;
   const preset = matchPreset(shown);
+  const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
   const perTrade = (cash * shown.positionPct) / 100;
   const floor = startCash * (1 - shown.maxDrawdownPct / 100);
 
   const start = async () => {
-    if (!pair) return;
-    const full: BotConfig = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 20, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, goalUsd: cfg.goalUsd };
+    if (mode === "this" && !pair) return;
+    // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 1, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3 };
     try {
       await api.startBot(full);
-      notify(`Bot started on ${pair.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
+      notify(mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
       refresh();
     } catch (e: any) {
       notify(e.message, true);
@@ -351,27 +382,83 @@ function BotPanel({ pair, tf, state, notify, refresh, multi }: { pair: PairInfo 
     <div className={`panel bot ${running ? "live" : ""}`}>
       <div className="panel-title">
         <span>AUTO-PILOT</span>
-        <span className={`pulse ${running ? "on" : ""}`}>{running ? `RUNNING · ${active?.symbol} ${active?.tf}` : "IDLE"}</span>
+        <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "auto" ? `RUNNING · AUTO-PICK` : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
       </div>
 
-      <div className="presets" role="radiogroup" aria-label="Risk level">
-        {(Object.keys(PRESETS) as PresetKey[]).map((p) => (
-          <button key={p} role="radio" aria-checked={preset === p} className={`preset ${p} ${preset === p ? "on" : ""}`} onClick={() => pick(p)} disabled={running}>
-            {PRESETS[p].label}
-          </button>
-        ))}
+      <div className="label-sm">What should it trade?</div>
+      <div className="presets two" role="radiogroup" aria-label="What to trade">
+        <button role="radio" aria-checked={shownMode === "this"} className={`preset balanced ${shownMode === "this" ? "on" : ""}`} onClick={() => setMode("this")} disabled={running}>
+          {running && shownMode === "this" ? active?.symbol : `This coin${pair ? ` (${pair.symbol})` : ""}`}
+        </button>
+        <button role="radio" aria-checked={shownMode === "auto"} className={`preset safe ${shownMode === "auto" ? "on" : ""}`} onClick={() => setMode("auto")} disabled={running}>
+          Auto-pick best coin
+        </button>
       </div>
-      <p className="preset-blurb small">{preset ? PRESETS[preset].blurb : "Custom settings."}</p>
+      {shownMode === "auto" && (
+        <>
+          <div className="chain-tabs compact">
+            {CHAIN_TABS.map((t) => (
+              <button key={t.id} className={`chip ${shownChain === t.id ? "on" : ""}`} onClick={() => setAutoChain(t.id)} disabled={running}>{t.label}</button>
+            ))}
+          </div>
+          <p className="preset-blurb small">Each round it scans trending coins, asks Claude about the top 3 in the buy zone (3 paid calls), and buys the one Claude is most sure about. Skips coins with under $50K liquidity.</p>
+        </>
+      )}
+
+      {running && (
+        <div className="bot-status small">
+          {botPos ? (
+            <div>
+              Holding <b>{botPos.symbol}</b>: {fmtPct(((botPos.lastPrice - botPos.entryPrice) / botPos.entryPrice) * 100)} · sells at {botPos.takeProfit ? fmtPrice(botPos.takeProfit) : "–"}, exits below {botPos.stopLoss ? fmtPrice(botPos.stopLoss) : "–"}
+              <button className="chip" onClick={() => onOpen(botPos.chain, botPos.pool)}>View</button>
+            </div>
+          ) : target ? (
+            <div>
+              Waiting to buy <b>{target.symbol}</b> at the planned price
+              <button className="chip" onClick={() => onOpen(target.chain, target.pool)}>View</button>
+            </div>
+          ) : (
+            <div className="muted">
+              {state?.bot.lastAnalysisAt ? `Last checked ${fmtTime(state.bot.lastAnalysisAt)}. Nothing good enough to buy yet; next check around ${fmtTime(state.bot.lastAnalysisAt + (active?.analyzeEverySec ?? 900) * 1000)}.` : "Starting up: first check within a minute."}
+            </div>
+          )}
+          {candidates.length > 0 && !botPos && (
+            <div className="cands">
+              {candidates.map((c) => (
+                <span key={c.pool} className={`tag ${c.action === "BUY" ? "buy" : c.action === "ERROR" ? "sell" : "hold"}`} title={c.note}>
+                  {c.symbol} {c.action}{c.confidence ? ` ${c.confidence}%` : ""}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="presets four" role="radiogroup" aria-label="Risk level">
+        {(Object.keys(PRESETS) as PresetKey[]).map((p) => {
+          const on = !isCustom && preset === p;
+          return (
+            <button key={p} role="radio" aria-checked={on} className={`preset ${p} ${on ? "on" : ""}`} onClick={() => pick(p)} disabled={running}>
+              {PRESETS[p].label}
+            </button>
+          );
+        })}
+        <button role="radio" aria-checked={isCustom} className={`preset custom ${isCustom ? "on" : ""}`} onClick={() => setCustom(true)} disabled={running}>
+          Custom
+        </button>
+      </div>
+      <p className="preset-blurb small">{isCustom ? "Your own numbers. Type them below; each box explains what it does." : PRESETS[preset!].blurb}</p>
 
       <ul className="plan small">
         <li>Puts <b>{fmtUsd(perTrade)}</b> into each trade ({shown.positionPct}% of cash)</li>
-        <li>Buys only when Claude is <b>{shown.minConfidence}%+</b> sure, checking every {shown.analyzeMin} min</li>
+        <li>Buys only when Claude is <b>{shown.minConfidence}%+</b> sure, looking for a trade every {shown.analyzeMin} min</li>
+        <li>Watches the price every second (free) to buy and sell on time</li>
         <li>Locks in no-loss once a trade is up <b>{shown.breakEvenAtPct}%</b></li>
         <li>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
       </ul>
 
-      <details className="advanced" open={!running && !preset ? true : undefined}>
-        <summary className="small">Customize (what each setting means)</summary>
+      {isCustom && (
+        <div className="custom-box">
         <div className="grid2 knobs">
           <label>
             Money per trade (% of cash)
@@ -404,12 +491,13 @@ function BotPanel({ pair, tf, state, notify, refresh, multi }: { pair: PairInfo 
             <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
           </label>
         </div>
-      </details>
+        </div>
+      )}
 
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
-        <button className="btn buy wide" onClick={start} disabled={!pair}>START BOT ON {pair?.symbol ?? "…"}</button>
+        <button className="btn buy wide" onClick={start} disabled={mode === "this" && !pair}>{mode === "auto" ? "START AUTO-PICK BOT" : `START BOT ON ${pair?.symbol ?? "…"}`}</button>
       )}
       <p className="muted small">{multi ? "Each AI check calls Claude and ChatGPT (a few cents). The bot buys only when both agree and reward beats risk after fees." : "Claude is in charge. Each check is a paid Claude call (a few cents), and it only buys when reward beats risk after fees."}</p>
     </div>

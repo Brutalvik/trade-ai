@@ -128,7 +128,8 @@ export async function searchPairs(q: string): Promise<PairInfo[]> {
 }
 
 export async function getPair(chain: string, pool: string): Promise<PairInfo> {
-  const data = await cachedJson<any>(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${pool}`, 4_000);
+  // Short cache: the bot watches prices every second (DexScreener allows ~300 calls/min).
+  const data = await cachedJson<any>(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${pool}`, 900);
   const p = data.pairs?.[0] ?? data.pair;
   if (!p) throw new Error("Pair not found");
   return fromDexScreener(p);

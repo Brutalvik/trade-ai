@@ -20,7 +20,8 @@ export type ModelResult = { model: string; ok: true; signal: Signal; ms: number 
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
 export type Position = { id: string; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number };
 export type Trade = { id: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot" };
-export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; goalUsd: number };
+export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; goalUsd: number; pick?: "this" | "auto"; autoChain?: ScanChain; autoCandidates?: number; autoMinLiquidityUsd?: number };
+export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean };
 export type AppState = {
   mode: "paper";
   startCash: number;
@@ -32,7 +33,16 @@ export type AppState = {
   trades: Trade[];
   equity: { t: number; v: number }[];
   settings: { feePct: number; slippagePct: number };
-  bot: { running: boolean; config: BotConfig | null; lastAnalysisAt: number; log: { t: number; msg: string; level: "info" | "good" | "bad" }[] };
+  bot: {
+    running: boolean;
+    config: BotConfig | null;
+    lastAnalysisAt: number;
+    lastTickAt: number;
+    target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
+    candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
+    log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
+  };
+  storage: Status["storage"];
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus } | null;
 };
 export type Plan = { verdict: "BUY ZONE" | "WAIT" | "AVOID"; buyBelow: number; sellAt: number; exitBelow: number; buyBy: number; sellBy: number; netGainPct: number; why: string };
@@ -48,7 +58,7 @@ async function req<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export const api = {
-  status: () => req<{ claude: boolean; openai: boolean; mode: string }>("/status"),
+  status: () => req<Status>("/status"),
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
   candles: async (chain: string, pool: string, tf: Timeframe) => {
@@ -66,6 +76,7 @@ export const api = {
   reset: (startCash: number) => req("/reset", { startCash }),
   startBot: (cfg: BotConfig) => req("/bot/start", cfg),
   stopBot: () => req("/bot/stop", {}),
+  heartbeat: () => req<{ ticked: boolean; running: boolean }>("/bot/heartbeat", {}),
 };
 
 export const fmtPrice = (p: number) => {

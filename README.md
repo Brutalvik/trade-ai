@@ -9,7 +9,7 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 - **Live candlestick chart** (1-second to 1-day, with 1s and 5s charts updating every few seconds) with EMA 9/21, volume, AI entry/take-profit/stop lines, and markers for bot trades
 - **AI signal**: Claude (optionally plus ChatGPT) gives entry, take-profit, stop, *buy-by* and *sell-by* times, confidence, and their reasoning
 - **Manual trading**: buy and sell any token at the live price
-- **Auto-pilot bot**: trades on Claude's calls, with Safe / Balanced / Aggressive presets and plain-English settings, plus
+- **Auto-pilot bot**: trades the coin on screen, or **auto-picks** the best coin each round (scans trending coins, asks Claude about the top 3, buys the one it's most sure about). Safe / Balanced / Aggressive presets or your own Custom numbers. It watches the price every second, plus
   - no chasing (it waits for the planned entry price)
   - a break-even stop once a trade is in profit, so a winner can't turn into a loss
   - a planned exit time
@@ -37,7 +37,9 @@ All logic lives in the Express API, so a future **React Native** app can use the
 | POST | `/api/analyze` | `{chain, pool, tf}` → AI signal and final decision |
 | GET | `/api/state` | Cash, positions, trades, equity, bot status and log |
 | POST | `/api/trade` | `{side:"BUY", chain, pool, usd}` or `{side:"SELL", chain, pool, positionId, fraction}` |
-| POST | `/api/bot/start` / `/api/bot/stop` | Control the auto-pilot |
+| POST | `/api/bot/start` / `/api/bot/stop` | Control the auto-pilot (`pick: "this"` or `"auto"`, `autoChain`) |
+| POST | `/api/bot/heartbeat` | Sent by an open dashboard every ~20 s on Vercel: watches every second for ~18 s |
+| GET | `/api/bot/tick` | For a scheduler (needs `Authorization: Bearer $CRON_SECRET`): watches every second for ~50 s |
 | POST | `/api/settings` | `{feePct, slippagePct}` |
 | POST | `/api/reset` | `{startCash}` resets the paper account |
 
@@ -66,7 +68,20 @@ Keys go in `server/.env` (git ignores this file):
 
 The browser calls `/api` on the same domain, so the services don't call each other directly and need no bindings. Add `ANTHROPIC_API_KEY` and `CRON_SECRET` in the Vercel project's environment variables. Run `vercel dev` to test both services together.
 
-**The bot on Vercel:** Vercel functions don't stay running, so the bot can't loop on a timer there. Something has to call `GET /api/bot/tick` (with `Authorization: Bearer $CRON_SECRET`) on a schedule. Also, paper-account state is saved to `/tmp`, which Vercel can wipe at any time. For a bot that runs reliably on Vercel, move the state to a database (Upstash Redis, Neon Postgres) and add a scheduler. To run the bot on a normal server, use `npm run dev` or `npm --prefix server start`; there it loops by itself.
+### Keeping the bot on, on Vercel
+
+Vercel runs the API as short-lived copies that don't share memory or disk, so two things are needed:
+
+**1. Permanent storage (required).** Without it the bot and paper account reset, and the app shows a yellow warning.
+1. In your Vercel project, open **Storage → Create Database → Upstash (Redis)**, pick the free plan, and connect it to this project.
+2. That adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` to the project. (`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work.)
+3. Redeploy.
+
+**2. Something to wake the bot.**
+- While the dashboard is open, it does this itself every 20 s, and the bot watches prices every second.
+- To keep trading with the tab closed, use a free scheduler such as cron-job.org. Have it call `GET https://<your-site>/api/bot/tick` every minute with the header `Authorization: Bearer <your CRON_SECRET>`. Each call watches every second for about 50 s.
+
+Storage use: while it's holding or about to buy a coin, the bot reads the saved state once a second (so a Stop from the dashboard always wins). That's about 3,600 Redis reads per hour of active watching. Check that against your Upstash plan's monthly allowance. When there's nothing to watch, it only does a quick check per wake-up.
 
 ## Data sources
 
