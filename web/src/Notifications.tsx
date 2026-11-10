@@ -37,7 +37,7 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
 
   useEffect(() => {
     if (!state) return;
-    const botTrades = state.trades.filter((t) => t.source === "bot");
+    const botTrades = state.trades.filter((t) => t.source === "bot" || t.auto); // bot trades + protected sells
     if (!seen.current) {
       seen.current = new Set(botTrades.map((t) => t.id)); // first load: remember, don't announce
       return;
@@ -79,7 +79,7 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
           <div key={id} className={`bot-note ${tone}`} role="status">
             <div className="bot-note-head">
               <b>
-                🤖 Bot {t.side === "BUY" ? "bought" : "sold"} {t.symbol}
+                {t.auto ? `🛡 Protection sold ${t.symbol}` : `🤖 Bot ${t.side === "BUY" ? "bought" : "sold"} ${t.symbol}`}
               </b>
               <button className="chip" aria-label="Dismiss" onClick={() => dismiss(id)}>
                 ✕

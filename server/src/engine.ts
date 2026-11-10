@@ -26,6 +26,10 @@ export type Position = {
   peak?: number; // highest price since the trailing stop started
   trailing?: boolean;
   predictedWinPct?: number; // Claude's win chance for the order that opened it
+  // "Protect this trade" (manual positions): sell if the price falls protectPct% from its
+  // highest point since protection was switched on. Checked every 5 s, bot running or not.
+  protectPct?: number;
+  protectSince?: number;
 };
 
 export type Trade = {
@@ -45,6 +49,7 @@ export type Trade = {
   // whether the price actually reached the target before the trade closed.
   predictedWinPct?: number;
   reachedTarget?: boolean;
+  auto?: boolean; // sold automatically by "Protect this trade"
 };
 
 export type BotConfig = {
@@ -736,6 +741,7 @@ export async function tick(persist = true) {
 // True while there's something to watch closely: an open bot position, a plan
 // to fetch, or standing orders waiting to fill.
 function watching() {
+  if (hasProtected()) return true;
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg) return false;
   if (state.positions.some((p) => p.source === "bot")) return true;
@@ -750,7 +756,8 @@ function watching() {
 // dashboard ping keeps watch for a while). A lock stops two windows overlapping.
 // Stops early when there's nothing to watch.
 export async function watch(maxMs: number) {
-  if (!state.bot.running || !state.bot.config) return { ticks: 0, reason: "bot is off" };
+  const botOn = () => state.bot.running && !!state.bot.config;
+  if (!botOn() && !hasProtected()) return { ticks: 0, reason: "bot is off" };
   if (!(await store.lock("watch", maxMs + 10_000))) return { ticks: 0, reason: "another window is already watching" };
   let ticks = 0;
   try {
@@ -758,17 +765,74 @@ export async function watch(maxMs: number) {
     while (Date.now() < end) {
       // Reload first, so a Stop or manual trade from the dashboard is never overwritten.
       await sync();
-      if (!state.bot.running) break;
-      await tick(false); // saves only if something happened
+      if (!botOn() && !hasProtected()) break;
+      if (botOn()) await tick(false); // saves only if something happened
+      await guardProtected();
       ticks++;
       await flush();
       if (!watching()) break; // nothing to watch closely; the next scheduled check will come
       await new Promise((r) => setTimeout(r, CHECK_MS));
     }
-    return { ticks, reason: state.bot.running ? (watching() ? "window ended" : "nothing to watch") : "bot stopped" };
+    return { ticks, reason: botOn() || hasProtected() ? (watching() ? "window ended" : "nothing to watch") : "bot stopped" };
   } finally {
     await flush();
     await store.unlock("watch");
+  }
+}
+
+// ---------- "Protect this trade" (manual positions) ----------
+const hasProtected = () => state.positions.some((p) => p.protectPct);
+let guarding = false;
+
+export async function protectPosition(positionId: string, pct: number) {
+  const p = state.positions.find((x) => x.id === positionId);
+  if (!p) throw new Error("Position not found");
+  if (p.source !== "manual") throw new Error("The bot already manages its own trades");
+  if (!pct) {
+    delete p.protectPct;
+    delete p.protectSince;
+    delete p.peak;
+    log(`Protection removed from ${p.symbol}.`);
+    save();
+    return p;
+  }
+  if (!(pct >= 0.5 && pct <= 50)) throw new Error("Use a trailing % between 0.5 and 50");
+  p.lastPrice = (await getPair(p.chain, p.pool)).priceUsd;
+  p.protectPct = pct;
+  p.protectSince = Date.now();
+  p.peak = Math.max(p.lastPrice, p.peak ?? 0);
+  log(`Protecting ${p.symbol}: sells if it falls ${pct}% from its high (now ${fmt(p.lastPrice)}, sells below ${fmt(p.peak * (1 - pct / 100))}).`, "good");
+  save();
+  return p;
+}
+
+// Checks every protected manual position: raises its high, sells on a pullback.
+export async function guardProtected() {
+  if (guarding || !hasProtected()) return;
+  guarding = true;
+  let changed = false;
+  try {
+    for (const p of state.positions.filter((x) => x.protectPct)) {
+      const q = await quote(p.chain, p.pool, Math.max(Date.now() - 60_000, p.protectSince ?? 0));
+      p.lastPrice = q.price;
+      if (q.high > (p.peak ?? 0)) {
+        p.peak = q.high;
+        changed = true;
+      }
+      const stop = p.peak! * (1 - p.protectPct! / 100);
+      if (q.low <= stop) {
+        const gain = ((Math.min(stop, q.price) - p.entryPrice) / p.entryPrice) * 100;
+        const t = sell(p.id, Math.min(stop, q.price), 1, `Protection: fell ${p.protectPct}% from its high of ${fmt(p.peak!)}`);
+        t.auto = true;
+        log(`PROTECTED SELL ${p.symbol} @ ${fmt(t.price)}: fell ${p.protectPct}% from its high of ${fmt(p.peak!)} (${gain >= 0 ? "+" : ""}${gain.toFixed(1)}% from your buy). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+        changed = true;
+      }
+    }
+  } catch (e: any) {
+    log(`Protection check error: ${e?.message ?? e}`, "bad");
+  } finally {
+    guarding = false;
+    if (changed) save();
   }
 }
 
@@ -796,3 +860,6 @@ export async function refreshPositionPrices() {
 void sync().then(() => {
   if (state.bot.running) schedule();
 });
+
+// Locally (not on Vercel) a timer guards protected manual positions every 5 s.
+if (!process.env.VERCEL) setInterval(() => void guardProtected(), CHECK_MS);

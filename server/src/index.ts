@@ -79,6 +79,8 @@ app.post("/api/settings", wrap(async (req) => engine.updateSettings(req.body)));
 app.post("/api/reset", wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10))));
 app.post("/api/bot/start", wrap(async (req) => engine.startBot(req.body)));
 app.post("/api/bot/stop", wrap(async () => engine.stopBot()));
+// "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
+app.post("/api/protect", wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0))));
 
 // While the dashboard is open it pings this every ~20 s. It only runs a bot step
 // if one is due, and Claude is only asked on the bot's own schedule, so extra

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type ScanResult, type Status, type Timeframe } from "./api";
+import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
+import { saveChart, saveScan, saveState, saveUi, savedChart, savedScan, savedState, savedUi } from "./persist";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -22,14 +23,24 @@ function useInterval(fn: () => void, ms: number, deps: unknown[] = []) {
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
-  const [pair, setPair] = useState<PairInfo | null>(null);
-  const [tf, setTf] = useState<Timeframe>("5m");
-  const [candles, setCandles] = useState<Candle[]>([]);
-  const [source, setSource] = useState<{ source: string; note: string } | null>(null);
-  const [state, setState] = useState<AppState | null>(null);
+  // Restore the last session instantly (coin, timeframe, tab, last-seen data); live data replaces it moments later.
+  const [pair, setPair] = useState<PairInfo | null>(() => savedUi().pair ?? null);
+  const [tf, setTf] = useState<Timeframe>(() => savedUi().tf ?? "5m");
+  const [candles, setCandles] = useState<Candle[]>(() => {
+    const ui = savedUi();
+    return ui.pair ? (savedChart(ui.pair.pool, ui.tf ?? "5m")?.candles ?? []) : [];
+  });
+  const [source, setSource] = useState<{ source: string; note: string } | null>(() => {
+    const ui = savedUi();
+    const c = ui.pair ? savedChart(ui.pair.pool, ui.tf ?? "5m") : undefined;
+    return c ? { source: c.source, note: "" } : null;
+  });
+  const [state, setState] = useState<AppState | null>(() => savedState() ?? null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
-  const [tab, setTab] = useState<"scanner" | "positions" | "trades" | "log">("scanner");
+  const [tab, setTab] = useState<"scanner" | "positions" | "trades" | "log">(() => (savedUi().tab as "scanner" | "positions" | "trades" | "log") ?? "scanner");
+  useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
+  useEffect(() => { if (state) saveState(state); }, [state]);
 
   const notify = useCallback((msg: string, bad = false) => {
     setToast({ msg, bad });
@@ -42,6 +53,7 @@ export default function App() {
   }, 60_000);
 
   useEffect(() => {
+    if (savedUi().pair) return; // a coin from last time is already showing
     api.search(DEFAULT_PAIR.query).then((r) => { const p = r.find((x) => x.chain === "solana") ?? r[0]; if (p) setPair(p); }).catch((e) => notify(e.message, true));
   }, [notify]);
 
@@ -52,6 +64,7 @@ export default function App() {
       .then((r) => {
         setCandles(r.candles);
         setSource({ source: r.source, note: r.note });
+        saveChart(pair.pool, tf, r.candles, r.source);
       })
       .catch((e) => setSource({ source: "unavailable", note: e.message }));
     api.pair(pair.chain, pair.pool).then((p) => setPair((cur) => (cur && cur.pool === p.pool ? { ...cur, ...p } : cur))).catch(() => {});
@@ -64,16 +77,18 @@ export default function App() {
   // On Vercel nothing runs between requests, so while this page is open it nudges
   // the bot every 20 s (the server only does work when a step is actually due).
   const botRunning = state?.bot.running ?? false;
+  const anyProtected = state?.positions.some((p) => p.protectPct) ?? false;
   useInterval(() => {
-    if (status?.serverless && botRunning) api.heartbeat().catch(() => {});
-  }, 20_000, [status?.serverless, botRunning]);
+    if (status?.serverless && (botRunning || anyProtected)) api.heartbeat().catch(() => {});
+  }, 20_000, [status?.serverless, botRunning, anyProtected]);
 
   const openPool = (chain: string, pool: string) => api.pair(chain, pool).then(selectPair).catch((e) => notify(e.message, true));
 
   const selectPair = (p: PairInfo) => {
     setPair(p);
-    setCandles([]);
-    setSource(null);
+    const c = savedChart(p.pool, tf); // show a recently seen chart instantly if we have it
+    setCandles(c?.candles ?? []);
+    setSource(c ? { source: c.source, note: "" } : null);
     setAnalysis(null);
   };
 
@@ -82,6 +97,12 @@ export default function App() {
   const results = analysis?.results ?? (state?.lastSignal?.pool === pair?.pool ? state?.lastSignal?.results : undefined);
   // Chart lines: the bot's open trade on this coin, otherwise Claude's standing orders.
   const lines = useMemo<ChartLine[]>(() => {
+    const guarded = state?.positions.find((p) => p.pool === pair?.pool && p.source === "manual" && p.protectPct && p.peak);
+    if (guarded)
+      return [
+        { price: guarded.entryPrice, color: "#00e5ff", title: "BOUGHT" },
+        { price: guarded.peak! * (1 - guarded.protectPct! / 100), color: "#ffc857", title: "PROTECT STOP" },
+      ];
     const pos = state?.positions.find((p) => p.pool === pair?.pool && p.source === "bot");
     if (pos) {
       const trail = pos.trailPct ?? 3;
@@ -112,7 +133,7 @@ export default function App() {
 
       <main className="layout">
         <section className="panel chart-panel">
-          <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles([]); } }} />
+          <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
           {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
           <div className="legend">
             <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
@@ -378,6 +399,45 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
   );
 }
 
+// "Protect this trade": a trailing stop on a manual position, watched every 5 s on the server.
+function ProtectControl({ pos, notify, refresh, compact = false }: { pos: Position; notify: (m: string, bad?: boolean) => void; refresh: () => void; compact?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const set = async (pct: number) => {
+    setBusy(true);
+    try {
+      await api.protect(pos.id, pct);
+      notify(pct ? `Protecting ${pos.symbol}: sells if it falls ${pct}% from its high` : `Protection removed from ${pos.symbol}`);
+      refresh();
+    } catch (e: any) {
+      notify(e.message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (pos.protectPct && pos.peak) {
+    const stop = pos.peak * (1 - pos.protectPct / 100);
+    const lockedPct = ((stop - pos.entryPrice) / pos.entryPrice) * 100;
+    return (
+      <div className={`protect on ${compact ? "compact" : ""}`}>
+        <span>
+          🛡 Sells below <b className="mono">{fmtPrice(stop)}</b>
+          {!compact && <> ({pos.protectPct}% under its high of {fmtPrice(pos.peak)}; locks in about {lockedPct >= 0 ? "+" : ""}{lockedPct.toFixed(1)}% before fees)</>}
+        </span>
+        <button className="chip" disabled={busy} onClick={() => set(0)}>Remove</button>
+      </div>
+    );
+  }
+  return (
+    <div className={`protect ${compact ? "compact" : ""}`}>
+      <span>{compact ? "🛡" : "🛡 Protect this trade: sell if it falls"}</span>
+      {[3, 5, 10].map((pct) => (
+        <button key={pct} className="chip" disabled={busy} onClick={() => set(pct)}>{pct}%</button>
+      ))}
+      {!compact && <span className="muted tiny">from its high</span>}
+    </div>
+  );
+}
+
 function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
   const [usd, setUsd] = useState("5");
   const pos = state?.positions.find((p) => p.pool === pair?.pool && p.source === "manual");
@@ -417,11 +477,14 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
         <button className="btn sell" onClick={() => sell(1)} disabled={!pos}>SELL ALL</button>
       </div>
       {pos ? (
-        <div className="pos-mini">
-          <span>Holding {pos.qty.toPrecision(4)} {pos.symbol}</span>
-          <span className={pos.lastPrice >= pos.entryPrice ? "up" : "down"}>{fmtPct(((pos.lastPrice - pos.entryPrice) / pos.entryPrice) * 100)}</span>
-          <button className="chip" onClick={() => sell(0.5)}>Sell 50%</button>
-        </div>
+        <>
+          <div className="pos-mini">
+            <span>Holding {pos.qty.toPrecision(4)} {pos.symbol}</span>
+            <span className={pos.lastPrice >= pos.entryPrice ? "up" : "down"}>{fmtPct(((pos.lastPrice - pos.entryPrice) / pos.entryPrice) * 100)}</span>
+            <button className="chip" onClick={() => sell(0.5)}>Sell 50%</button>
+          </div>
+          <ProtectControl pos={pos} notify={notify} refresh={refresh} />
+        </>
       ) : (
         <p className="muted small">Fees {state?.settings.feePct}% + slippage {state?.settings.slippagePct}% per side are simulated.</p>
       )}
@@ -837,15 +900,20 @@ const CHAIN_TABS: { id: ScanChain; label: string }[] = [
 ];
 
 function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; notify: (m: string, bad?: boolean) => void; tf: Timeframe }) {
-  const [chain, setChain] = useState<ScanChain>("all");
-  const [data, setData] = useState<ScanResult | null>(null);
+  const [chain, setChain] = useState<ScanChain>(() => (savedUi().scanChain as ScanChain) ?? "all");
+  const [data, setData] = useState<ScanResult | null>(() => savedScan(savedUi().scanChain ?? "all") ?? null);
   const [err, setErr] = useState("");
   const [ai, setAi] = useState<Record<string, Analysis["consensus"] | "loading">>({});
 
   const load = (c = chain) => {
-    setData(null);
+    saveUi({ scanChain: c });
+    setData(savedScan(c) ?? null); // last list for this chain shows instantly, then refreshes
     setErr("");
-    api.scan(c).then(setData).catch(() => setTimeout(() => api.scan(c).then(setData).catch((e) => setErr(e.message)), 8000));
+    const got = (r: ScanResult) => {
+      setData(r);
+      saveScan(c, r);
+    };
+    api.scan(c).then(got).catch(() => setTimeout(() => api.scan(c).then(got).catch((e) => setErr(e.message)), 8000));
   };
   useEffect(() => load(chain), [chain]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -968,7 +1036,10 @@ function Positions({ state, notify, refresh }: { state: AppState | null; notify:
                 <td className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)} ({fmtPct((pnl / p.costUsd) * 100)})</td>
                 <td className="hide-sm mono">{p.takeProfit ? fmtPrice(p.takeProfit) : "–"} / {p.stopLoss ? fmtPrice(p.stopLoss) : "–"}</td>
                 <td className="hide-sm">{p.sellBy ? fmtTime(p.sellBy) : "–"}</td>
-                <td><button className="chip" onClick={async () => { try { await api.sell(p.chain, p.pool, p.id, 1); notify(`Closed ${p.symbol}`); refresh(); } catch (e: any) { notify(e.message, true); } }}>Close</button></td>
+                <td>
+                  {p.source === "manual" && <ProtectControl pos={p} notify={notify} refresh={refresh} compact />}
+                  <button className="chip" onClick={async () => { try { await api.sell(p.chain, p.pool, p.id, 1); notify(`Closed ${p.symbol}`); refresh(); } catch (e: any) { notify(e.message, true); } }}>Close</button>
+                </td>
               </tr>
             );
           })}

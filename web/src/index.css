@@ -231,6 +231,10 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .why-box { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
 .why-box p { margin: 0; color: #c6d2f0; line-height: 1.45; }
 .why-kind { display: flex; align-items: center; gap: 8px; }
+.protect { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; }
+.protect.on { padding: 6px 8px; border-radius: 10px; border: 1px solid rgba(255, 200, 87, 0.4); background: rgba(255, 200, 87, 0.07); }
+.protect.compact { margin: 0 0 4px; font-size: 11px; }
+.protect.compact.on { padding: 3px 6px; }
 .blocked { margin: 6px 0 4px; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(255, 200, 87, 0.45); background: rgba(255, 200, 87, 0.08); color: #ffe2a3; }
 .track { margin: 0 4px 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.2); }
 .track-title { font-family: Orbitron, sans-serif; font-size: 11px; letter-spacing: 1.5px; color: var(--cyan); margin-bottom: 8px; }
