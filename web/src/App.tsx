@@ -598,67 +598,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             </button>
           );
         })}
-        <button role="radio" aria-checked={isCustom} className={`preset custom ${isCustom ? "on" : ""}`} onClick={() => setCustom(true)} disabled={running}>
+        <button role="radio" aria-checked={isCustom} className={`preset custom ${isCustom ? "on" : ""}`} onClick={() => { setCustom(true); setRulesOpen(true); }} disabled={running}>
           Custom
         </button>
       </div>
 
-      {isCustom && (
-        <div className="custom-box">
-        <div className="grid2 knobs">
-          <label>
-            Money per trade (% of cash)
-            <input type="number" value={shown.positionPct} onChange={set("positionPct")} disabled={running} />
-            <small>{shown.positionPct}% of {fmtUsd(cash)} = {fmtUsd(perTrade)} per trade. The rest stays safe as cash.</small>
-          </label>
-          <label>
-            Minimum win chance (%)
-            <input type="number" value={shown.minConfidence} onChange={set("minConfidence")} disabled={running} />
-            <small>For each order, Claude estimates the chance it reaches its target before its exit price. Orders below this aren't used. Every order must also make money on average after fees. Higher = fewer, safer trades.</small>
-          </label>
-          <label>
-            Backup re-check (minutes)
-            <input type="number" value={shown.analyzeMin} onChange={set("analyzeMin")} disabled={running} />
-            <small>Claude is asked after every trade and whenever its plan expires or the price leaves its range. This is the longest it waits otherwise. Each ask costs a few cents.</small>
-          </label>
-          <label>
-            Emergency stop if I lose (%)
-            <input type="number" value={shown.maxDrawdownPct} onChange={set("maxDrawdownPct")} disabled={running} />
-            <small>If your {fmtUsd(startCash)} drops below {fmtUsd(floor)}, it sells everything and switches off.</small>
-          </label>
-          <label>
-            Protect a trade once it's up (%)
-            <input type="number" value={shown.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running} />
-            <small>Once a trade is up this much, the bot won't let it turn into a loss.</small>
-          </label>
-          <label>
-            Trailing stop (%)
-            <input type="number" value={shown.trailPct} onChange={set("trailPct")} disabled={running} />
-            <small>After Claude's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
-          </label>
-          <label>
-            Skip dips if it fell more than (% in 1 hour)
-            <input type="number" value={shown.maxDrop1hPct} onChange={set("maxDrop1hPct")} disabled={running} />
-            <small>A crash is not a dip. If the coin dropped more than this in the last hour (or its 1-hour trend is down), the bot won't buy dips. Breakout buys are still allowed.</small>
-          </label>
-          <label>
-            Cool-down after a loss (minutes)
-            <input type="number" value={shown.cooldownMin} onChange={set("cooldownMin")} disabled={running} />
-            <small>After a losing trade, the bot won't buy that coin again for this long. After 2 losses in a row it skips the coin for the rest of the day.</small>
-          </label>
-          <label>
-            Daily loss limit (%)
-            <input type="number" value={shown.dailyLossPct} onChange={set("dailyLossPct")} disabled={running} />
-            <small>If the account loses this much in one day, the bot stops opening new trades until midnight UTC ({new Date(Date.UTC(2000, 0, 1)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} your time). Open trades still sell normally.</small>
-          </label>
-          <label>
-            My target ($)
-            <input type="number" value={shown.goalUsd} onChange={set("goalUsd")} disabled={running} />
-            <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
-          </label>
-        </div>
-        </div>
-      )}
 
       {rulesOpen && createPortal(
         <div className="modal-backdrop" onClick={() => setRulesOpen(false)}>
@@ -690,6 +634,63 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                   <span className="muted tiny"> · Off: buys the instant a trigger price is hit. On: waits the few seconds Claude suggests, so it doesn't buy into a spike or a crash that's still going. Sells are always instant.</span>
                 </span>
               </label>
+
+              <div className="settings-head">
+                <span>Settings</span>
+                <span className="muted tiny">{running ? "Stop the bot to change these." : "Change any number to switch to Custom."}</span>
+              </div>
+              <div className="grid2 knobs">
+                <label>
+                  Money per trade (% of cash)
+                  <input type="number" value={shown.positionPct} onChange={set("positionPct")} disabled={running} />
+                  <small>{shown.positionPct}% of {fmtUsd(cash)} = {fmtUsd(perTrade)} per trade. The rest stays safe as cash.</small>
+                </label>
+                <label>
+                  Minimum win chance (%)
+                  <input type="number" value={shown.minConfidence} onChange={set("minConfidence")} disabled={running} />
+                  <small>For each order, Claude estimates the chance it reaches its target before its exit price. Orders below this aren't used. Every order must also make money on average after fees. Higher = fewer, safer trades.</small>
+                </label>
+                <label>
+                  Backup re-check (minutes)
+                  <input type="number" value={shown.analyzeMin} onChange={set("analyzeMin")} disabled={running} />
+                  <small>Claude is asked after every trade and whenever its plan expires or the price leaves its range. This is the longest it waits otherwise. Each ask costs a few cents.</small>
+                </label>
+                <label>
+                  Emergency stop if I lose (%)
+                  <input type="number" value={shown.maxDrawdownPct} onChange={set("maxDrawdownPct")} disabled={running} />
+                  <small>If your {fmtUsd(startCash)} drops below {fmtUsd(floor)}, it sells everything and switches off.</small>
+                </label>
+                <label>
+                  Protect a trade once it's up (%)
+                  <input type="number" value={shown.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running} />
+                  <small>Once a trade is up this much, the bot won't let it turn into a loss.</small>
+                </label>
+                <label>
+                  Trailing stop (%)
+                  <input type="number" value={shown.trailPct} onChange={set("trailPct")} disabled={running} />
+                  <small>After Claude's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
+                </label>
+                <label>
+                  Skip dips if it fell more than (% in 1 hour)
+                  <input type="number" value={shown.maxDrop1hPct} onChange={set("maxDrop1hPct")} disabled={running} />
+                  <small>A crash is not a dip. If the coin dropped more than this in the last hour (or its 1-hour trend is down), the bot won't buy dips. Breakout buys are still allowed.</small>
+                </label>
+                <label>
+                  Cool-down after a loss (minutes)
+                  <input type="number" value={shown.cooldownMin} onChange={set("cooldownMin")} disabled={running} />
+                  <small>After a losing trade, the bot won't buy that coin again for this long. After 2 losses in a row it skips the coin for the rest of the day.</small>
+                </label>
+                <label>
+                  Daily loss limit (%)
+                  <input type="number" value={shown.dailyLossPct} onChange={set("dailyLossPct")} disabled={running} />
+                  <small>If the account loses this much in one day, the bot stops opening new trades until midnight UTC ({new Date(Math.ceil(Date.now() / 86_400_000) * 86_400_000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} your time). Open trades still sell normally.</small>
+                </label>
+                <label>
+                  My target ($)
+                  <input type="number" value={shown.goalUsd} onChange={set("goalUsd")} disabled={running} />
+                  <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
+                </label>
+              </div>
             </div>
           </div>
         </div>,

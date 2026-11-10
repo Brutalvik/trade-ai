@@ -192,6 +192,10 @@ code { color: var(--cyan); }
 .rules-body .plan { margin-top: 4px; gap: 7px; font-size: 13px; }
 .rules-body .preset-blurb { font-size: 13px; margin-top: 12px; }
 .rules-body .check { margin-top: 14px; font-size: 13px; }
+.settings-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 18px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); font-family: Orbitron, sans-serif; font-size: 12px; letter-spacing: 1.5px; color: var(--cyan); }
+.settings-head .muted { font-family: Inter, sans-serif; letter-spacing: 0; }
+.rules-body .grid2.knobs { grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+@media (max-width: 760px) { .rules-body .grid2.knobs { grid-template-columns: 1fr; } }
 .label-sm { font-size: 11px; color: var(--muted); margin: 0 2px 6px; }
 .chain-tabs.compact { padding: 0 0 4px; gap: 4px; }
 .chain-tabs.compact .chip { font-size: 11px; padding: 3px 7px; }
