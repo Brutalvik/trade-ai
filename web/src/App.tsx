@@ -100,7 +100,7 @@ export default function App() {
     <div className="app">
       <div className="bg-grid" />
       <TopBar status={status} state={state} onSelect={selectPair} />
-      <BotTradeNotifications state={state} />
+      <BotTradeNotifications state={state} onOpen={openPool} />
       <UpdateBanner serverCommit={status?.commit} />
       {status?.storage === "temp" && (
         <div className="banner">
@@ -127,7 +127,7 @@ export default function App() {
         </section>
 
         <aside className="side">
-          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={setAnalysis} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} />
+          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={setAnalysis} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running ? state.bot.config?.minConfidence : undefined} />
           <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />
         </aside>
 
@@ -245,10 +245,15 @@ export function describeOrder(o: CheckedOrder) {
   return `Buy now, paying up to ${fmtPrice(o.triggerPrice)}`;
 }
 
-function OrderCard({ o }: { o: CheckedOrder }) {
+function OrderCard({ o, minWin }: { o: CheckedOrder; minWin?: number }) {
+  const below = minWin !== undefined && o.winChancePct < minWin;
   return (
-    <div className="order">
+    <div className={`order ${below ? "dim" : ""}`}>
       <b>{describeOrder(o)}</b>
+      <span className="tiny">
+        <b className={below ? "down" : "up"}>{o.winChancePct}% win chance</b> · expected {o.evPct >= 0 ? "+" : ""}
+        {o.evPct.toFixed(1)}% per trade after fees{below ? ` · below your ${minWin}% minimum, won't be used` : ""}
+      </span>
       <span className="muted tiny">
         Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · from <span className="up">{fmtPrice(o.target)}</span> it rides the trend · +{o.netRewardPct.toFixed(1)}% after fees vs {o.netRiskPct.toFixed(1)}% risk · max {Math.round(o.maxHoldMinutes)} min
       </span>
@@ -256,8 +261,8 @@ function OrderCard({ o }: { o: CheckedOrder }) {
   );
 }
 
-function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean }) {
-  const { pair, tf, sig, results, onResult, notify, hasAI, multi } = props; // (fees are already applied in each order's numbers)
+function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number }) {
+  const { pair, tf, sig, results, onResult, notify, hasAI, multi, botMinWin } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
   const run = async () => {
     if (!pair) return;
@@ -288,7 +293,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
             <div className="orders">
               <div className="label-sm">Standing orders: the bot buys on its own the moment one triggers</div>
               {sig.orders.map((o, i) => (
-                <OrderCard key={i} o={o} />
+                <OrderCard key={i} o={o} minWin={botMinWin} />
               ))}
               <div className="muted tiny">
                 Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then Claude makes a new one.
@@ -368,9 +373,9 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
 
 type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number };
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
-  safe: { label: "Safe", blurb: "Small trades, only very confident calls, tight emergency brake.", positionPct: 50, minConfidence: 80, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2 },
-  balanced: { label: "Balanced", blurb: "Most of your cash per trade, solid confidence required.", positionPct: 90, minConfidence: 70, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3 },
-  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts weaker signals, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 60, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5 },
+  safe: { label: "Safe", blurb: "Small trades, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2 },
+  balanced: { label: "Balanced", blurb: "Most of your cash per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3 },
+  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5 },
 };
 type PresetKey = keyof typeof PRESETS;
 const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct"];
@@ -431,7 +436,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
     <div className={`panel bot ${running ? "live" : ""}`}>
       <div className="panel-title">
         <span>AUTO-PILOT</span>
-        <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "auto" ? `RUNNING · AUTO-PICK` : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
+        <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "auto" ? (target ? `AUTO-PICK → ${target.symbol}` : "AUTO-PICK · SCANNING") : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
       </div>
 
       <div className="label-sm">What should it trade?</div>
@@ -464,9 +469,9 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 : `from ${botPos.target ? fmtPrice(botPos.target) : "the target"} it rides the trend`}
               <button className="chip" onClick={() => onOpen(botPos.chain, botPos.pool)}>View</button>
             </div>
-          ) : plan && planOrders.length > 0 && plan.consensus.confidence < (active?.minConfidence ?? 0) ? (
+          ) : plan && planOrders.length > 0 && !planOrders.some((o) => o.winChancePct >= (active?.minConfidence ?? 0)) ? (
             <div className="muted">
-              Claude's plan for <b>{plan.symbol}</b> is only {plan.consensus.confidence}% sure, below your {active?.minConfidence}% minimum, so its orders won't be used. Next plan by {fmtTime(Math.min(plan.consensus.expiresAt, (state?.bot.lastAnalysisAt ?? 0) + (active?.analyzeEverySec ?? 1800) * 1000))}, sooner if the market moves. (Lower "How sure Claude must be" to act on plans like this.)
+              Claude's best order for <b>{plan.symbol}</b> has a {Math.max(...planOrders.map((o) => o.winChancePct))}% win chance, below your {active?.minConfidence}% minimum, so none will be used. Next plan by {fmtTime(Math.min(plan.consensus.expiresAt, (state?.bot.lastAnalysisAt ?? 0) + (active?.analyzeEverySec ?? 1800) * 1000))}, sooner if the market moves.
             </div>
           ) : plan && planOrders.length > 0 ? (
             <div>
@@ -474,7 +479,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
               {planOrders.map((o, i) => (
                 <div key={i} className="tiny">
                   {state?.bot.armedSince?.[i] ? <b className="up">Triggered, confirming… </b> : "· "}
-                  {describeOrder(o)}
+                  {describeOrder(o)} · {o.winChancePct}% win chance{o.winChancePct < (active?.minConfidence ?? 0) ? " (below your minimum)" : ""}
                 </div>
               ))}
               <div className="muted tiny">Plan cancels at {fmtTime(plan.consensus.expiresAt)} or if the price leaves its range; then Claude makes a new one.</div>
@@ -514,7 +519,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
       <ul className="plan small">
         <li>Puts <b>{fmtUsd(perTrade)}</b> into each trade ({shown.positionPct}% of cash)</li>
-        <li>Claude writes standing orders ({shown.minConfidence}%+ sure); the bot buys the moment one triggers (checked every second, free)</li>
+        <li>Claude writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every second, free)</li>
         <li>Sells below Claude's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
         <li>At Claude's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
         <li>Asks Claude again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
@@ -530,9 +535,9 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             <small>{shown.positionPct}% of {fmtUsd(cash)} = {fmtUsd(perTrade)} per trade. The rest stays safe as cash.</small>
           </label>
           <label>
-            How sure Claude must be (%)
+            Minimum win chance (%)
             <input type="number" value={shown.minConfidence} onChange={set("minConfidence")} disabled={running} />
-            <small>If Claude is less sure than this, the bot doesn't buy. Higher = fewer but safer trades.</small>
+            <small>For each order, Claude estimates the chance it reaches its target before its exit price. Orders below this aren't used. Every order must also make money on average after fees. Higher = fewer, safer trades.</small>
           </label>
           <label>
             Backup re-check (minutes)

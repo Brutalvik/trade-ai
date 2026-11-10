@@ -82,6 +82,8 @@ type State = {
     armedSince: (number | null)[];
     // Set after a trade closes, so Claude is asked for a new plan right away.
     askNow: boolean;
+    // Orders whose trigger was reached but that were skipped (logged once per plan).
+    skipNoted: boolean[];
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -103,7 +105,7 @@ function fresh(startCash = 10): State {
     trades: [],
     equity: [{ t: Date.now(), v: startCash }],
     settings: { feePct: 1.0, slippagePct: 0.5 },
-    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, target: null, candidates: [], log: [] },
+    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], target: null, candidates: [], log: [] },
     lastSignal: null,
   };
 }
@@ -116,9 +118,12 @@ function migrate(s: State): State {
   s.bot.lastTickAt ??= 0;
   s.bot.armedSince ??= [];
   s.bot.askNow ??= false;
+  s.bot.skipNoted ??= [];
   // Plans saved before standing orders existed have no "orders": drop them so
   // the bot asks Claude for a new-style plan instead of erroring every second.
   if (s.lastSignal && !Array.isArray(s.lastSignal.consensus?.orders)) s.lastSignal = null;
+  // Plans from before per-order win chances: drop them too, so Claude writes a new one.
+  if (s.lastSignal && s.lastSignal.consensus.orders.some((o) => typeof o.winChancePct !== "number")) s.lastSignal = null;
   return s;
 }
 
@@ -248,6 +253,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
   const { results, consensus } = await analyze(pair, snap, candles, tf, roundTripCostPct());
   state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
+  state.bot.skipNoted = [];
   save();
   return { pair, snapshot: snap, results, consensus };
 }
@@ -329,14 +335,15 @@ async function autoPick(cfg: BotConfig) {
   }
   log(`Asking Claude for plans on ${inZone.map((r) => r.pair.symbol).join(", ")}...`);
   let best: { pair: PairInfo; result: Awaited<ReturnType<typeof runAnalysis>> } | null = null;
-  const rank = (c: Consensus) => (c.stance === "BUY_NOW" ? 1000 : 0) + c.confidence;
+  const usableOrders = (c: Consensus) => c.orders.filter((o) => o.winChancePct >= cfg.minConfidence);
+  const rank = (c: Consensus) => (c.stance === "BUY_NOW" ? 1000 : 0) + Math.max(...usableOrders(c).map((o) => o.evPct));
   for (const row of inZone) {
     // One at a time, so CoinMarketCap's small allowance isn't used up in a burst.
     try {
       const r = await runAnalysis(row.pair.chain, row.pair.pool, cfg.tf);
       const c = r.consensus;
       state.bot.candidates.push({ symbol: row.pair.symbol, chain: row.pair.chain, pool: row.pair.pool, action: c.stance === "WAIT_FOR_TRIGGER" ? "WAIT" : c.action, confidence: c.confidence, note: c.note });
-      const usable = c.orders.length > 0 && c.confidence >= cfg.minConfidence;
+      const usable = usableOrders(c).length > 0;
       if (usable && (!best || rank(c) > rank(best.result.consensus))) best = { pair: row.pair, result: r };
     } catch (e: any) {
       state.bot.candidates.push({ symbol: row.pair.symbol, chain: row.pair.chain, pool: row.pair.pool, action: "ERROR", confidence: 0, note: String(e?.message ?? e) });
@@ -351,7 +358,7 @@ async function autoPick(cfg: BotConfig) {
   const { pair, result } = best;
   state.bot.target = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, chosenAt: Date.now() };
   state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus };
-  log(`Claude: ${summary}. Following ${pair.symbol}'s plan. ${result.consensus.note}`, "good");
+  log(`Auto-pick chose ${pair.symbol}. Claude: ${summary}. ${result.consensus.note}`, "good");
 }
 
 // Why Claude should be asked now (or null). Event-driven, plus a slow backup timer.
@@ -446,6 +453,7 @@ export async function tick(persist = true) {
       state.bot.lastAnalysisAt = Date.now();
       state.bot.askNow = false;
       state.bot.armedSince = [];
+      state.bot.skipNoted = [];
       log(`Asking Claude for a new plan (${why})...`);
       save();
       await flush();
@@ -466,10 +474,17 @@ export async function tick(persist = true) {
     if (!pair || !t3 || !sig || sig.pool !== t3.pool) return;
     const c = sig.consensus;
     if (!c.orders.length || Date.now() > c.expiresAt) return;
-    if (c.confidence < cfg.minConfidence) return;
     for (let i = 0; i < c.orders.length; i++) {
       const o = c.orders[i];
       const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;
+      // Orders below the user's minimum win chance are never used, but say so when their trigger is hit.
+      if (o.winChancePct < cfg.minConfidence) {
+        if (triggerMet(o, pair) && !state.bot.skipNoted[i]) {
+          state.bot.skipNoted[i] = true;
+          log(`${t3.symbol} reached the ${label} at ${fmt(pair.priceUsd)}, but Claude gives it only a ${o.winChancePct}% win chance, below your ${cfg.minConfidence}% minimum. Not buying.`);
+        }
+        continue;
+      }
       if (!triggerMet(o, pair)) {
         if (state.bot.armedSince[i]) log(`${t3.symbol} ${label} didn't hold (now ${fmt(pair.priceUsd)}); still waiting.`);
         state.bot.armedSince[i] = null;
@@ -516,8 +531,8 @@ function watching() {
   if (state.bot.askNow) return true;
   const sig = state.lastSignal;
   const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
-  // Orders only count if Claude is sure enough for the user's minimum confidence.
-  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.length > 0 && sig.consensus.confidence >= cfg.minConfidence && Date.now() < sig.consensus.expiresAt);
+  // Only orders with at least the user's minimum win chance count.
+  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.some((o) => o.winChancePct >= cfg.minConfidence) && Date.now() < sig.consensus.expiresAt);
 }
 
 // Serverless: run bot steps every second for up to maxMs (one scheduler call or

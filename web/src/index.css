@@ -210,6 +210,9 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .bot-note.buy { border-left-color: var(--cyan); box-shadow: 0 0 24px rgba(0, 229, 255, 0.18), 0 12px 40px rgba(0, 0, 0, 0.55); }
 .bot-note.win { border-left-color: var(--up); box-shadow: 0 0 24px rgba(0, 245, 160, 0.18), 0 12px 40px rgba(0, 0, 0, 0.55); }
 .bot-note.loss { border-left-color: var(--down); box-shadow: 0 0 24px rgba(255, 61, 113, 0.18), 0 12px 40px rgba(0, 0, 0, 0.55); }
+.bot-note.pick { border-left-color: var(--violet); box-shadow: 0 0 24px rgba(180, 92, 255, 0.2), 0 12px 40px rgba(0, 0, 0, 0.55); }
+.bot-note .view { align-self: flex-start; margin-top: 4px; }
+.order.dim { opacity: 0.65; }
 .bot-note-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
 .bot-note-head .chip { padding: 1px 7px; }
 @keyframes note-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }

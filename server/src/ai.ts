@@ -18,11 +18,14 @@ const OrderSchema = z.object({
   stopLoss: z.number().describe("USD price to sell at a loss if the trade goes wrong; must be below triggerPrice"),
   target: z.number().describe("USD profit target; must be above triggerPrice. When reached, the bot switches to a trailing stop to ride further gains."),
   maxHoldMinutes: z.number().describe("Sell after this many minutes in the trade no matter what"),
+  winChancePct: z
+    .number()
+    .describe("If this order fills, your honest estimate (0-100) of the chance the price reaches target BEFORE stopLoss. This decides whether the bot uses the order."),
 });
 
 export const PlanSchema = z.object({
   stance: z.enum(["BUY_NOW", "WAIT_FOR_TRIGGER", "AVOID"]).describe("BUY_NOW: good entry right now. WAIT_FOR_TRIGGER: only buy if a trigger below is hit. AVOID: no orders, stay out."),
-  confidence: z.number().describe("0-100, how confident you are in this plan"),
+  confidence: z.number().describe("0-100, overall confidence in your read of this market (shown to the user; orders are judged by their own winChancePct)"),
   riskLevel: z.enum(["LOW", "MEDIUM", "HIGH", "EXTREME"]),
   reasoning: z.string().describe("2-4 short sentences explaining the plan in plain words"),
   orders: z.array(OrderSchema).describe("0-2 standing buy orders. Empty for AVOID."),
@@ -38,7 +41,9 @@ export type Signal = Plan;
 export type ModelResult = { model: string; ok: true; signal: Plan; ms: number } | { model: string; ok: false; error: string; ms: number };
 
 // An order the server checked against fees and risk, ready for the bot.
-export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number };
+// evPct = expected profit per trade after fees, from Claude's win chance:
+//   winChance x gain-after-fees  -  (1 - winChance) x loss-after-fees
+export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number };
 
 export type Consensus = {
   action: "BUY" | "SELL" | "HOLD"; // BUY = buy now, HOLD = waiting for a trigger (or nothing), SELL = avoid
@@ -79,7 +84,8 @@ when the price reaches target, it switches to a trailing stop (sells if the pric
 You will be asked again after a trade closes, when your plan expires, or when the price leaves your cancel range.
 
 Rules:
-- Protect capital first. Round-trip costs (fees + slippage) are given. For every order, (target - trigger)/trigger must beat costs by a wide margin, and reward:risk after costs must be at least 1.5:1. Orders that fail this are discarded.
+- Protect capital first. Round-trip costs (fees + slippage) are given. For every order, give winChancePct: if it fills, the chance it reaches target before stopLoss. Be calibrated and honest, not optimistic.
+- The bot only uses an order if it is profitable on average after costs (winChance x gain - (1 - winChance) x loss > 0) and its gain after costs is at least as big as its loss after costs. Orders that fail this are discarded.
 - Prefer patient entries: a buy_dip near support with confirmSeconds ~60, and/or a buy_breakout above resistance with a volume check. Use buy_now only when the entry is good right now.
 - Use AVOID with no orders for rugs, parabolic pumps, collapsing volume, thin liquidity, or no edge.
 - Set cancelBelow/cancelAbove so the plan is dropped when the market moves away from your thesis.
@@ -153,6 +159,8 @@ export async function analyze(pair: PairInfo, snap: Snapshot, candles: Candle[],
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
 
 // Checks each order for sanity and against fees/risk; drops the ones that fail.
+// An order is kept only if, using Claude's own win chance, it makes money on
+// average after fees (positive expected value) and its gain >= its loss.
 export function checkOrders(orders: PlanOrder[], costPct: number): { kept: CheckedOrder[]; dropped: string[] } {
   const kept: CheckedOrder[] = [];
   const dropped: string[] = [];
@@ -164,17 +172,25 @@ export function checkOrders(orders: PlanOrder[], costPct: number): { kept: Check
     }
     const netRewardPct = ((o.target - t) / t) * 100 - costPct;
     const netRiskPct = ((t - o.stopLoss) / t) * 100 + costPct;
-    if (netRewardPct <= 0 || netRewardPct < 1.5 * netRiskPct) {
-      dropped.push(`${o.kind}: after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) doesn't beat the risk (${netRiskPct.toFixed(1)}%)`);
+    const win = clamp(o.winChancePct, 0, 100) / 100;
+    const evPct = win * netRewardPct - (1 - win) * netRiskPct;
+    if (netRewardPct <= 0 || netRewardPct < netRiskPct) {
+      dropped.push(`${o.kind}: after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) is smaller than the risk (${netRiskPct.toFixed(1)}%)`);
+      continue;
+    }
+    if (evPct <= 0) {
+      dropped.push(`${o.kind}: with a ${Math.round(win * 100)}% win chance it loses money on average after costs`);
       continue;
     }
     kept.push({
       ...o,
+      winChancePct: Math.round(win * 100),
       confirmSeconds: clamp(o.confirmSeconds, 0, 600),
       minVolumeRatio: o.kind === "buy_breakout" ? clamp(o.minVolumeRatio, 0, 10) : 0,
       maxHoldMinutes: clamp(o.maxHoldMinutes, 5, 1440),
       netRewardPct,
       netRiskPct,
+      evPct,
     });
   }
   return { kept, dropped };
@@ -206,7 +222,8 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   const stance = plan.stance !== "AVOID" && !kept.length ? "AVOID" : plan.stance;
   const action = stance === "BUY_NOW" ? "BUY" : stance === "AVOID" ? "SELL" : "HOLD";
   const describe = (o: CheckedOrder) =>
-    o.kind === "buy_dip" ? `buy if it dips to $${o.triggerPrice.toPrecision(4)}` : o.kind === "buy_breakout" ? `buy if it breaks above $${o.triggerPrice.toPrecision(4)}` : `buy now up to $${o.triggerPrice.toPrecision(4)}`;
+    (o.kind === "buy_dip" ? `buy if it dips to $${o.triggerPrice.toPrecision(4)}` : o.kind === "buy_breakout" ? `buy if it breaks above $${o.triggerPrice.toPrecision(4)}` : `buy now up to $${o.triggerPrice.toPrecision(4)}`) +
+    ` (${o.winChancePct}% win chance)`;
   let note =
     stance === "AVOID"
       ? plan.stance === "AVOID"
