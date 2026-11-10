@@ -115,7 +115,13 @@ let loaded = false;
 // on Vercel each request may land on a different short-lived server.
 export async function sync() {
   if (loaded && store.kind !== "redis") return;
+  // Never swap the state out from under a running bot step. One server handles
+  // several requests at once (e.g. dashboard refreshes while the bot waits for
+  // Claude); replacing the object mid-step lost the step's updates, so the bot
+  // forgot it had just asked Claude and asked again every 20 s.
+  if (busy) return;
   const saved = await store.load<State>();
+  if (busy) return; // a step started while we were loading: keep its state
   if (saved) state = migrate(saved);
   loaded = true;
 }
@@ -371,7 +377,11 @@ export async function tick(persist = true) {
     // 2. No position: refresh the AI view on schedule (this is what costs money).
     const due = Date.now() - state.bot.lastAnalysisAt >= cfg.analyzeEverySec * 1000;
     if (due) {
+      // Save "asked Claude at ..." BEFORE the (slow, paid) call, so no other
+      // request or server can decide a check is due and ask again meanwhile.
       state.bot.lastAnalysisAt = Date.now();
+      save();
+      await flush();
       if (isAuto(cfg)) {
         await autoPick(cfg);
       } else {

@@ -43,7 +43,7 @@ function redisFromEnv(): Redis | null {
   }
   for (const [u, t] of pairs) {
     const url = env[u], token = env[t];
-    if (url?.startsWith("https://") && token) return new Redis({ url, token });
+    if (url && /^https?:\/\//.test(url) && token) return new Redis({ url, token });
   }
   return null;
 }
