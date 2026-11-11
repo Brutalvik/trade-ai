@@ -166,6 +166,7 @@ export const api = {
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   setTradeMode: (mode: "paper" | "real") => req<{ user: User }>("/auth/trade-mode", { mode }),
   plans: () => req<PlanInfo[]>("/plans"),
+  searchCoins: (q: string) => req<{ crypto: ListCoin[]; tokens: (ListCoin & { organic?: number })[]; address: boolean }>(`/search-coins?q=${encodeURIComponent(q)}`),
   wallet: (fresh = false) => req<WalletView>(`/wallet${fresh ? "?fresh=1" : ""}`),
   activity: (before = 0) => req<Page<AuditEntry>>(`/activity?before=${before}&limit=50`),
   tradeHistory: (before = 0, limit = 200) => req<Page<Trade>>(`/trades/history?before=${before}&limit=${limit}`),

@@ -145,3 +145,35 @@ export async function coinList(kind: string): Promise<{ kind: ListKind; coins: L
   }
   return { kind: k, coins: coins.slice(0, k === "crypto" ? 100 : 50) };
 }
+
+// ---------- Search (like fomo): real coins first, copycats last ----------
+// Crypto: big coins by market rank (CoinGecko) whose ticker or name matches, at their real price.
+// Tokens: Solana tokens from Jupiter's token search, verified first, then by real trading activity
+// (organic score) and liquidity; dust tokens are dropped. Addresses go straight to DexScreener.
+const looksLikeAddress = (q: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q) || /^0x[0-9a-fA-F]{40}$/.test(q);
+
+export async function searchCoins(q: string): Promise<{ crypto: ListCoin[]; tokens: ListCoin[]; address: boolean }> {
+  const query = q.trim();
+  if (query.length < 2 || looksLikeAddress(query)) return { crypto: [], tokens: [], address: looksLikeAddress(query) };
+  const up = query.toUpperCase();
+  const low = query.toLowerCase();
+  const [cryptoList, found] = await Promise.all([
+    coinList("crypto").then((r) => r.coins).catch(() => [] as ListCoin[]),
+    cachedJson<any[]>(`https://api.jup.ag/tokens/v2/search?query=${encodeURIComponent(query)}`, 60_000, { headers: jupHeaders() }).catch(() => [] as any[]),
+  ]);
+  const crypto = cryptoList
+    .filter((c) => c.symbol === up || c.name.toLowerCase() === low || (query.length >= 3 && c.name.toLowerCase().startsWith(low)))
+    .sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999))
+    .slice(0, 3);
+  const raw = Array.isArray(found) ? found : [];
+  const score = (t: any) => n(t.organicScore);
+  const tokens = raw
+    .filter((t) => t?.id && (t.isVerified || n(t.liquidity) >= 1_000))
+    .sort((a, b) =>
+      Number(!!b.isVerified) - Number(!!a.isVerified) ||
+      score(b) - score(a) ||
+      n(b.liquidity) - n(a.liquidity))
+    .slice(0, 12)
+    .map((t) => ({ ...fromJup(t), organic: score(t) }));
+  return { crypto, tokens, address: false };
+}

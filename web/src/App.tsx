@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { type ListCoin, type FramePatterns, aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
 import { WalletButton } from "./Wallet";
-import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
+import { findCoinPair, Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
 import { paperCsv, paperPdf, realCsv, realPdf } from "./exportTrades";
 import { AccessCtx, AccountButton, AdminModal, LockChip, Modal, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
@@ -348,14 +348,66 @@ function SoundToggle() {
 
 function TopBar({ status, state, onSelect, notify, refresh }: { status: Status | null; state: AppState | null; onSelect: (p: PairInfo) => void; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
   const [q, setQ] = useState("");
-  const [res, setRes] = useState<PairInfo[]>([]);
+  const [res, setRes] = useState<PairInfo[]>([]); // an address: its markets
+  const [coins, setCoins] = useState<{ crypto: ListCoin[]; tokens: ListCoin[] }>({ crypto: [], tokens: [] });
+  const [searching, setSearching] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
+  // Like fomo: real coins first (Crypto by rank, then Solana tokens with verified ones on top);
+  // a pasted token or pool address shows its markets instead.
   useEffect(() => {
-    if (q.trim().length < 2) return setRes([]);
-    const id = setTimeout(() => api.search(q.trim()).then(setRes).catch(() => setRes([])), 300);
+    const term = q.trim();
+    if (term.length < 2) { setRes([]); setCoins({ crypto: [], tokens: [] }); return; }
+    setSearching(true);
+    const id = setTimeout(async () => {
+      try {
+        const r = await api.searchCoins(term);
+        if (r.address) {
+          setCoins({ crypto: [], tokens: [] });
+          setRes(await api.search(term));
+        } else {
+          setRes([]);
+          setCoins({ crypto: r.crypto, tokens: r.tokens });
+        }
+      } catch {
+        setRes([]);
+        setCoins({ crypto: [], tokens: [] });
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
     return () => clearTimeout(id);
   }, [q]);
+  const pick = async (c: ListCoin) => {
+    setOpening(c.mint);
+    try {
+      const p = await findCoinPair(c);
+      if (p) {
+        onSelect(p);
+        setQ("");
+        setOpen(false);
+      } else notify(`No chart found for ${c.symbol} yet`, true);
+    } catch (e: any) {
+      notify(e.message, true);
+    } finally {
+      setOpening(null);
+    }
+  };
+  const coinRow = (c: ListCoin) => (
+    <button key={c.mint} className="sr-row" onMouseDown={(e) => e.preventDefault()} onClick={() => void pick(c)} disabled={opening === c.mint}>
+      {c.icon ? <img src={c.icon} alt="" /> : <span className="sr-noicon">{c.symbol.slice(0, 1)}</span>}
+      <span className="sr-name">
+        <b>{c.symbol}{c.verified ? <span className="sr-verified" title="Verified by Jupiter">✓</span> : null}{c.rank ? <span className="sr-rank">#{c.rank}</span> : null}</b>
+        <small>{c.name}{c.mint.startsWith("cg:") ? "" : ` · ${c.mint.slice(0, 4)}…${c.mint.slice(-4)}`}</small>
+      </span>
+      <span className="sr-cell"><small>MC</small>{fmtBig(c.mcap)}</span>
+      <span className="sr-cell num">{fmtPrice(c.priceUsd)}</span>
+      <span className={`sr-cell num ${c.change24h >= 0 ? "up" : "down"}`}>{c.change24h >= 0 ? "+" : ""}{c.change24h.toFixed(2)}%</span>
+      <span className="sr-cell"><small>VOL</small>{fmtBig(c.volume24h ?? 0)}</span>
+    </button>
+  );
+  const anyCoins = coins.crypto.length + coins.tokens.length > 0;
 
   const { me } = useAccess();
   const real = me?.tradeMode === "real";
@@ -378,6 +430,18 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
       </div>
       <div className="search">
         <input placeholder="Search ticker, name or token address..." value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)} />
+        {open && q.trim().length >= 2 && (anyCoins || (searching && !res.length)) && (
+          <div className="dropdown search-results">
+            {searching && !anyCoins ? <div className="sr-empty muted small">Searching…</div> : null}
+            {coins.crypto.length ? <div className="sr-group">Crypto</div> : null}
+            {coins.crypto.map(coinRow)}
+            {coins.tokens.length ? <div className="sr-group">Tokens</div> : null}
+            {coins.tokens.map(coinRow)}
+          </div>
+        )}
+        {open && q.trim().length >= 2 && !searching && !anyCoins && !res.length && (
+          <div className="dropdown search-results"><div className="sr-empty muted small">No coins found for "{q.trim()}"</div></div>
+        )}
         {open && res.length > 0 && (
           <div className="dropdown">
             {res.map((p) => (
@@ -1137,6 +1201,8 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   const botPos = state?.positions.find((p) => p.source === "bot" && (p.botId ?? "1") === botId);
   const plan = running ? state?.lastSignal : null;
   const planOrders = plan?.consensus.orders ?? [];
+  // The minimum the bot really uses: in risky mode, the lower risky-mode minimum (as on the server).
+  const effMin = active ? (active.disabled?.includes("minConfidence") ? 0 : active.allowRisky ? Math.min(active.minConfidence, active.riskyMinWin ?? 30) : active.minConfidence) : 0;
   const startCash = state?.startCash ?? 10;
   const [cfg, setCfg] = useState<RiskKnobs & { goalUsd: number }>(() => ({ ...PRESETS.balanced, goalUsd: 15, ...(savedBot.cfg as Partial<RiskKnobs & { goalUsd: number }>) }));
   const set = (k: keyof typeof cfg) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1324,9 +1390,9 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
                 : `from ${botPos.target ? fmtPrice(botPos.target) : "the target"} it rides the trend`}
               <button className="chip" onClick={() => onOpen(botPos.chain, botPos.pool)}>View</button>
             </div>
-          ) : plan && planOrders.length > 0 && !planOrders.some((o) => o.winChancePct >= (active?.minConfidence ?? 0)) ? (
+          ) : plan && planOrders.length > 0 && !planOrders.some((o) => o.winChancePct >= effMin) ? (
             <div className="muted">
-              The AI's best order for <b>{plan.symbol}</b> has a {Math.max(...planOrders.map((o) => o.winChancePct))}% win chance, below your {active?.minConfidence}% minimum, so none will be used. Next plan by {fmtTime(Math.min(plan.consensus.expiresAt, (state?.bot.lastAnalysisAt ?? 0) + (active?.analyzeEverySec ?? 1800) * 1000))}, sooner if the market moves.
+              The AI's best order for <b>{plan.symbol}</b> has a {Math.max(...planOrders.map((o) => o.winChancePct))}% win chance, below your {effMin}% minimum{active?.allowRisky ? " for risky mode" : ""}, so none will be used. Next plan by {fmtTime(Math.min(plan.consensus.expiresAt, (state?.bot.lastAnalysisAt ?? 0) + (active?.analyzeEverySec ?? 1800) * 1000))}, sooner if the market moves.
             </div>
           ) : plan && planOrders.length > 0 ? (
             <div>
@@ -1334,7 +1400,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
               {planOrders.map((o, i) => (
                 <div key={i} className="tiny">
                   {state?.bot.armedSince?.[i] ? <b className="up">Triggered, confirming… </b> : "· "}
-                  {describeOrder(o, active?.waitForHold)} · {o.winChancePct}% win chance{o.winChancePct < (active?.minConfidence ?? 0) ? " (below your minimum)" : ""}
+                  {describeOrder(o, active?.waitForHold)} · {o.winChancePct}% win chance{o.winChancePct < effMin ? " (below your minimum)" : ""}
                 </div>
               ))}
               <div className="muted tiny">Plan cancels at {fmtTime(plan.consensus.expiresAt)} or if the price leaves its range; then the AI makes a new one.</div>

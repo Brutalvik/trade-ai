@@ -23,6 +23,26 @@ function Price({ p }: { p: number }) {
 }
 const fmtCount = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n));
 
+// The chart (busiest market) for a coin from a list or the search box.
+export async function findCoinPair(c: ListCoin): Promise<PairInfo | undefined> {
+  if (c.pair) return c.pair;
+  let found: PairInfo | undefined;
+  if (c.query) {
+    // A ranked coin (any chain): its busiest market, or a wrapped version (BTC -> WBTC / cbBTC).
+    const sym = c.query.toUpperCase();
+    const names = [sym, `W${sym}`, `CB${sym}`, `${sym}.E`, `B${sym}`, `U${sym}`];
+    // Copycat tokens reuse big names, so the market's price must also match the real coin's (±2%).
+    const near = (p: PairInfo) => c.priceUsd > 0 && Math.abs(p.priceUsd - c.priceUsd) / c.priceUsd < 0.02;
+    const res = [...(await api.search(sym)), ...(sym.length <= 5 ? await api.search(`W${sym}`).catch(() => []) : [])]
+      .filter((p) => names.includes(p.symbol.toUpperCase()) && near(p))
+      .sort((a, b) => b.liquidityUsd - a.liquidityUsd);
+    found = res[0];
+  } else {
+    found = (await api.search(c.mint)).filter((p) => p.chain === "solana" && p.tokenAddress === c.mint).sort((a, b) => b.liquidityUsd - a.liquidityUsd)[0];
+  }
+  return found ? { ...found, imageUrl: found.imageUrl ?? c.icon } : undefined;
+}
+
 export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSelect: (p: PairInfo) => void; selectedMint?: string; notify: (m: string, bad?: boolean) => void; onCollapse: () => void }) {
   const [kind, setKind] = useState<ListKind>(() => (KINDS.some((k) => k.id === localStorage.getItem(LS)) ? (localStorage.getItem(LS) as ListKind) : "crypto"));
   const [lists, setLists] = useState<Partial<Record<ListKind, ListCoin[]>>>({});
@@ -45,21 +65,8 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
     if (c.pair) return onSelect(c.pair);
     setOpening(c.mint);
     try {
-      let found: PairInfo | undefined;
-      if (c.query) {
-        // A ranked coin (any chain): its busiest market, or a wrapped version (BTC -> WBTC / cbBTC).
-        const sym = c.query.toUpperCase();
-        const names = [sym, `W${sym}`, `CB${sym}`, `${sym}.E`, `B${sym}`];
-        // Copycat tokens reuse big names, so the market's price must also match the real coin's (±2%).
-        const near = (p: PairInfo) => c.priceUsd > 0 && Math.abs(p.priceUsd - c.priceUsd) / c.priceUsd < 0.02;
-        const res = [...(await api.search(sym)), ...(sym.length <= 5 ? await api.search(`W${sym}`).catch(() => []) : [])]
-          .filter((p) => names.includes(p.symbol.toUpperCase()) && near(p))
-          .sort((a, b) => b.liquidityUsd - a.liquidityUsd);
-        found = res[0];
-      } else {
-        found = (await api.search(c.mint)).filter((p) => p.chain === "solana" && p.tokenAddress === c.mint).sort((a, b) => b.liquidityUsd - a.liquidityUsd)[0];
-      }
-      if (found) onSelect({ ...found, imageUrl: found.imageUrl ?? c.icon });
+      const found = await findCoinPair(c);
+      if (found) onSelect(found);
       else notify(`No chart found for ${c.symbol} yet`, true);
     } catch (e: any) {
       notify(e.message, true);

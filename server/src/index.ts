@@ -14,7 +14,7 @@ import * as history from "./audit.js";
 import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
-import { coinList } from "./lists.js";
+import { searchCoins, coinList } from "./lists.js";
 import { botLimit, can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
@@ -72,6 +72,7 @@ app.get(
   })),
 );
 app.get("/api/search", wrap(async (req) => searchPairs(String(req.query.q ?? ""))));
+app.get("/api/search-coins", publicData(() => 30, async (req) => searchCoins(String(req.query.q ?? ""))));
 app.get("/api/pair/:chain/:pool", publicData(() => 5, async (req) => getPair(String(req.params.chain), String(req.params.pool))));
 // Returns the candle array; the X-Candle-Source header says where it came from.
 app.get(
