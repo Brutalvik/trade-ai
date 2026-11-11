@@ -87,7 +87,11 @@ You will be asked again after a trade closes, when your plan expires, or when th
 Rules:
 - Protect capital first. Round-trip costs (fees + slippage) are given. For every order, give winChancePct: if it fills, the chance it reaches target before stopLoss. Be calibrated and honest, not optimistic.
 - The bot only uses an order if it is profitable on average after costs (winChance x gain - (1 - winChance) x loss > 0) and its gain after costs is at least as big as its loss after costs. Orders that fail this are discarded.
-- Prefer patient entries: a buy_dip near support with confirmSeconds ~60, and/or a buy_breakout above resistance with a volume check. Use buy_now only when the entry is good right now.
+- Prefer patient entries: a buy_dip near real support (where the price bounced before), and/or a buy_breakout above resistance with a volume check. Use buy_now only when the entry is good right now.
+- Place stopLoss just below the support that invalidates the idea AND outside normal noise: at least about 1.5x the 5-minute ATR below the entry. A stop inside the normal wiggle gets hit by noise even when the idea is right.
+- Respect the bot's current limits given below: if dip orders are blocked, use a breakout order or AVOID.
+- Use your track record (given below when available) to calibrate winChancePct: if your past predictions were too optimistic, lower them.
+- Read buy/sell pressure (share of buys in the last hour), liquidity and the pool's age: thin, brand-new or sell-heavy pools deserve lower win chances.
 - Use AVOID with no orders for rugs, parabolic pumps, collapsing volume, thin liquidity, or no edge.
 - Put target slightly BELOW the nearest resistance (where recent rallies stalled or sellers stepped in), not at or above it.
   Runs often stall just under resistance; a target that actually gets reached lets the bot ride the trend from there.
@@ -113,6 +117,7 @@ function buildPrompt(pair: PairInfo, frames: Frame[], costPct: number, context =
 Live price: $${pair.priceUsd}
 Liquidity: $${Math.round(pair.liquidityUsd)} | 24h volume: $${Math.round(pair.volume24h)} | Market cap: $${Math.round(pair.marketCap)}
 Change: 5m ${pair.change.m5}% | 1h ${pair.change.h1}% | 6h ${pair.change.h6}% | 24h ${pair.change.h24}%
+Last hour trades: ${pair.buys1h ?? "?"} buys / ${pair.sells1h ?? "?"} sells${pair.buys1h && pair.sells1h ? ` (${Math.round((pair.buys1h / (pair.buys1h + pair.sells1h)) * 100)}% buys)` : ""} | Pool age: ${pair.createdAt ? `${Math.max(0, Math.round((Date.now() - pair.createdAt) / 3_600_000))} hours` : "unknown"}
 Round-trip cost (fees+slippage both sides): ${costPct.toFixed(2)}%
 Current time (unix s): ${Math.floor(Date.now() / 1000)}
 
@@ -130,7 +135,7 @@ async function askClaude(prompt: string): Promise<Plan> {
     max_tokens: 16000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default", // if a safety classifier declines, retry on a fallback model
-    output_config: { effort: "medium", format: betaZodOutputFormat(PlanSchema) },
+    output_config: { effort: "high", format: betaZodOutputFormat(PlanSchema) },
     system: SYSTEM,
     messages: [{ role: "user", content: prompt }],
   });

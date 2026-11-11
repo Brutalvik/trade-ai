@@ -372,17 +372,43 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
   const primary = frames.find((f) => f.tf === "5m" && f.snap) ?? frames.find((f) => f.snap);
   if (!primary?.snap) throw new Error("Not enough candle history for this token yet");
   const snap = primary.snap;
+  // Downtrend on the 1-hour chart: fast average below slow average and price below the slow one.
+  // Worked out BEFORE asking, so the AI knows which of its orders the bot is allowed to fill.
+  const h1 = frames.find((f) => f.tf === "1h")?.snap;
+  const trendDown = h1 ? h1.ema9 < h1.ema21 && h1.price < h1.ema21 : false;
+  const cfg = state.bot.config;
+  const maxDrop = cfg?.maxDrop1hPct ?? 10;
+  const dipsBlocked = trendDown || pair.change.h1 <= -maxDrop;
   const recent = state.trades.filter((t) => t.pool === pool && t.source === "bot" && t.side === "SELL").slice(0, 5);
+  // The AI's own track record (all coins): predicted win chance vs what really happened.
+  const scored = state.trades.filter((t) => t.source === "bot" && t.side === "SELL" && typeof t.predictedWinPct === "number").slice(0, 30);
+  const record = scored.length >= 3
+    ? (() => {
+        const avgPred = scored.reduce((a, t) => a + t.predictedWinPct!, 0) / scored.length;
+        const hit = (scored.filter((t) => t.reachedTarget).length / scored.length) * 100;
+        const wins = scored.filter((t) => (t.pnlUsd ?? 0) > 0).length;
+        const pnl = scored.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+        return `Your track record on the last ${scored.length} bot trades: you predicted on average ${avgPred.toFixed(0)}% win chance; the target was actually reached ${hit.toFixed(0)}% of the time; ${wins} of ${scored.length} closed in profit; total P&L ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}.${hit < avgPred - 10 ? " Your win chances have been too optimistic: lower them, or plan closer targets / better entries." : ""}`;
+      })()
+    : "Not enough bot trades yet to score your past predictions.";
+  const ex = {
+    be: cfg?.breakEvenAtPct ?? 8,
+    lock: cfg?.lockPct ?? 50,
+    half: cfg?.partialAtPct ?? 75,
+    trail: cfg?.trailPct ?? 3,
+    minWin: cfg?.minConfidence ?? 45,
+  };
   const context = [
     recent.length
       ? `Recent bot trades on this coin (newest first): ${recent.map((t) => `${new Date(t.time).toISOString().slice(11, 16)} UTC ${(t.pnlUsd ?? 0) >= 0 ? "+" : ""}$${(t.pnlUsd ?? 0).toFixed(2)} (${t.reason})`).join("; ")}.`
       : "No recent bot trades on this coin.",
-    "Bot rules: it will NOT fill dip or buy-now orders while the 1-hour trend is down or the coin fell more than ~10% in the last hour (a crash is not a dip); breakout orders are still allowed. After a losing trade it waits before re-buying the coin, and skips the coin for the day after 2 losses in a row.",
+    record,
+    dipsBlocked
+      ? `IMPORTANT: right now the bot will NOT fill buy_dip or buy_now orders (${trendDown ? "the 1-hour trend is down" : `the coin fell ${Math.abs(pair.change.h1).toFixed(1)}% in the last hour`}). Only a buy_breakout can be used; otherwise choose AVOID.`
+      : `Dip and buy-now orders are allowed right now (the bot pauses them if the 1-hour trend turns down or the coin falls more than ${maxDrop}% in an hour).`,
+    `Exact exit rules: once up ${ex.be}%, the stop moves to break-even, then a profit lock keeps at least ${ex.lock}% of the best gain; it sells half at ${ex.half}% of the way from entry to your target; at the target it trails ${ex.trail}% below the highest price. Orders with a win chance below ${ex.minWin}% are not used. After a losing trade it waits before re-buying, and skips the coin for the day after 2 losses.`,
   ].join("\n");
   const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context);
-  // Downtrend on the 1-hour chart: fast average below slow average and price below the slow one.
-  const h1 = frames.find((f) => f.tf === "1h")?.snap;
-  const trendDown = h1 ? h1.ema9 < h1.ema21 && h1.price < h1.ema21 : false;
   state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
