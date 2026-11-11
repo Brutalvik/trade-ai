@@ -545,7 +545,13 @@ function claudeDue(cfg: BotConfig, price: number | null): string | null {
 // Each check looks at the 5-second candles since the last check, so a brief dip
 // or spike between checks still counts, the way a real limit/stop order would fill.
 export const CHECK_MS = 5_000;
-type Quote = { pair: PairInfo; price: number; low: number; high: number; source: string };
+// low/high: the range touched since the last check (for dip/breakout triggers, targets, stops).
+// peakHigh: the highest *closing* price in that window, used to move trailing stops up.
+// A single bad tick can print a wick far from the real price (SEPPUKU once showed a
+// $0.039 "high" while it traded at $0.012), so wicks are capped near the live price and
+// trailing stops follow closes, never a lone wick.
+type Quote = { pair: PairInfo; price: number; low: number; high: number; peakHigh: number; closeLow: number; source: string };
+const MAX_WICK = 0.15; // ignore any high/low more than 15% beyond both live prices
 
 async function quote(chain: string, pool: string, sinceMs: number): Promise<Quote> {
   // Fetch the live price and the 5-second candles at the same time (token is known
@@ -553,7 +559,7 @@ async function quote(chain: string, pool: string, sinceMs: number): Promise<Quot
   const token = knownToken(pool);
   const candlesP = token ? getRecentTokenCandles(chain, token).catch(() => null) : null;
   const pair = await getPair(chain, pool);
-  let price = pair.priceUsd, low = price, high = price, source = "DexScreener";
+  let price = pair.priceUsd, low = price, high = price, peakHigh = price, closeLow = price, source = "DexScreener";
   try {
     if (pair.tokenAddress) {
       const candles = (candlesP && pair.tokenAddress === token ? await candlesP : null) ?? (await getRecentTokenCandles(chain, pair.tokenAddress));
@@ -562,16 +568,20 @@ async function quote(chain: string, pool: string, sinceMs: number): Promise<Quot
       // Use CoinMarketCap only if it's current and agrees with this pool's price.
       if (last && nowS - last.time < 30 && price > 0 && Math.abs(last.close - price) / price < 0.1) {
         const recent = candles.filter((c) => c.time + 5 > sinceMs / 1000); // candles overlapping the window
+        const dex = price;
         price = last.close;
-        low = Math.min(price, ...recent.map((c) => c.low));
-        high = Math.max(price, ...recent.map((c) => c.high));
+        const refHi = Math.max(price, dex), refLo = Math.min(price, dex);
+        low = Math.max(Math.min(price, ...recent.map((c) => c.low)), refLo * (1 - MAX_WICK));
+        high = Math.min(Math.max(price, ...recent.map((c) => c.high)), refHi * (1 + MAX_WICK));
+        peakHigh = Math.min(Math.max(price, ...recent.map((c) => c.close)), high);
+        closeLow = Math.max(Math.min(price, ...recent.map((c) => c.close)), low);
         source = "CoinMarketCap 5s candles";
       }
     }
   } catch {
     // fall back to the DexScreener snapshot
   }
-  return { pair: { ...pair, priceUsd: price }, price, low, high, source };
+  return { pair: { ...pair, priceUsd: price }, price, low, high, peakHigh, closeLow, source };
 }
 
 // Was this standing order's trigger touched since the last check?
@@ -674,7 +684,7 @@ export async function tick(persist = true) {
         t.strategy = "newcoin";
         pos.partialDone = true;
         pos.trailing = true;
-        pos.peak = q.high;
+        pos.peak = q.peakHigh;
         log(`${pos.symbol}: sold half @ ${fmt(t.price)} (P&L +$${t.pnlUsd!.toFixed(2)}); trailing the rest ${pos.trailPct}% below its high.`, "good");
         alert(`🚀 ${pos.symbol}: sold half @ ${fmt(t.price)}, +$${t.pnlUsd!.toFixed(2)}. Riding the rest.`);
         return;
@@ -684,12 +694,12 @@ export async function tick(persist = true) {
       let newHighThisCheck = false;
       if (!pos.trailing && pos.target && q.high >= pos.target) {
         pos.trailing = true;
-        pos.peak = q.high;
+        pos.peak = Math.max(pos.target, q.peakHigh);
         newHighThisCheck = true;
         log(`${pos.symbol} hit its target ${fmt(pos.target)}: now riding it, selling if it falls ${trail}% from its high.`, "good");
       }
-      if (pos.trailing && q.high > (pos.peak ?? 0)) {
-        pos.peak = q.high;
+      if (pos.trailing && q.peakHigh > (pos.peak ?? 0)) {
+        pos.peak = q.peakHigh;
         newHighThisCheck = true;
         dirty = true; // the high matters for the trailing stop; keep it saved
       }
@@ -700,7 +710,8 @@ export async function tick(persist = true) {
       let sellAt = price;
       // If the high was set in this same check we can't tell whether the low came
       // before or after it, so judge the trailing stop on the latest price instead.
-      const trailLow = newHighThisCheck ? price : q.low;
+      // Trailing stops (like their highs) go by closing prices, so one bad tick can't end a trade.
+      const trailLow = newHighThisCheck ? price : q.closeLow;
       if (pos.trailing && trailLow <= trailStop) {
         reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
         sellAt = Math.min(trailStop, price);
@@ -934,12 +945,12 @@ export async function guardProtected() {
     for (const p of state.positions.filter((x) => x.protectPct)) {
       const q = await quote(p.chain, p.pool, Math.max(Date.now() - 60_000, p.protectSince ?? 0));
       p.lastPrice = q.price;
-      if (q.high > (p.peak ?? 0)) {
-        p.peak = q.high;
+      if (q.peakHigh > (p.peak ?? 0)) {
+        p.peak = q.peakHigh;
         changed = true;
       }
       const stop = p.peak! * (1 - p.protectPct! / 100);
-      if (q.low <= stop) {
+      if (q.closeLow <= stop) { // by closing prices: one bad tick can't trigger it
         const gain = ((Math.min(stop, q.price) - p.entryPrice) / p.entryPrice) * 100;
         const t = sell(p.id, Math.min(stop, q.price), 1, `Protection: fell ${p.protectPct}% from its high of ${fmt(p.peak!)}`);
         t.auto = true;
