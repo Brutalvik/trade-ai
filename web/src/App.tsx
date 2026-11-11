@@ -250,7 +250,7 @@ export default function App() {
         <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`} style={{ "--chart-h": `${chartH}px` } as CSSProperties}>
           {!chartMax && <RowResizer height={chartH} onChange={setChartH} onDone={(h) => localStorage.setItem("nexus-chart-h", String(h))} />}
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
-          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
+          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? <ChartLoading symbol={pair.symbol} /> : "Search a ticker to begin"}</div>}
           <div className="legend">
             <button className="chart-size-btn" onClick={() => setChartMax((v) => !v)} aria-pressed={chartMax} title={chartMax ? "Minimize (Esc)" : "Fill the window"} aria-label={chartMax ? "Minimize chart" : "Maximize chart"}>
               {chartMax ? (
@@ -1875,6 +1875,22 @@ function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h
       }}
     >
       <span />
+    </div>
+  );
+}
+
+// Placeholder while a coin's candles load: faint candles rising and falling in a wave.
+const LOAD_BARS = Array.from({ length: 28 }, (_, i) => ({ up: (i * 7) % 5 !== 0, base: 30 + ((i * 37) % 45) }));
+function ChartLoading({ symbol }: { symbol: string }) {
+  return (
+    <div className="chart-loading" role="status" aria-label={`Loading the ${symbol} chart`}>
+      <div className="chart-loading-bars" aria-hidden="true">
+        {LOAD_BARS.map((b, i) => (
+          <span key={i} className={b.up ? "up" : "down"} style={{ height: `${b.base}%`, animationDelay: `${(i * 0.07).toFixed(2)}s` }} />
+        ))}
+        <span className="chart-loading-sweep" />
+      </div>
+      <div className="chart-loading-label">Loading {symbol}</div>
     </div>
   );
 }
