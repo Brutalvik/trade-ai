@@ -5,12 +5,15 @@
 // Sizes are bounded: one account state, up to 3 recent charts, one list per chain.
 import type { Analysis, AppState, Candle, PairInfo, ScanResult, Timeframe } from "./api";
 
+// The bot panel's choices (preset numbers, mode, chains), kept across refreshes.
+export type SavedBotSettings = { cfg?: Record<string, number>; custom?: boolean; mode?: "this" | "auto" | "newcoins"; newChain?: "solana" | "base"; autoChain?: string; waitForHold?: boolean };
+
 // One saved Claude analysis per coin (only what the page shows, not the raw data sent).
 export type SavedAnalysis = { at: number; results: Analysis["results"]; consensus: Analysis["consensus"] };
 
 const KEY = "nexus-v1";
 type Saved = {
-  ui: { pair?: PairInfo; tf?: Timeframe; tab?: string; scanChain?: string; newChain?: string };
+  ui: { pair?: PairInfo; tf?: Timeframe; tab?: string; scanChain?: string; newChain?: string; bot?: SavedBotSettings };
   state?: AppState;
   charts: { key: string; candles: Candle[]; source: string }[]; // most recent first, max 3
   scans: Record<string, ScanResult>;

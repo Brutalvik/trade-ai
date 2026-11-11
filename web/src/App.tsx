@@ -720,10 +720,12 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
 function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = null }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; alerts?: "telegram" | "ntfy" | null }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
-  const [mode, setMode] = useState<"this" | "auto" | "newcoins">("this");
-  const [newChain, setNewChain] = useState<"solana" | "base">("solana");
-  const [autoChain, setAutoChain] = useState<ScanChain>("all");
-  const [waitForHold, setWaitForHold] = useState(false);
+  // Your choices are saved in this browser, so a refresh or coin change keeps them.
+  const savedBot = savedUi().bot ?? {};
+  const [mode, setMode] = useState<"this" | "auto" | "newcoins">(savedBot.mode ?? "this");
+  const [newChain, setNewChain] = useState<"solana" | "base">(savedBot.newChain ?? "solana");
+  const [autoChain, setAutoChain] = useState<ScanChain>((savedBot.autoChain as ScanChain) ?? "all");
+  const [waitForHold, setWaitForHold] = useState(savedBot.waitForHold ?? false);
   const [rulesOpen, setRulesOpen] = useState(false);
   // Changes in the popup are drafts: Confirm keeps them, Cancel / ✕ / Escape / clicking outside undoes them.
   const [snap, setSnap] = useState<{ cfg: typeof cfg; custom: boolean; waitForHold: boolean } | null>(null);
@@ -771,13 +773,14 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
   const plan = running ? state?.lastSignal : null;
   const planOrders = plan?.consensus.orders ?? [];
   const startCash = state?.startCash ?? 10;
-  const [cfg, setCfg] = useState<RiskKnobs & { goalUsd: number }>({ ...PRESETS.balanced, goalUsd: 15 });
+  const [cfg, setCfg] = useState<RiskKnobs & { goalUsd: number }>(() => ({ ...PRESETS.balanced, goalUsd: 15, ...(savedBot.cfg as Partial<RiskKnobs & { goalUsd: number }>) }));
   const set = (k: keyof typeof cfg) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setCustom(true);
     setCfg({ ...cfg, [k]: Number(e.target.value) });
   };
   // "Custom" shows the input boxes; picking a preset goes back to the summary view.
-  const [custom, setCustom] = useState(false);
+  const [custom, setCustom] = useState(savedBot.custom ?? false);
+  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold } }), [cfg, custom, mode, newChain, autoChain, waitForHold]);
   const pick = (p: PresetKey) => {
     setCustom(false);
     setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
@@ -786,6 +789,22 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
     running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, newCoinPct: active.newCoinPct ?? 3, newStopPct: active.newStopPct ?? 15, newTakePct: active.newTakePct ?? 30, newTrailPct: active.newTrailPct ?? 10, newMaxMin: active.newMaxMin ?? 45, newMaxPerDay: active.newMaxPerDay ?? 5, goalUsd: active.goalUsd } : cfg;
+  // When the bot stops, keep the settings it was running with (even if this page was
+  // refreshed or the bot was started elsewhere), ready for the next start.
+  const lastRun = useRef<{ shown: typeof shown; active: BotConfig } | null>(null);
+  useEffect(() => {
+    if (running && active) lastRun.current = { shown, active };
+    else if (!running && lastRun.current) {
+      const { shown: used, active: a } = lastRun.current;
+      lastRun.current = null;
+      setCfg(used);
+      setCustom(!matchPreset(used));
+      setMode(a.pick ?? "this");
+      if (a.newChain) setNewChain(a.newChain);
+      if (a.autoChain) setAutoChain(a.autoChain);
+      setWaitForHold(!!a.waitForHold);
+    }
+  }, [running, active]); // eslint-disable-line react-hooks/exhaustive-deps
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
