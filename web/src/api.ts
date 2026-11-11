@@ -102,6 +102,7 @@ export const api = {
   me: () => req<{ user: User | null }>("/auth/me"),
   placeOrder: (b: { side: "BUY" | "SELL"; chain?: string; pool?: string; symbol?: string; price: number; usd?: number; positionId?: string; fraction?: number }) => req<LimitOrder>("/orders", b),
   cancelOrder: (id: string) => req("/orders/cancel", { id }),
+  overrideDailyLimit: () => req("/bot/override-daily", {}),
   signIn: (b: { login: string; password: string }) => req<{ user: User }>("/auth/signin", b),
   signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),
   signOut: () => req("/auth/signout", {}),

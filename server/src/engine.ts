@@ -149,6 +149,8 @@ type State = {
     // Plans made before this time are not used: set when the bot starts and when a trade
     // closes, so every new trade starts from a fresh AI analysis.
     freshAfter?: number;
+    // "Continue anyway": the user lifted today's daily loss limit (UTC date it applies to).
+    dailyOverride?: string | null;
     // Orders whose trigger was reached but that were skipped (logged once per plan).
     skipNoted: boolean[];
     startedAt: number | null; // when the bot was last started (unix ms)
@@ -690,6 +692,7 @@ function dailyBlock(cfg: BotConfig): string | null {
     state.bot.day = { date: today, startEquity: equity() };
   }
   const limit = cfg.dailyLossPct ?? 10;
+  if (state.bot.dailyOverride === today) return null; // the user chose to keep trading today
   const lostPct = ((state.bot.day.startEquity - equity()) / state.bot.day.startEquity) * 100;
   return lostPct >= limit ? `daily loss limit reached (down ${lostPct.toFixed(1)}% today, limit ${limit}%); resumes at 00:00 UTC` : null;
 }
@@ -1370,6 +1373,17 @@ async function checkLimitOrders() {
     }
   }
   save();
+}
+
+// "Continue anyway": lift today's daily loss limit (until 00:00 UTC). The emergency stop
+// (account drawdown limit) still applies.
+export function overrideDailyLimit() {
+  const today = utcDay();
+  state.bot.dailyOverride = today;
+  state.bot.blocked = null;
+  log(`You lifted today's daily loss limit: the bot keeps trading until 00:00 UTC. The emergency stop still applies.`, "bad");
+  save();
+  return { ok: true, until: `${today}T24:00:00Z` };
 }
 
 // Emergency stop: sell everything and switch off if equity falls below the limit.

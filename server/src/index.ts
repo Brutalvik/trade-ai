@@ -167,6 +167,8 @@ app.post(
   }),
 );
 app.post("/api/bot/stop", signedIn(wrap(async () => engine.stopBot())));
+// "Continue anyway" past today's daily loss limit (the user confirmed the risk).
+app.post("/api/bot/override-daily", needs("bot.run", wrap(async () => engine.overrideDailyLimit())));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
 // Limit orders: { side: "BUY", chain, pool, symbol, price, usd } or { side: "SELL", positionId, price, fraction }.
 app.post("/api/orders", needs("trade.limit", wrap(async (req) => engine.placeOrder(req.body ?? {}))));

@@ -496,3 +496,4 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 /* Bot panel header: long status lines wrap inside the card */
 .bot-timer { white-space: normal !important; overflow-wrap: anywhere; text-align: right; max-width: 100%; }
 .panel-title > :last-child { min-width: 0; }
+.continue-btn { display: block; margin-top: 8px; padding: 6px 12px; font-size: 12px; border-color: rgba(255, 200, 87, 0.6); color: #ffc857; }

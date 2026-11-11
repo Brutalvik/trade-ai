@@ -1038,6 +1038,18 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
 
   // Risky coin: ask first ("I understand"), then start with the safety pauses relaxed.
   const [riskOpen, setRiskOpen] = useState(false);
+  // Daily loss limit: "Continue anyway" after an "I understand" popup.
+  const [dailyOpen, setDailyOpen] = useState(false);
+  const continueToday = async () => {
+    setDailyOpen(false);
+    try {
+      await api.overrideDailyLimit();
+      notify("Daily loss limit lifted until 00:00 UTC. The bot keeps trading.");
+      refresh();
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
   const start = () => {
     if (mode === "this" && !pair) return;
     if (mode === "this" && riskReasons.length) return setRiskOpen(true);
@@ -1101,7 +1113,31 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
       {running && state?.bot.blocked && (
         <div className="blocked small">
           <b>Not trading right now:</b> {state.bot.blocked}.
+          {state.bot.blocked.startsWith("daily loss limit") && (
+            <button className="btn ghost continue-btn" onClick={() => setDailyOpen(true)}>Continue anyway…</button>
+          )}
         </div>
+      )}
+      {dailyOpen && createPortal(
+        <div className="modal-backdrop">
+          <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="daily-title">
+            <div className="modal-head">
+              <h2 id="daily-title">⚠ Keep trading after today's losses?</h2>
+              <button className="modal-close" onClick={() => setDailyOpen(false)} aria-label="Close" title="Close">✕</button>
+            </div>
+            <div className="modal-body">
+              <p className="risk-lead">{state?.bot.blocked}.</p>
+              <p>The daily loss limit stops new trades after a bad day, so a losing streak can't keep growing. Continuing lifts it <b>until 00:00 UTC</b>; it turns back on automatically tomorrow.</p>
+              <p>The bot keeps using its exits, your minimum win chance and the <b>emergency stop</b>, which sells everything and switches the bot off if the account falls below your limit.</p>
+              <p className="muted small">Losing days often get worse when trading continues. This is paper trading, but treat it as practice for real money.</p>
+            </div>
+            <div className="modal-foot">
+              <button className="btn ghost" onClick={() => setDailyOpen(false)}>Keep the pause</button>
+              <button className="btn sell" onClick={() => void continueToday()}>I understand, continue today</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
       {running && (
         <div className="bot-status small">
