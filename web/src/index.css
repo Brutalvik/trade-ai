@@ -420,3 +420,8 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .open-orders { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
 .open-order { display: flex; align-items: center; gap: 8px; }
 .open-order .small { flex: 1; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.btn.cancel-order { background: transparent; border: 1px solid rgba(255, 200, 87, 0.6); color: #ffc857; }
+.btn.cancel-order:hover { background: rgba(255, 200, 87, 0.1); }
+.limit-hint.pending { color: var(--cyan); }
+.kind-toggle button:disabled, .share-chips .chip:disabled, .amount .chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.amount input:disabled, .limit-price input:disabled { opacity: 0.6; cursor: not-allowed; }
