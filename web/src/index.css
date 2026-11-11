@@ -879,3 +879,4 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .demo-card { margin: 10px 0 12px; padding: 12px; border-radius: 12px; border: 1px dashed rgba(255, 255, 255, 0.18); background: rgba(0, 0, 0, 0.2); }
 .demo-stance { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; font-family: Orbitron, sans-serif; letter-spacing: 1px; }
 .demo-order { display: flex; flex-direction: column; gap: 3px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); font-size: 12.5px; }
+.ladder-toggle { margin: 0 0 0 auto; align-self: center; white-space: nowrap; }

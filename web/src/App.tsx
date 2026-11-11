@@ -90,6 +90,11 @@ export default function App() {
     window.addEventListener("resize", set);
     return () => window.removeEventListener("resize", set);
   });
+  // Growth ladder under Positions: shown on desktop, hidden on tablets / phones, until you choose.
+  const [showLadder, setShowLadder] = useState(() => {
+    const v = localStorage.getItem("nexus-ladder");
+    return v ? v === "1" : window.innerWidth > 1180;
+  });
   // Chart height: drag the handle between the chart and Positions (remembered).
   const [chartH, setChartH] = useState(() => Math.max(CHART_MIN, Math.min(CHART_MAX, Number(localStorage.getItem("nexus-chart-h")) || 420)));
   // Left coin-list panel: collapsible and resizable (both remembered).
@@ -281,11 +286,17 @@ export default function App() {
                 {t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
               </button>
             ))}
+            {tab === "positions" && (
+              <label className="check small ladder-toggle" title="Show or hide the Growth ladder under your positions">
+                <input type="checkbox" checked={showLadder} onChange={(e) => { setShowLadder(e.target.checked); localStorage.setItem("nexus-ladder", e.target.checked ? "1" : "0"); }} />
+                <span>Growth ladder</span>
+              </label>
+            )}
           </div>
           {tab === "positions" && (
             <>
               <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} />
-              <GoalLadder state={state} />
+              {showLadder && <GoalLadder state={state} />}
             </>
           )}
           {tab === "trades" && (me?.tradeMode === "real" ? <RealTrades notify={notify} /> : <Trades state={state} notify={notify} />)}
@@ -1509,11 +1520,11 @@ function GoalLadder({ state }: { state: AppState | null }) {
           );
         })}
       </div>
-      <div className="row reset">
+      {!state?.signedOut && <div className="row reset">
         <span className="muted small">Reset paper account to</span>
         <input type="number" value={cash} onChange={(e) => setCash(e.target.value)} />
         <button className="chip" onClick={() => confirm("Reset the paper account? Trade history will be cleared.") && api.reset(Number(cash))}>Reset</button>
-      </div>
+      </div>}
     </div>
   );
 }
