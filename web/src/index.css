@@ -377,3 +377,5 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .pred-big b { color: var(--amber, #ffc857); }
 
 .banner.signed-out { border-color: rgba(0, 229, 255, 0.4); background: rgba(0, 229, 255, 0.06); color: var(--text); }
+.info-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; border: 1px solid rgba(0, 229, 255, 0.35); background: rgba(0, 229, 255, 0.08); color: #9be9ff; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
+.model summary:hover .info-chip { border-color: var(--cyan); }

@@ -573,10 +573,10 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
             {results?.map((r) => (
               <details key={r.model} className="model">
                 <summary>
-                  <span>{aiText(r.model)}</span>
+                  <span className="info-chip">ⓘ Info</span>
                   {r.ok ? <span className={`tag ${r.signal.stance === "BUY_NOW" ? "buy" : r.signal.stance === "AVOID" ? "sell" : "hold"}`}>{STANCE_LABEL[r.signal.stance]} {r.signal.confidence}%</span> : <span className="tag sell">ERROR</span>}
                 </summary>
-                {r.ok ? <p className="small">{r.signal.reasoning} <span className="muted">Risk: {r.signal.riskLevel}. {(r.ms / 1000).toFixed(1)}s</span></p> : <p className="small down">{r.error}</p>}
+                {r.ok ? <p className="small">{aiText(r.signal.reasoning)} <span className="muted">Risk: {r.signal.riskLevel}. {(r.ms / 1000).toFixed(1)}s</span></p> : <p className="small down">{r.error}</p>}
               </details>
             ))}
           </div>
