@@ -37,8 +37,8 @@ const pdfText = (s: string) =>
 
 // ---------- CSV ----------
 export function paperCsv(trades: Trade[]) {
-  const head = ["time_utc", "side", "token", "pool", "price_usd", "qty", "usd", "dex_fee_usd", "platform_fee_usd", "pnl_usd", "by", "reason"];
-  const rows = trades.map((t) => [new Date(t.time).toISOString(), t.side, t.symbol, t.pool, t.price, t.qty, t.usd.toFixed(2), t.feeUsd.toFixed(4), (t.platformFeeUsd ?? 0).toFixed(4), t.pnlUsd?.toFixed(2) ?? "", t.source, t.reason]);
+  const head = ["time_utc", "side", "token", "pool", "price_usd", "qty", "usd", "dex_fee_usd", "platform_fee_usd", "pnl_usd", "by", "bot", "ai_predicted_win_pct", "reached_target", "reason"];
+  const rows = trades.map((t) => [new Date(t.time).toISOString(), t.side, t.symbol, t.pool, t.price, t.qty, t.usd.toFixed(2), t.feeUsd.toFixed(4), (t.platformFeeUsd ?? 0).toFixed(4), t.pnlUsd?.toFixed(2) ?? "", t.source, t.source === "bot" ? (t.botId ?? "1") : "", t.predictedWinPct ?? "", t.reachedTarget === undefined ? "" : t.reachedTarget ? "yes" : "no", t.reason]);
   save(new Blob([csv([head, ...rows])], { type: "text/csv;charset=utf-8" }), `trading-rust-paper-trades-${stamp()}.csv`);
 }
 export function realCsv(trades: RealTrade[]) {
