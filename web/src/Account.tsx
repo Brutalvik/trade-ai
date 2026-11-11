@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState, type FormEvent,
 import { usePrivy } from "@privy-io/react-auth";
 import { useWallets } from "@privy-io/react-auth/solana";
 import { createPortal } from "react-dom";
-import { api, fmtPrice, fmtUsd, type AdminUser, type AppState, type AuditEntry, type Trade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
+import { api, fmtPrice, fmtUsd, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type Trade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 
 // ---------- Shared modal ----------
 
@@ -129,6 +129,15 @@ export function AccountButton(props: Props) {
 // the user (linked by email for existing accounts); new people pick a username once.
 function PrivyAccountButton({ notify, onChange, state }: Props) {
   const { ready, authenticated, login, logout, getAccessToken } = usePrivy();
+  useEffect(() => {
+    const open = () => {
+      if (!ready) return;
+      if (authenticated) void link();
+      else login();
+    };
+    window.addEventListener(SIGNIN_EVENT, open);
+    return () => window.removeEventListener(SIGNIN_EVENT, open);
+  }); // re-subscribes each render so it uses the latest state
   const { wallets } = useWallets();
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [open, setOpen] = useState(false);
@@ -247,6 +256,11 @@ function PasswordAccountButton({ notify, onChange, state }: Props) {
   const [open, setOpen] = useState<"auth" | "profile" | null>(null);
   useEffect(() => {
     api.me().then((r) => setUser(r.user)).catch(() => setUser(null));
+  }, []);
+  useEffect(() => {
+    const open = () => setOpen("auth");
+    window.addEventListener(SIGNIN_EVENT, open);
+    return () => window.removeEventListener(SIGNIN_EVENT, open);
   }, []);
   if (user === undefined) return <span className="avatar-slot" />;
   return (

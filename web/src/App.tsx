@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { aiText, allBots, api, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
@@ -111,6 +111,7 @@ export default function App() {
   }, [chartMax]);
 
   const notify = useCallback((msg: string, bad = false) => {
+    if (!msg) return; // e.g. "sign in needed": the sign-in window opens instead of a toast
     setToast({ msg, bad });
     setTimeout(() => setToast(null), 4000);
   }, []);
@@ -168,7 +169,9 @@ export default function App() {
   // starts from a fresh analysis.
   const lastTradeAt = useMemo(() => Math.max(0, ...(state?.trades ?? []).filter((t) => t.pool === pair?.pool).map((t) => t.time)), [state?.trades, pair?.pool]);
   const savedPlan = analysis && analysis.at >= lastTradeAt ? analysis : null;
-  const shownPlan = savedPlan && (!botSig || savedPlan.at >= botSig.at) ? savedPlan : botSig;
+  // Signed out: no real AI plans (only a demo in the AI panel), and no plan lines on the chart.
+  const demo = !!state?.signedOut;
+  const shownPlan = demo ? null : savedPlan && (!botSig || savedPlan.at >= botSig.at) ? savedPlan : botSig;
   const sig = shownPlan?.consensus;
   const results = shownPlan?.results;
   const planRisk = useMemo(() => {
@@ -263,7 +266,7 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />
+          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
             <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)}>
               {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
@@ -1749,6 +1752,27 @@ function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h
       }}
     >
       <span />
+    </div>
+  );
+}
+
+// Signed out: a clearly labelled example of what the AI panel shows, with a sign-in button.
+function DemoSignal({ pair, price }: { pair: PairInfo | null; price?: number }) {
+  const p = price ?? pair?.priceUsd ?? 0;
+  return (
+    <div className="panel demo-signal">
+      <div className="panel-title"><span>AI SIGNAL</span><span className="demo-badge">DEMO</span></div>
+      <p className="muted small">This is an example of the plan the AI writes for a coin. Sign in to get real plans{pair ? ` for ${pair.symbol}` : ""}.</p>
+      <div className="demo-card">
+        <div className="demo-stance"><b className="up">WAIT FOR DIP</b><span className="muted small">example · 58% confidence</span></div>
+        <div className="demo-order">
+          <b>Buy instantly if it dips to {p ? fmtPrice(p * 0.97) : "3% below now"}</b>
+          <span className="small"><span className="up">52% win chance</span> · expected +2.1% per trade after fees</span>
+          <span className="muted tiny">Exit below {p ? fmtPrice(p * 0.93) : "-7%"} · target {p ? fmtPrice(p * 1.09) : "+9%"}, then it rides the trend · max 120 min</span>
+        </div>
+        <p className="muted tiny">Example numbers only, not a prediction for this coin.</p>
+      </div>
+      <button className="btn buy wide" onClick={() => window.dispatchEvent(new Event(SIGNIN_EVENT))}>Sign in for the AI's real plan</button>
     </div>
   );
 }

@@ -873,3 +873,9 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .pos-actions .protect.compact { display: inline-flex; align-items: center; gap: 4px; flex-wrap: nowrap; margin: 0 6px 0 0; vertical-align: middle; }
 .pos-actions .protect.compact > * { flex: none; }
 .pos-actions > .chip { vertical-align: middle; }
+
+/* Signed out: demo AI panel */
+.demo-badge { font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 2px 8px; border-radius: 999px; color: var(--amber); border: 1px solid rgba(255, 200, 87, 0.45); background: rgba(255, 200, 87, 0.08); }
+.demo-card { margin: 10px 0 12px; padding: 12px; border-radius: 12px; border: 1px dashed rgba(255, 255, 255, 0.18); background: rgba(0, 0, 0, 0.2); }
+.demo-stance { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; font-family: Orbitron, sans-serif; letter-spacing: 1px; }
+.demo-order { display: flex; flex-direction: column; gap: 3px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); font-size: 12.5px; }

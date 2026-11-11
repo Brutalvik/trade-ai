@@ -93,9 +93,22 @@ export type AuditEntry = { t: number; type: string; by?: string; summary: string
 export type Page<T> = { total: number; items: T[] };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
 
+// Signed out and pressed something that needs an account (buy, start bot, analyze...):
+// open the sign-in / register window instead of showing an error.
+export const SIGNIN_EVENT = "nexus:signin-needed";
+export class SignInNeeded extends Error {
+  constructor() {
+    super(""); // empty: no error toast, the sign-in window opens instead
+    this.name = "SignInNeeded";
+  }
+}
 async function req<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && body !== undefined && !path.startsWith("/auth/")) {
+    window.dispatchEvent(new Event(SIGNIN_EVENT));
+    throw new SignInNeeded();
+  }
   if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
   return data as T;
 }
