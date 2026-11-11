@@ -794,7 +794,7 @@ const NEW_COIN_DEFAULTS = { newCoinPct: 3, newStopPct: 15, newTakePct: 30, newTr
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
   safe: { label: "Safe", blurb: "Risks 1% of the account per trade, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7, riskPerTradePct: 1, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
   balanced: { label: "Balanced", blurb: "Risks 1.5% of the account per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10, riskPerTradePct: 1.5, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
-  aggressive: { label: "Aggressive", blurb: "Risks 3% per trade, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15, riskPerTradePct: 3, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
+  aggressive: { label: "Aggressive", blurb: "Puts 50% of the account into every trade, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 50, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15, riskPerTradePct: 0, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
 };
 type PresetKey = keyof typeof PRESETS;
 const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct", "riskPerTradePct", "newCoinPct", "newStopPct", "newTakePct", "newTrailPct", "newMaxMin", "newMaxPerDay", "lockPct", "partialAtPct"];
@@ -973,7 +973,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
-  const perTrade = (cash * shown.positionPct) / 100;
+  const perTrade = Math.min(cash, ((state?.equityNow ?? cash) * shown.positionPct) / 100);
   const floor = startCash * (1 - shown.maxDrawdownPct / 100);
 
   const start = async () => {
@@ -1105,7 +1105,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
               <p className="preset-blurb small">{isCustom ? "Your own numbers. Type them below; each box explains what it does." : PRESETS[preset!].blurb}</p>
 
               <ul className="plan small">
-                <li>Sizes each trade so that hitting the AI's exit loses about <b>{shown.riskPerTradePct}%</b> of the account (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)}), never more than {fmtUsd(perTrade)} ({shown.positionPct}% of cash)</li>
+                {shown.riskPerTradePct > 0 ? (
+                  <li>Sizes each trade so that hitting the AI's exit loses about <b>{shown.riskPerTradePct}%</b> of the account (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)}), never more than {fmtUsd(perTrade)} ({shown.positionPct}% of the account)</li>
+                ) : (
+                  <li>Puts <b>{shown.positionPct}%</b> of the account into every trade (≈{fmtUsd(perTrade)} now); a trade that hits its exit loses part of that, usually 5–10%</li>
+                )}
                 <li>The AI writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
                 <li>Sells below the AI's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
                 <li>Profit lock: from then on it keeps at least <b>{shown.lockPct}%</b> of the best gain, so a run that fades still ends in profit</li>
@@ -1133,12 +1137,12 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 <label>
                   Risk per trade (% of account)
                   <input type="number" step="0.5" value={shown.riskPerTradePct} onChange={set("riskPerTradePct")} disabled={running} />
-                  <small>How much one losing trade should cost. The bot sizes each trade from the AI's exit price so that hitting it loses about this much (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)} now). Smaller = survives losing streaks.</small>
+                  <small>How much one losing trade should cost. The bot sizes each trade from the AI's exit price so that hitting it loses about this much (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)} now). Smaller = survives losing streaks. 0 = off: always use the full "Money per trade" amount.</small>
                 </label>
                 <label>
-                  Max money per trade (% of cash)
+                  Money per trade (% of account)
                   <input type="number" value={shown.positionPct} onChange={set("positionPct")} disabled={running} />
-                  <small>Upper limit: never more than {shown.positionPct}% of {fmtUsd(cash)} = {fmtUsd(perTrade)} in one trade, even if the exit is very close.</small>
+                  <small>{shown.riskPerTradePct > 0 ? `Upper limit: never more than ${shown.positionPct}% of the account (${fmtUsd(perTrade)}) in one trade, even if the exit is very close.` : `Every trade uses ${shown.positionPct}% of the account (${fmtUsd(perTrade)} now), never more than your cash.`}</small>
                 </label>
                 <label>
                   Minimum win chance (%)

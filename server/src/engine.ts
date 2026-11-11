@@ -962,12 +962,13 @@ export async function tick(persist = true) {
       }
       if (Date.now() - state.bot.armedSince[i]! < holdSec * 1000) continue;
 
-      // Risk-based size: if the trade hits its exit, lose about riskPerTradePct of the account
-      // (exit distance plus round-trip costs), capped at positionPct of cash.
+      // Size: positionPct of the account (never more than the cash on hand). With a risk per
+      // trade set, it may be smaller: hitting the exit then loses about riskPerTradePct of the
+      // account (exit distance plus round-trip costs). Risk 0 = always use positionPct.
       const riskPct = cfg.riskPerTradePct ?? 1.5;
       const exitLossPct = ((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100 + roundTripCostPct();
-      const bySize = (equity() * riskPct) / 100 / (exitLossPct / 100);
-      const cap = state.cash * (cfg.positionPct / 100);
+      const bySize = riskPct > 0 ? (equity() * riskPct) / 100 / (exitLossPct / 100) : Infinity;
+      const cap = Math.min(state.cash, equity() * (cfg.positionPct / 100));
       const usd = Math.floor(Math.min(cap, bySize) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
