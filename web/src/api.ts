@@ -73,6 +73,8 @@ export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: n
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; permissions: Permission[] }; // freeTrades -1 = unlimited
 export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean };
 export type AdminUser = User & { usage: Usage };
+export type Holding = { mint: string; symbol: string; name: string; amount: number; priceUsd: number | null; valueUsd: number | null; imageUrl?: string; pool?: string };
+export type WalletView = { address: string | null; holdings: Holding[]; totalUsd: number; updatedAt: number; rpc?: "custom" | "public" };
 export type AuditEntry = { t: number; type: string; by?: string; summary: string; data?: Record<string, unknown> };
 export type Page<T> = { total: number; items: T[] };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
@@ -112,6 +114,7 @@ export const api = {
   privyComplete: (b: { accessToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/privy-complete", b),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   plans: () => req<PlanInfo[]>("/plans"),
+  wallet: (fresh = false) => req<WalletView>(`/wallet${fresh ? "?fresh=1" : ""}`),
   activity: (before = 0) => req<Page<AuditEntry>>(`/activity?before=${before}&limit=50`),
   tradeHistory: (before = 0, limit = 200) => req<Page<Trade>>(`/trades/history?before=${before}&limit=${limit}`),
   adminActivity: (username: string, before = 0) => req<Page<AuditEntry>>(`/admin/activity?username=${encodeURIComponent(username)}&before=${before}&limit=50`),

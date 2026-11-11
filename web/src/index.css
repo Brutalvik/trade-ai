@@ -529,3 +529,15 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .rules-formula { margin: 8px 0; padding: 8px 12px; border-radius: 10px; background: rgba(0, 229, 255, 0.06); border: 1px solid rgba(0, 229, 255, 0.25); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px; color: #bff2ff; }
 .rules-table td { white-space: normal; }
 @media (max-width: 860px) { .rules-body { grid-template-columns: 1fr; } .rules-toc { position: static; flex-direction: row; flex-wrap: wrap; } }
+
+/* Wallet tab */
+.wallet-tab { padding: 4px 4px 8px; }
+.wallet-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.wallet-total { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 28px; font-weight: 700; color: var(--text); }
+.wallet-actions { display: flex; gap: 8px; }
+.token-cell { display: flex; align-items: center; gap: 8px; }
+.token-cell img { width: 22px; height: 22px; border-radius: 50%; }
+.deposit-body { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.deposit-qr { width: 220px; height: 220px; border-radius: 12px; background: #fff; padding: 6px; }
+.deposit-address { word-break: break-all; padding: 8px 10px; border-radius: 10px; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border); font-size: 12.5px; color: var(--text); }
+.deposit-notes { text-align: left; color: #c6d2f0; padding-left: 18px; }

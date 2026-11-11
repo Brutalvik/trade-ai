@@ -12,6 +12,7 @@ import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
 import * as history from "./audit.js";
 import * as privy from "./privy.js";
+import { walletView } from "./wallet.js";
 import { can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
@@ -104,6 +105,18 @@ app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
 
 // Permanent history: your activity (consents, bot, AI use, account) and every trade.
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
+// Your real Solana wallet (read-only): SOL and token balances with USD values.
+app.get("/api/wallet", signedIn(async (req, res) => {
+  const a = (await auth.requestAuth(req))!;
+  const address = a.user.solanaAddress;
+  if (!address) return void res.json({ address: null, holdings: [], totalUsd: 0, updatedAt: Date.now() });
+  try {
+    res.json(await walletView(address, req.query.fresh === "1"));
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message ?? String(e), address });
+  }
+}));
+
 app.get("/api/activity", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;
   res.json(await history.activity(a.key, num(req.query.before, 0), num(req.query.limit, 50)));

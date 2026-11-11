@@ -4,6 +4,7 @@ import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, 
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
+import { WalletTab } from "./Wallet";
 import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
@@ -70,7 +71,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<SavedAnalysis | null>(() => { const p = savedUi().pair; return (p && savedAnalysis(p.pool)) || null; });
   const gotAnalysis = useCallback((a: Analysis) => setAnalysis(saveAnalysis(a.pair.pool, a)), []);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
-  const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log">(() => (savedUi().tab as "scanner" | "newcoins" | "positions" | "trades" | "log") ?? "scanner");
+  const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log" | "wallet">(() => (savedUi().tab as "scanner" | "newcoins" | "positions" | "trades" | "log" | "wallet") ?? "scanner");
   useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
   useEffect(() => { if (state) saveState(state); }, [state]);
   // Chart maximize: fills the window; Esc (or the button) brings it back.
@@ -240,14 +241,15 @@ export default function App() {
 
         <section className="panel bottom">
           <div className="tabs">
-            {(["scanner", "newcoins", "positions", "trades", "log"] as const).map((t) => (
+            {(["scanner", "newcoins", "positions", "trades", "log", "wallet"] as const).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {t === "scanner" ? "⚡ Opportunities" : t === "newcoins" ? "🚀 New coins" : t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
+                {t === "wallet" ? "💼 Wallet" : t === "scanner" ? "⚡ Opportunities" : t === "newcoins" ? "🚀 New coins" : t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
               </button>
             ))}
           </div>
           {tab === "scanner" && <Scanner onSelect={selectPair} notify={notify} tf={tf} />}
           {tab === "newcoins" && <NewCoins onSelect={selectPair} />}
+          {tab === "wallet" && <WalletTab notify={notify} />}
           {tab === "positions" && <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {tab === "trades" && <Trades state={state} />}
           {tab === "log" && <BotLog state={state} />}

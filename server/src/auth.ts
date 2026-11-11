@@ -38,7 +38,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const userKey = (u: string) => `user:${u.toLowerCase()}`;
 const emailKey = (e: string) => `email:${e.toLowerCase()}`;
-const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash });
+const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash && !u.privyId });
 
 let secret: Buffer | null = null;
 async function key() {
