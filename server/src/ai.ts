@@ -68,7 +68,7 @@ export type Consensus = {
   note: string;
 };
 
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
+export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
 // The bot's routine re-plans (after each trade, when a plan expires) use a cheaper model:
 // Claude Sonnet 5.5 costs half as much per token. Your own Analyze / Ask AI stay on Opus.
 export const BOT_MODEL = process.env.BOT_MODEL || "claude-sonnet-5-5";

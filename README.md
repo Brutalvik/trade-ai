@@ -47,6 +47,14 @@ Every feature checks a permission; a user's permissions come from their plan plu
 - **Models:** your own Analyze / Ask AI use Claude Opus 5.5; the bot's routine re-plans use Claude Sonnet 5.5 (half the cost per token). Set BOT_MODEL to change it.
 - **Billing** isn't connected yet: admins set plans; prices shown are proposed.
 
+## Permanent history (audit log)
+
+Append-only, per user (entries are added, never edited or deleted):
+- **Activity:** consents ("I understand, trade anyway" with the warnings shown; lifting the daily loss limit), bot starts / stops / pauses, AI analyses (model, tokens), limit orders, Protect, account events (sign-up, sign-in with IP, sign-out, password change, paper reset), and admin changes (plan, role, top-ups, with the admin's name).
+- **All trades:** every trade, kept permanently (the page shows the newest 1,000); downloadable as CSV.
+- Users see theirs in Profile, Activity & history; admins see any user's activity from Manage users.
+- Stored as Redis lists (`audit:<user>`, `ledger:<user>`); move them to a database such as Postgres when the app grows, and state the retention period in the privacy policy.
+
 ## New coins
 
 The 🚀 New coins tab lists pools from minutes to 3 days old, each with a rug-risk level (LOW / MEDIUM / HIGH / REJECTED) and the reasons. Solana uses RugCheck (mint/freeze authority, creator rug history, holder concentration, locked liquidity); Base uses honeypot.is (can you sell, buy/sell tax). Open a coin to see its chart, get the AI's plan and trade it like any other coin; skip Rejected and High-risk ones.

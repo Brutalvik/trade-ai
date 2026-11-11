@@ -497,3 +497,12 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .bot-timer { white-space: normal !important; overflow-wrap: anywhere; text-align: right; max-width: 100%; }
 .panel-title > :last-child { min-width: 0; }
 .continue-btn { display: block; margin-top: 8px; padding: 6px 12px; font-size: 12px; border-color: rgba(255, 200, 87, 0.6); color: #ffc857; }
+
+/* Activity & history */
+.activity-list { display: flex; flex-direction: column; margin: 8px 0 10px; }
+.activity-row { display: grid; grid-template-columns: 170px 80px 1fr; gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.activity-row .tag { justify-self: start; }
+.activity-summary { color: var(--text); }
+.activity-summary .link-btn { margin-left: 8px; }
+.activity-data { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.35); font-size: 11px; color: #c6d2f0; white-space: pre-wrap; word-break: break-word; }
+@media (max-width: 760px) { .activity-row { grid-template-columns: 1fr; gap: 4px; } }

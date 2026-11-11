@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { promisify } from "node:util";
 import type { Request, Response } from "express";
 import { createStore } from "./store.js";
+import { audit } from "./audit.js";
 import { month, permissionsFor, PLANS, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 
 const store = createStore();
@@ -53,6 +54,9 @@ function checkPassword(pw: unknown) {
   if (pw.length > 200) throw new Error("Password is too long");
   return pw;
 }
+
+// The visitor's IP (first hop behind Vercel's proxy), kept with sign-ins in the audit log.
+const clientIp = (req: Request) => String(req.headers["x-forwarded-for"] ?? req.socket?.remoteAddress ?? "").split(",")[0].trim() || undefined;
 
 // ---------- Session cookie ----------
 
@@ -159,23 +163,25 @@ export async function listUsers() {
   );
 }
 // Admin: add top-up AI tokens to a user (they don't expire; used after the monthly allowance).
-export async function addTopup(username: string, tokens: number) {
+export async function addTopup(username: string, tokens: number, by?: string) {
   const k = String(username).toLowerCase();
   if (!(await store.kvGet<User>(userKey(k)))) throw new Error("User not found");
   if (!(tokens > 0) || tokens > 1_000_000_000) throw new Error("Enter a token amount");
   const tk = `topup:${k}`;
   const next = ((await store.kvGet<number>(tk)) ?? 0) + Math.round(tokens);
   await store.kvSet(tk, next);
+  await audit(k, "admin.topup", `Admin added ${Math.round(tokens).toLocaleString()} AI tokens (balance ${next.toLocaleString()})`, { tokens: Math.round(tokens), balance: next }, by);
   return { username: k, topup: next };
 }
 
-export async function setUserAccess(username: string, plan?: string, role?: string) {
+export async function setUserAccess(username: string, plan?: string, role?: string, by?: string) {
   const u = await store.kvGet<User>(userKey(String(username)));
   if (!u) throw new Error("User not found");
   if (plan !== undefined && !(plan in PLANS)) throw new Error("Unknown plan");
   if (role !== undefined && role !== "user" && role !== "admin") throw new Error("Unknown role");
   const updated: User = { ...u, plan: (plan as PlanId) ?? u.plan, role: (role as Role) ?? u.role };
   await store.kvSet(userKey(u.username), updated);
+  await audit(u.username, "admin.plan", `Admin changed plan ${planOf(u.plan).name} → ${planOf(updated.plan).name}, role ${u.role ?? "user"} → ${updated.role ?? "user"}`, { from: { plan: u.plan ?? "free", role: u.role ?? "user" }, to: { plan: updated.plan ?? "free", role: updated.role ?? "user" } }, by);
   return pub(updated);
 }
 
@@ -205,6 +211,7 @@ export async function signUp(req: Request, res: Response) {
     throw new Error("An account with that email already exists");
   }
   await addToIndex(username);
+  await audit(username, "account.signup", "Account created", { email });
   await setSession(res, user);
   return { user: { ...pub(user), owner: true } };
 }
@@ -225,11 +232,14 @@ export async function signIn(req: Request, res: Response) {
   }
   await store.kvDel(failKey);
   await setSession(res, user);
+  await audit(user.username, "account.signin", "Signed in", { ip: clientIp(req) });
   await ownerName(user);
   return { user: { ...pub(user), owner: true } };
 }
 
-export async function signOut(_req: Request, res: Response) {
+export async function signOut(req: Request, res: Response) {
+  const u = await sessionUser(req);
+  if (u) await audit(u.username, "account.signout", "Signed out");
   clearSession(res);
   return { ok: true };
 }
@@ -248,6 +258,7 @@ export async function changePassword(req: Request, res: Response) {
   if (next === current) throw new Error("Choose a new password, different from the current one");
   const salt = crypto.randomBytes(16);
   const updated: User = { ...user, salt: salt.toString("hex"), hash: await hashPassword(next, salt), passVer: user.passVer + 1 };
+  await audit(user.username, "account.password", "Password changed (other devices signed out)");
   await store.kvSet(userKey(user.username), updated);
   await setSession(res, updated); // keep this browser signed in
   return { ok: true };

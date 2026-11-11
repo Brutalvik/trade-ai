@@ -21,6 +21,10 @@ export interface Store {
   kvGet<T>(key: string): Promise<T | null>;
   kvSet<T>(key: string, value: T, opts?: { nx?: boolean; ttlMs?: number }): Promise<boolean>;
   kvDel(key: string): Promise<void>;
+  // Append-only lists (audit log, full trade history): entries are added, never edited.
+  listPush<T>(key: string, value: T): Promise<void>;
+  listLen(key: string): Promise<number>;
+  listRange<T>(key: string, start: number, stop: number): Promise<T[]>; // inclusive, oldest = 0
 }
 
 const localLocks = new Map<string, number>();
@@ -67,6 +71,14 @@ function fileStore(): Store {
   const file = path.join(dir, "state.json");
   const fileFor = (key?: string) => (key ? path.join(dir, `state-${key.replace(/[^a-z0-9_]/gi, "_")}.json`) : file);
   const kvFile = path.join(dir, "kv.json");
+  const listFile = (key: string) => path.join(dir, `list-${key.replace(/[^a-z0-9_:-]/gi, "_").replace(/:/g, "__")}.jsonl`);
+  const readList = (key: string): unknown[] => {
+    try {
+      return fs.readFileSync(listFile(key), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    } catch {
+      return [];
+    }
+  };
   type Rec = { v: unknown; exp?: number };
   const readKv = (): Record<string, Rec> => {
     try {
@@ -109,6 +121,16 @@ function fileStore(): Store {
       delete m[key];
       writeKv(m);
     },
+    async listPush<T>(key: string, value: T) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(listFile(key), JSON.stringify(value) + "\n");
+    },
+    async listLen(key: string) {
+      return readList(key).length;
+    },
+    async listRange<T>(key: string, start: number, stop: number) {
+      return readList(key).slice(start, stop + 1) as T[];
+    },
     ...localLock,
   };
 }
@@ -139,5 +161,10 @@ export function createStore(): Store {
     async kvDel(key: string) {
       await redis.del(`${KEY}:kv:${key}`);
     },
+    async listPush<T>(key: string, value: T) {
+      await redis.rpush(`${KEY}:list:${key}`, value);
+    },
+    listLen: (key: string) => redis.llen(`${KEY}:list:${key}`),
+    listRange: <T>(key: string, start: number, stop: number) => redis.lrange<T>(`${KEY}:list:${key}`, start, stop),
   };
 }

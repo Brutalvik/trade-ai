@@ -1,7 +1,8 @@
 // Paper-trading broker + automated bot.
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
-import { analyze, BOT_MODEL, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
+import { audit, ledger, type AuditType } from "./audit.js";
+import { analyze, BOT_MODEL, CLAUDE_MODEL, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
 import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
@@ -103,6 +104,7 @@ export type BotConfig = {
   // downtrend) and skip the per-coin cool-down / 2-losses-a-day skip. The daily loss limit,
   // emergency stop, minimum win chance and fee check still apply.
   allowRisky?: boolean;
+  riskReasons?: string[]; // the warnings the user saw when accepting risky mode (kept in the audit log)
   // Risk-based sizing: size each trade so hitting its exit loses about this % of the account
   // (default 1.5). positionPct is then only the maximum share of cash per trade.
   riskPerTradePct?: number;
@@ -393,6 +395,20 @@ function platformFeePct() {
   return tradesThisMonth < p.freeTrades ? 0 : p.feePct;
 }
 
+// Permanent history (audit log / full trade history), queued like saves so flush() waits for it.
+function rec(type: AuditType, summary: string, data?: Record<string, unknown>) {
+  const a = acct();
+  if (!a.key) return;
+  const key = a.key;
+  a.pending = a.pending.then(() => audit(key, type, summary, data)).catch(() => {});
+}
+function recTrade(t: Trade) {
+  const a = acct();
+  if (!a.key) return;
+  const key = a.key;
+  a.pending = a.pending.then(() => ledger(key, t as unknown as Record<string, unknown>)).catch(() => {});
+}
+
 function save() {
   const a = acct();
   a.dirty = false;
@@ -471,6 +487,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   }
   const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, platformFeeUsd, reason, source };
   state.trades.unshift(t);
+  recTrade(t);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES; // keep the newest only
   recordEquity();
   save();
@@ -499,6 +516,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
   else p.realizedUsd = (p.realizedUsd ?? 0) + (net - costPart);
   const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, platformFeeUsd, reason, source: p.source };
   state.trades.unshift(t);
+  recTrade(t);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES;
   recordEquity();
   save();
@@ -517,6 +535,7 @@ export function updateSettings(s: Partial<Settings>) {
 
 export function reset(startCash: number) {
   acct().state = fresh(startCash);
+  rec("account.reset", `Paper account reset to $${startCash.toFixed(2)}`, { startCash });
   save();
 }
 
@@ -588,7 +607,10 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   ].join("\n");
   if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
   const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined);
-  await chargeTokens(results);
+  const appTokens = await chargeTokens(results);
+  const model = opts.forBot ? BOT_MODEL : CLAUDE_MODEL;
+  const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
+  rec("ai.analysis", `${opts.forBot ? "Bot re-plan" : "AI analysis"} on ${pair.symbol}: ${apiTokens.toLocaleString()} AI tokens (${appTokens.toLocaleString()} app tokens)`, { symbol: pair.symbol, pool, model, apiTokens, appTokens, forBot: !!opts.forBot, stance: consensus.stance });
   state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
@@ -614,6 +636,16 @@ export function startBot(cfg: BotConfig) {
     cfg.autoCandidates = Math.min(5, Math.max(1, cfg.autoCandidates ?? 3));
     cfg.autoMinLiquidityUsd ??= 50_000;
   }
+  rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
+    symbol: cfg.symbol, pool: cfg.pool, pick: cfg.pick ?? "this", positionPct: cfg.positionPct, riskPerTradePct: cfg.riskPerTradePct, minConfidence: cfg.minConfidence,
+    dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky,
+  });
+  if (cfg.allowRisky)
+    rec("consent.risky_mode", `Accepted "I understand, trade anyway" for ${cfg.symbol}`, {
+      symbol: cfg.symbol,
+      warningsShown: cfg.riskReasons ?? [],
+      note: "In risky mode the bot buys even while the coin is falling and doesn't pause after losing trades on it. Exits, minimum win chance, the daily loss limit and the emergency stop still apply.",
+    });
   state.bot.config = cfg;
   state.bot.running = true;
   state.bot.lastAnalysisAt = 0;
@@ -639,6 +671,7 @@ export function startBot(cfg: BotConfig) {
 }
 
 export function stopBot(reason = "Stopped by user") {
+  if (state.bot.running) rec("bot.stop", `Bot stopped: ${reason}`, { reason });
   state.bot.running = false;
   state.bot.stoppedAt = Date.now();
   state.bot.target = null;
@@ -1024,7 +1057,14 @@ export async function tick(persist = true) {
 
     // 2. Safety rules: daily loss limit for the whole account, cool-down per coin.
     const daily = dailyBlock(cfg);
-    if (daily) return setBlocked(daily, `daily:${utcDay()}`);
+    if (daily) {
+      const k = `auditpause:${utcDay()}`;
+      if (!state.bot.noted[k]) {
+        state.bot.noted[k] = Date.now();
+        rec("bot.pause", `Bot paused: ${daily}`, { rule: "daily_loss_limit" });
+      }
+      return setBlocked(daily, `daily:${utcDay()}`);
+    }
     if (isNew(cfg)) return await newCoinsStep(cfg);
     if (isAuto(cfg) && state.bot.target && coinBlock(cfg, state.bot.target.pool, state.bot.target.symbol)) {
       state.bot.target = null; // pick another coin
@@ -1229,6 +1269,7 @@ const hasProtected = () => state.positions.some((p) => p.protectPct) || (state.o
 export async function protectPosition(positionId: string, pct: number) {
   const p = state.positions.find((x) => x.id === positionId);
   if (!p) throw new Error("Position not found");
+  rec("trade.protect", pct ? `Protect this trade on ${p.symbol}: sell if it falls ${pct}% from its high` : `Removed protection on ${p.symbol}`, { positionId, pct });
   if (p.source !== "manual") throw new Error("The bot already manages its own trades");
   if (!pct) {
     delete p.protectPct;
@@ -1306,6 +1347,7 @@ export function placeOrder(body: { side?: string; chain?: string; pool?: string;
     o = { id: uid(), side, chain: p.chain, pool: p.pool, symbol: p.symbol, price, positionId: p.id, fraction, createdAt: Date.now() };
   }
   state.orders.push(o);
+  rec("order.place", `Limit ${side === "BUY" ? `buy $${o.usd!.toFixed(2)}` : `sell ${Math.round(o.fraction! * 100)}%`} of ${o.symbol} at ${fmt(price)}`, { ...o });
   log(`Limit ${side === "BUY" ? `buy: $${o.usd!.toFixed(2)} of ${o.symbol} if it falls to ${fmt(price)}` : `sell: ${Math.round(o.fraction! * 100)}% of ${o.symbol} if it rises to ${fmt(price)}`}.`);
   save();
   return o;
@@ -1315,6 +1357,7 @@ export function cancelOrder(id: string) {
   const o = state.orders.find((x) => x.id === id);
   if (!o) throw new Error("Order not found (it may have just filled)");
   state.orders = state.orders.filter((x) => x.id !== id);
+  rec("order.cancel", `Cancelled limit ${o.side === "BUY" ? "buy" : "sell"} on ${o.symbol} at ${fmt(o.price)}`, { id: o.id });
   log(`Cancelled limit ${o.side === "BUY" ? "buy" : "sell"} on ${o.symbol} at ${fmt(o.price)}.`);
   save();
   return { ok: true };
@@ -1379,6 +1422,11 @@ async function checkLimitOrders() {
 // (account drawdown limit) still applies.
 export function overrideDailyLimit() {
   const today = utcDay();
+  rec("consent.daily_limit", `Accepted "I understand, continue today": lifted the daily loss limit until 00:00 UTC`, {
+    date: today,
+    warningShown: state.bot.blocked,
+    note: "The daily loss limit stops new trades after a bad day. Continuing lifts it until 00:00 UTC; the emergency stop still applies.",
+  });
   state.bot.dailyOverride = today;
   state.bot.blocked = null;
   log(`You lifted today's daily loss limit: the bot keeps trading until 00:00 UTC. The emergency stop still applies.`, "bad");

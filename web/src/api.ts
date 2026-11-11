@@ -22,7 +22,7 @@ export type ModelResult = { model: string; ok: true; signal: Signal; ms: number 
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
 export type Position = { id: string; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
 export type Trade = { id: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
-export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins"; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean };
+export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins"; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[] };
 export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
 export type AppState = {
   mode: "paper";
@@ -73,6 +73,8 @@ export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: n
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; permissions: Permission[] }; // freeTrades -1 = unlimited
 export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; usage?: Usage };
 export type AdminUser = User & { usage: Usage };
+export type AuditEntry = { t: number; type: string; by?: string; summary: string; data?: Record<string, unknown> };
+export type Page<T> = { total: number; items: T[] };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
 
 async function req<T>(path: string, body?: unknown): Promise<T> {
@@ -108,6 +110,9 @@ export const api = {
   signOut: () => req("/auth/signout", {}),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   plans: () => req<PlanInfo[]>("/plans"),
+  activity: (before = 0) => req<Page<AuditEntry>>(`/activity?before=${before}&limit=50`),
+  tradeHistory: (before = 0, limit = 200) => req<Page<Trade>>(`/trades/history?before=${before}&limit=${limit}`),
+  adminActivity: (username: string, before = 0) => req<Page<AuditEntry>>(`/admin/activity?username=${encodeURIComponent(username)}&before=${before}&limit=50`),
   planExtras: () => req<PlanExtras>("/plans/extras"),
   adminTopup: (b: { username: string; tokens: number }) => req<{ username: string; topup: number }>("/admin/topup", b),
   adminUsers: () => req<AdminUser[]>("/admin/users"),

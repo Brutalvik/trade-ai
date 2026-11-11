@@ -1,7 +1,7 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtUsd, type AdminUser, type AppState, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
+import { api, fmtPrice, fmtUsd, type AdminUser, type AppState, type AuditEntry, type Trade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 
 // ---------- Shared modal ----------
 
@@ -197,6 +197,7 @@ function AuthModal({ onClose, onDone }: { onClose: () => void; onDone: (u: User)
 
 function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void }) {
   const access = useAccess();
+  const [activityOpen, setActivityOpen] = useState(false);
   // This login's own paper account at a glance.
   const acc = state && !state.signedOut ? state : null;
   const eq = acc?.equityNow ?? 0;
@@ -251,6 +252,7 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: Use
       <TokenMeter usage={access.me?.usage} />
       <div className="profile-actions">
         <button className="btn ghost" onClick={access.openPlans}>See plans</button>
+        <button className="btn ghost" onClick={() => setActivityOpen(true)}>Activity & history</button>
         {access.can("admin.users") && <button className="btn ghost" onClick={access.openAdmin}>Manage users</button>}
       </div>
 
@@ -276,6 +278,7 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: Use
           </div>
         </form>
       )}
+      {activityOpen && <ActivityModal onClose={() => setActivityOpen(false)} notify={notify} />}
     </Modal>
   );
 }
@@ -393,6 +396,7 @@ export function PlansModal({ onClose }: { onClose: () => void }) {
 
 export function AdminModal({ onClose, notify }: { onClose: () => void; notify: (m: string, bad?: boolean) => void }) {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const load = () => api.adminUsers().then(setUsers).catch((e) => notify(e.message, true));
   useEffect(() => {
@@ -422,7 +426,7 @@ export function AdminModal({ onClose, notify }: { onClose: () => void; notify: (
       {!users ? <p className="muted small">Loading…</p> : (
         <div className="table-wrap">
           <table className="scan">
-            <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>Role</th><th className="num">AI tokens this month</th><th>Top-up</th></tr></thead>
+            <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>Role</th><th className="num">AI tokens this month</th><th>Top-up</th><th /></tr></thead>
             <tbody>
               {users.map((u) => (
                 <tr key={u.username}>
@@ -448,11 +452,136 @@ export function AdminModal({ onClose, notify }: { onClose: () => void; notify: (
                       ))}
                     </div>
                   </td>
+                  <td><button className="chip" onClick={() => setViewing(u.username)}>Activity</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {viewing && <ActivityModal username={viewing} onClose={() => setViewing(null)} notify={notify} />}
+    </Modal>
+  );
+}
+
+
+// ---------- Activity: permanent history ----------
+const KIND: Record<string, { label: string; tone: string }> = {
+  consent: { label: "Consent", tone: "sell" },
+  bot: { label: "Bot", tone: "hold" },
+  ai: { label: "AI", tone: "buy" },
+  order: { label: "Order", tone: "hold" },
+  trade: { label: "Trade", tone: "hold" },
+  account: { label: "Account", tone: "" },
+  admin: { label: "Admin", tone: "sell" },
+};
+const FILTERS = ["all", "consent", "bot", "ai", "order", "account", "admin"] as const;
+
+function toCsv(trades: Trade[]) {
+  const head = ["time_utc", "side", "token", "pool", "price_usd", "qty", "usd", "dex_fee_usd", "platform_fee_usd", "pnl_usd", "source", "reason"];
+  const esc = (v: unknown) => { const s = v === undefined || v === null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const rows = trades.map((t) => [new Date(t.time).toISOString(), t.side, t.symbol, t.pool, t.price, t.qty, t.usd.toFixed(2), t.feeUsd.toFixed(4), (t.platformFeeUsd ?? 0).toFixed(4), t.pnlUsd?.toFixed(2) ?? "", t.source, t.reason]);
+  return [head, ...rows].map((r) => r.map(esc).join(",")).join("\n");
+}
+
+export function ActivityModal({ onClose, username, notify }: { onClose: () => void; username?: string; notify: (m: string, bad?: boolean) => void }) {
+  // username = an admin looking at someone else's activity; otherwise your own (with trades).
+  const [tab, setTab] = useState<"activity" | "trades">("activity");
+  const [items, setItems] = useState<AuditEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [tradeTotal, setTradeTotal] = useState(0);
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
+  const [open, setOpen] = useState<number | null>(null);
+  const loadActivity = (before = 0) =>
+    (username ? api.adminActivity(username, before) : api.activity(before))
+      .then((r) => { setTotal(r.total); setItems((cur) => (before ? [...cur, ...r.items] : r.items)); })
+      .catch((e) => notify(e.message, true));
+  const loadTrades = (before = 0) =>
+    api.tradeHistory(before, 200)
+      .then((r) => { setTradeTotal(r.total); setTrades((cur) => (before ? [...cur, ...r.items] : r.items)); })
+      .catch((e) => notify(e.message, true));
+  useEffect(() => {
+    void loadActivity();
+    if (!username) void loadTrades();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const download = async () => {
+    try {
+      const all = await api.tradeHistory(0, 5000);
+      const blob = new Blob([toCsv(all.items)], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `trades-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
+  const shown = items.filter((e) => filter === "all" || e.type.startsWith(filter + "."));
+  return (
+    <Modal title={username ? `Activity · @${username}` : "Your activity"} onClose={onClose} wide>
+      {!username && (
+        <div className="auth-tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "activity"} className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity ({total})</button>
+          <button role="tab" aria-selected={tab === "trades"} className={tab === "trades" ? "on" : ""} onClick={() => setTab("trades")}>All trades ({tradeTotal})</button>
+        </div>
+      )}
+      {tab === "activity" ? (
+        <>
+          <p className="muted small">A permanent record: consents ("I understand"), bot starts, stops and pauses, AI analyses with tokens used, orders, sign-ins and admin changes. Entries are never edited or deleted.</p>
+          <div className="chain-tabs">
+            {FILTERS.map((f) => (
+              <button key={f} className={`chip ${filter === f ? "on" : ""}`} onClick={() => setFilter(f)}>{f === "all" ? "All" : KIND[f].label}</button>
+            ))}
+          </div>
+          <div className="activity-list">
+            {shown.map((e, i) => {
+              const k = KIND[e.type.split(".")[0]] ?? { label: e.type, tone: "" };
+              return (
+                <div key={`${e.t}-${i}`} className="activity-row">
+                  <span className="muted mono tiny">{new Date(e.t).toLocaleString()}</span>
+                  <span className={`tag ${k.tone}`}>{k.label}</span>
+                  <span className="activity-summary">
+                    {e.summary}
+                    {e.by && <span className="muted tiny"> · by @{e.by}</span>}
+                    {e.data && <button className="link-btn tiny" onClick={() => setOpen(open === i ? null : i)}>{open === i ? "hide details" : "details"}</button>}
+                    {open === i && e.data && <pre className="activity-data">{JSON.stringify(e.data, null, 2)}</pre>}
+                  </span>
+                </div>
+              );
+            })}
+            {!shown.length && <p className="muted small">Nothing here yet.</p>}
+          </div>
+          {items.length < total && <button className="btn ghost" onClick={() => void loadActivity(items.length)}>Load older</button>}
+        </>
+      ) : (
+        <>
+          <div className="row-btns" style={{ justifyContent: "space-between", alignItems: "center", margin: "6px 0 10px" }}>
+            <span className="muted small">Every trade, kept permanently (the trade history tab shows the newest 1,000).</span>
+            <button className="btn ghost" onClick={() => void download()}>⬇ Download CSV</button>
+          </div>
+          <div className="table-wrap">
+            <table className="scan">
+              <thead><tr><th>Time</th><th>Side</th><th>Token</th><th className="num">Price</th><th className="num">USD</th><th className="num">P&amp;L</th><th>Reason</th></tr></thead>
+              <tbody>
+                {trades.map((t) => (
+                  <tr key={t.id}>
+                    <td className="muted small">{new Date(t.time).toLocaleString()}</td>
+                    <td className={t.side === "BUY" ? "up" : "down"}>{t.side}{t.source === "bot" ? " 🤖" : ""}</td>
+                    <td><b>{t.symbol}</b></td>
+                    <td className="num">{fmtPrice(t.price)}</td>
+                    <td className="num">{fmtUsd(t.usd)}</td>
+                    <td className={`num ${(t.pnlUsd ?? 0) >= 0 ? "up" : "down"}`}>{t.pnlUsd === undefined ? "–" : fmtUsd(t.pnlUsd)}</td>
+                    <td className="muted small">{t.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {trades.length < tradeTotal && <button className="btn ghost" onClick={() => void loadTrades(trades.length)}>Load older</button>}
+          {!trades.length && <p className="muted small">No trades recorded yet. Trades are kept from now on.</p>}
+        </>
       )}
     </Modal>
   );

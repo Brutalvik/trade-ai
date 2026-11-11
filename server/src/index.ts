@@ -10,6 +10,7 @@ import { storageEnvNames } from "./store.js";
 import { alertChannel } from "./alerts.js";
 import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
+import * as history from "./audit.js";
 import { can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
@@ -98,10 +99,25 @@ const needs = (perm: Permission, fn: (req: Request, res: Response) => Promise<un
 
 // Plans (public) and admin: users' plans and roles.
 app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
+
+// Permanent history: your activity (consents, bot, AI use, account) and every trade.
+const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
+app.get("/api/activity", signedIn(async (req, res) => {
+  const a = (await auth.requestAuth(req))!;
+  res.json(await history.activity(a.key, num(req.query.before, 0), num(req.query.limit, 50)));
+}));
+app.get("/api/trades/history", signedIn(async (req, res) => {
+  const a = (await auth.requestAuth(req))!;
+  res.json(await history.tradeHistory(a.key, num(req.query.before, 0), num(req.query.limit, 200)));
+}));
+app.get("/api/admin/activity", needs("admin.users", async (req, res) => {
+  res.json(await history.activity(String(req.query.username ?? ""), num(req.query.before, 0), num(req.query.limit, 50)));
+}));
 app.get("/api/plans/extras", (_req, res) => void res.json({ tokenPacks: TOKEN_PACKS, yearlyMonthsPaid: YEARLY_MONTHS_PAID }));
 app.post("/api/admin/topup", needs("admin.users", async (req, res) => {
   try {
-    res.json(await auth.addTopup(String(req.body?.username ?? ""), Number(req.body?.tokens)));
+    const a = await auth.requestAuth(req);
+    res.json(await auth.addTopup(String(req.body?.username ?? ""), Number(req.body?.tokens), a?.key));
   } catch (e: any) {
     res.status(400).json({ error: e?.message ?? String(e) });
   }
@@ -109,7 +125,8 @@ app.post("/api/admin/topup", needs("admin.users", async (req, res) => {
 app.get("/api/admin/users", needs("admin.users", async (_req, res) => void res.json(await auth.listUsers())));
 app.post("/api/admin/users", needs("admin.users", async (req, res) => {
   try {
-    res.json(await auth.setUserAccess(String(req.body?.username ?? ""), req.body?.plan, req.body?.role));
+    const a = await auth.requestAuth(req);
+    res.json(await auth.setUserAccess(String(req.body?.username ?? ""), req.body?.plan, req.body?.role, a?.key));
   } catch (e: any) {
     res.status(400).json({ error: e?.message ?? String(e) });
   }
