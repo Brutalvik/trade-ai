@@ -48,6 +48,7 @@ export type AppState = {
     coinStats: Record<string, { losses: number; lastLossAt: number; lossDay: string }>;
     day: { date: string; startEquity: number } | null;
     blocked: string | null;
+    lastWatch: { at: number; by: "scheduler" | "dashboard" | "local" } | null;
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];

@@ -111,6 +111,7 @@ type State = {
     coinStats: Record<string, { losses: number; lastLossAt: number; lossDay: string }>;
     day: { date: string; startEquity: number } | null;
     blocked: string | null; // why the bot isn't trading right now (shown in the panel)
+    lastWatch: { at: number; by: "scheduler" | "dashboard" | "local" } | null; // last wake-up, to show the bot is alive
     noted: Record<string, number>; // one-time log messages already written
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
@@ -133,7 +134,7 @@ function fresh(startCash = 10): State {
     trades: [],
     equity: [{ t: Date.now(), v: startCash }],
     settings: { feePct: 1.0, slippagePct: 0.5 },
-    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], startedAt: null, stoppedAt: null, coinStats: {}, day: null, blocked: null, noted: {}, target: null, candidates: [], log: [] },
+    bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], startedAt: null, stoppedAt: null, coinStats: {}, day: null, blocked: null, lastWatch: null, noted: {}, target: null, candidates: [], log: [] },
     lastSignal: null,
   };
 }
@@ -154,6 +155,7 @@ function migrate(s: State): State {
   else s.bot.stoppedAt ??= s.bot.log.find((l) => l.msg.startsWith("Bot stopped"))?.t ?? null;
   s.bot.noted ??= {};
   s.bot.blocked ??= null;
+  s.bot.lastWatch ??= null;
   if (!s.bot.coinStats || !Object.keys(s.bot.coinStats).length) {
     // Rebuild today's losing streaks from the bot's trade history.
     s.bot.coinStats = {};
@@ -785,10 +787,13 @@ function watching() {
 // Serverless: run bot steps every 5 seconds for up to maxMs (one scheduler call or
 // dashboard ping keeps watch for a while). A lock stops two windows overlapping.
 // Stops early when there's nothing to watch.
-export async function watch(maxMs: number) {
+export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dashboard") {
   const botOn = () => state.bot.running && !!state.bot.config;
   if (!botOn() && !hasProtected()) return { ticks: 0, reason: "bot is off" };
   if (!(await store.lock("watch", maxMs + 10_000))) return { ticks: 0, reason: "another window is already watching" };
+  // Record the wake-up (one small write per window) so the dashboard can show the bot is alive.
+  state.bot.lastWatch = { at: Date.now(), by };
+  save();
   let ticks = 0;
   try {
     const end = Date.now() + maxMs;

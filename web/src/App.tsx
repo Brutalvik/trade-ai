@@ -512,6 +512,23 @@ function fmtDuration(ms: number) {
   return `${m}m ${pad(s)}s`;
 }
 
+// "Woken 12 s ago by the scheduler": shows the bot is alive even with this page closed.
+function LastCheck({ at, by }: { at: number; by: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const ago = Math.max(0, Math.round((now - at) / 1000));
+  const stale = ago > 90;
+  return (
+    <span className={`bot-timer ${stale ? "down" : ""}`} title="Each wake-up starts ~1 minute of price checks every 5 s">
+      Woken {ago < 60 ? `${ago}s` : `${Math.round(ago / 60)}m`} ago by the {by}
+      {stale ? " · not being woken: set up the scheduler or keep this page open" : ""}
+    </span>
+  );
+}
+
 function BotTimer({ running, startedAt, stoppedAt }: { running: boolean; startedAt: number | null; stoppedAt: number | null }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -664,6 +681,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
         <div className="pulse-wrap">
           <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "auto" ? (target ? `AUTO-PICK → ${target.symbol}` : "AUTO-PICK · SCANNING") : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
           <BotTimer running={running} startedAt={state?.bot.startedAt ?? null} stoppedAt={state?.bot.stoppedAt ?? null} />
+          {running && state?.bot.lastWatch && <LastCheck at={state.bot.lastWatch.at} by={state.bot.lastWatch.by} />}
         </div>
       </div>
 

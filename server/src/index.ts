@@ -103,7 +103,7 @@ app.get(
     // A scheduler calls this about once a minute. Reply immediately (cron-job.org's free plan
     // waits at most 30 s) and keep watching every 5 s for ~55 s in the background; Vercel's
     // waitUntil keeps the function alive until that finishes.
-    const work = engine.watch(55_000).catch((e) => console.error("[tick] watch failed:", e));
+    const work = engine.watch(55_000, "scheduler").catch((e) => console.error("[tick] watch failed:", e));
     waitUntil(work);
     return { ok: true, started: true, running: engine.getState().bot.running };
   }),
