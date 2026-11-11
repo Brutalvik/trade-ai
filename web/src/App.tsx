@@ -654,8 +654,6 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   const pendingBuy = orders.find((o) => o.side === "BUY");
   const pendingSell = orders.find((o) => o.side === "SELL" && o.positionId === pos?.id);
   const pending = tab === "buy" ? pendingBuy : pendingSell;
-  const locked = !!pending;
-  const shownKind = locked ? "limit" : kind;
   // Suggest a limit price whenever the coin or tab changes: buys 3% below the live price,
   // sells 5% above it (you can type any price).
   useEffect(() => setLimitPrice(live ? String(Number((live * (tab === "buy" ? 0.97 : 1.05)).toPrecision(4))) : ""), [pair?.pool, tab]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -669,7 +667,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
       notify(e.message, true);
     }
   };
-  const lp = pending ? pending.price : Number(limitPrice);
+  const lp = Number(limitPrice);
   const diffPct = live && lp ? ((lp - live) / live) * 100 : 0;
   const buyNow = () => pair && run(() => api.buy(pair.chain, pair.pool, Number(usd)), `Bought ${fmtUsd(Number(usd))} of ${pair.symbol} (paper)`);
   const sellNow = (f: number) => pair && pos && run(() => api.sell(pair.chain, pair.pool, pos.id, f), `Sold ${f * 100}% of ${pair.symbol} (paper)`);
@@ -683,12 +681,10 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
         <span>{tab === "buy" ? "Buy when price falls to" : "Sell when price rises to"}</span>
         <div className="amount">
           <span>$</span>
-          <input type="number" min="0" step="any" value={pending ? String(Number(pending.price.toPrecision(6))) : limitPrice} onChange={(e) => setLimitPrice(e.target.value)} aria-label="Limit price" disabled={locked} />
+          <input type="number" min="0" step="any" value={limitPrice} onChange={(e) => setLimitPrice(e.target.value)} aria-label="Limit price" />
         </div>
       </label>
-      {locked ? (
-        <small className="limit-hint pending">Waiting: {pending!.side === "BUY" ? "buys" : "sells"} automatically when the price {pending!.side === "BUY" ? "falls" : "rises"} to {fmtPrice(pending!.price)} (live {fmtPrice(live)}).</small>
-      ) : live > 0 && lp > 0 && (
+      {live > 0 && lp > 0 && (
         <small className={`limit-hint ${(tab === "buy" ? diffPct >= 0 : diffPct <= 0) ? "warn" : "muted"}`}>
           {tab === "buy"
             ? diffPct >= 0 ? "At or above the live price: it will buy right away." : `${Math.abs(diffPct).toFixed(1)}% below the live price (${fmtPrice(live)}).`
@@ -705,24 +701,42 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
         <button role="tab" aria-selected={tab === "buy"} className={`buy ${tab === "buy" ? "on" : ""}`} onClick={() => setTab("buy")}>Buy</button>
         <button role="tab" aria-selected={tab === "sell"} className={`sell ${tab === "sell" ? "on" : ""}`} onClick={() => setTab("sell")}>Sell{pos ? "" : ""}</button>
       </div>
+      {pending ? (
+        // A limit order is open on this coin: show just that order (the form comes back when it's cancelled or filled).
+        <>
+          {tab === "sell" && pos && (
+            <div className="pos-mini">
+              <span>Holding {pos.qty.toPrecision(4)} {pos.symbol}</span>
+              <span className={pos.lastPrice >= pos.entryPrice ? "up" : "down"}>{fmtPct(((pos.lastPrice - pos.entryPrice) / pos.entryPrice) * 100)}</span>
+              <span className="muted small">bought {fmtPrice(pos.entryPrice)}</span>
+            </div>
+          )}
+          <div className="open-order pending-order">
+            <span className={`tag ${pending.side === "BUY" ? "buy" : "sell"}`}>LIMIT {pending.side}</span>
+            <span className="small">{pending.side === "BUY" ? `${fmtUsd(pending.usd ?? 0)} at ${fmtPrice(pending.price)}` : `${Math.round((pending.fraction ?? 1) * 100)}% at ${fmtPrice(pending.price)}`}</span>
+            <button className="chip" onClick={() => cancel(pending.id)}>Cancel</button>
+          </div>
+          <p className="muted tiny">Waiting: {pending.side === "BUY" ? "buys" : "sells"} automatically when the price {pending.side === "BUY" ? "falls" : "rises"} to {fmtPrice(pending.price)} (live {fmtPrice(live)}).</p>
+          {tab === "sell" && pos && <ProtectControl pos={pos} notify={notify} refresh={refresh} />}
+        </>
+      ) : (
+        <>
       <div className="kind-toggle" role="radiogroup" aria-label="Order type">
-        <button role="radio" aria-checked={shownKind === "market"} className={shownKind === "market" ? "on" : ""} onClick={() => setKind("market")} disabled={locked}>Now</button>
-        <button role="radio" aria-checked={shownKind === "limit"} className={shownKind === "limit" ? "on" : ""} onClick={() => setKind("limit")} disabled={locked}>At a price (limit)</button>
+        <button role="radio" aria-checked={kind === "market"} className={kind === "market" ? "on" : ""} onClick={() => setKind("market")}>Now</button>
+        <button role="radio" aria-checked={kind === "limit"} className={kind === "limit" ? "on" : ""} onClick={() => setKind("limit")}>At a price (limit)</button>
       </div>
 
       {tab === "buy" ? (
         <>
           <div className="amount">
             <span>$</span>
-            <input type="number" min="1" step="1" value={pendingBuy ? String(pendingBuy.usd ?? "") : usd} onChange={(e) => setUsd(e.target.value)} aria-label="Amount in dollars" disabled={locked} />
+            <input type="number" min="1" step="1" value={usd} onChange={(e) => setUsd(e.target.value)} aria-label="Amount in dollars" />
             {[25, 50, 100].map((p) => (
-              <button key={p} className="chip" onClick={() => setUsd(((cash * p) / 100).toFixed(2))} disabled={locked}>{p}%</button>
+              <button key={p} className="chip" onClick={() => setUsd(((cash * p) / 100).toFixed(2))}>{p}%</button>
             ))}
           </div>
-          {shownKind === "limit" && priceBox}
-          {pendingBuy ? (
-            <button className="btn cancel-order wide" onClick={() => cancel(pendingBuy.id)}>CANCEL LIMIT BUY</button>
-          ) : kind === "market" ? (
+          {kind === "limit" && priceBox}
+          {kind === "market" ? (
             <button className="btn buy wide" onClick={buyNow} disabled={!pair}>BUY {pair?.symbol}</button>
           ) : (
             <button className="btn buy wide" onClick={limitBuy} disabled={!pair || !(lp > 0)}>SET LIMIT BUY</button>
@@ -739,13 +753,11 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
           </div>
           <div className="share-chips" role="radiogroup" aria-label="How much to sell">
             {[0.25, 0.5, 1].map((f) => (
-              <button key={f} role="radio" aria-checked={(pendingSell?.fraction ?? sellShare) === f} className={`chip ${(pendingSell?.fraction ?? sellShare) === f ? "on" : ""}`} onClick={() => setSellShare(f)} disabled={locked}>{f === 1 ? "All" : `${f * 100}%`}</button>
+              <button key={f} role="radio" aria-checked={sellShare === f} className={`chip ${sellShare === f ? "on" : ""}`} onClick={() => setSellShare(f)}>{f === 1 ? "All" : `${f * 100}%`}</button>
             ))}
           </div>
-          {shownKind === "limit" && priceBox}
-          {pendingSell ? (
-            <button className="btn cancel-order wide" onClick={() => cancel(pendingSell.id)}>CANCEL LIMIT SELL</button>
-          ) : kind === "market" ? (
+          {kind === "limit" && priceBox}
+          {kind === "market" ? (
             <button className="btn sell wide" onClick={() => sellNow(sellShare)}>SELL {sellShare === 1 ? "ALL" : `${sellShare * 100}%`}</button>
           ) : (
             <button className="btn sell wide" onClick={limitSell} disabled={!(lp > 0)}>SET LIMIT SELL</button>
@@ -753,11 +765,13 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
           <ProtectControl pos={pos} notify={notify} refresh={refresh} />
         </>
       )}
+        </>
+      )}
 
-      {orders.length > 0 && (
+      {orders.some((o) => o.id !== pending?.id) && (
         <div className="open-orders">
           <div className="label-sm">Open orders on {pair?.symbol}</div>
-          {orders.map((o) => (
+          {orders.filter((o) => o.id !== pending?.id).map((o) => (
             <div key={o.id} className="open-order">
               <span className={`tag ${o.side === "BUY" ? "buy" : "sell"}`}>LIMIT {o.side}</span>
               <span className="small">{o.side === "BUY" ? `${fmtUsd(o.usd ?? 0)} at ${fmtPrice(o.price)}` : `${Math.round((o.fraction ?? 1) * 100)}% at ${fmtPrice(o.price)}`}</span>
@@ -767,7 +781,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
         </div>
       )}
       {otherOrders > 0 && <p className="muted tiny">{otherOrders} open order{otherOrders === 1 ? "" : "s"} on other coins (see Positions).</p>}
-      <p className="muted tiny">{kind === "limit" ? "Limit orders are checked every 5 seconds, even with the bot off, and you get a notification when one fills." : `Fees ${state?.settings.feePct}% + slippage ${state?.settings.slippagePct}% per side are simulated.`}</p>
+      {!pending && <p className="muted tiny">{kind === "limit" ? "Limit orders are checked every 5 seconds, even with the bot off, and you get a notification when one fills." : `Fees ${state?.settings.feePct}% + slippage ${state?.settings.slippagePct}% per side are simulated.`}</p>}
     </div>
   );
 }

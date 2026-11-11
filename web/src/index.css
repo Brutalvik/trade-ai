@@ -425,3 +425,4 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .limit-hint.pending { color: var(--cyan); }
 .kind-toggle button:disabled, .share-chips .chip:disabled, .amount .chip:disabled { opacity: 0.45; cursor: not-allowed; }
 .amount input:disabled, .limit-price input:disabled { opacity: 0.6; cursor: not-allowed; }
+.pending-order { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.25); margin: 4px 0 6px; }
