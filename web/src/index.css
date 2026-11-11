@@ -312,3 +312,10 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .copy-btn { position: relative; }
 .copy-btn::after { content: attr(data-tip); position: absolute; top: 50%; left: calc(100% + 6px); transform: translate(-4px, -50%); padding: 3px 8px; border-radius: 6px; background: #0b1324; border: 1px solid rgba(0, 229, 255, 0.35); color: #e6f7ff; font-size: 11px; font-family: inherit; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.12s, transform 0.12s; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); z-index: 20; }
 .copy-btn:hover::after, .copy-btn:focus-visible::after, .copy-btn.done::after { opacity: 1; transform: translate(0, -50%); }
+
+/* Chart maximize / minimize */
+.chart-panel.maximized { position: fixed; inset: 8px; z-index: 60; max-height: none; min-height: 0; background: #070b16; box-shadow: 0 0 0 100vmax rgba(2, 4, 10, 0.75); }
+.chart-panel.maximized .chart-wrap { min-height: 0; }
+.legend { align-items: center; }
+.chart-size-btn { order: 99; margin-left: auto; position: relative; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 7px; border: 1px solid rgba(0, 229, 255, 0.3); background: rgba(0, 229, 255, 0.06); color: #9be9ff; font-size: 11px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.chart-size-btn:hover { background: rgba(0, 229, 255, 0.14); border-color: rgba(0, 229, 255, 0.6); }

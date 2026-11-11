@@ -44,6 +44,18 @@ export default function App() {
   const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log">(() => (savedUi().tab as "scanner" | "newcoins" | "positions" | "trades" | "log") ?? "scanner");
   useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
   useEffect(() => { if (state) saveState(state); }, [state]);
+  // Chart maximize: fills the window; Esc (or the button) brings it back.
+  const [chartMax, setChartMax] = useState(false);
+  useEffect(() => {
+    if (!chartMax) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setChartMax(false);
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [chartMax]);
 
   const notify = useCallback((msg: string, bad = false) => {
     setToast({ msg, bad });
@@ -139,10 +151,18 @@ export default function App() {
       )}
 
       <main className="layout">
-        <section className="panel chart-panel">
+        <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`}>
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
           {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
           <div className="legend">
+            <button className="chart-size-btn" onClick={() => setChartMax((v) => !v)} aria-pressed={chartMax} title={chartMax ? "Minimize (Esc)" : "Fill the window"} aria-label={chartMax ? "Minimize chart" : "Maximize chart"}>
+              {chartMax ? (
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" /></svg>
+              ) : (
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></svg>
+              )}
+              {chartMax ? "Minimize" : "Maximize"}
+            </button>
             <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
             <span><i style={{ background: "#b45cff" }} />EMA 21</span>
             {lines.filter((l, i) => l.price > 0 && lines.findIndex((x) => x.title === l.title) === i).map((l) => (
