@@ -757,3 +757,16 @@ body.resizing { cursor: col-resize; user-select: none; }
 .row-resizer:hover span, .row-resizer:focus-visible span { background: var(--cyan); width: 64px; }
 .row-resizer:focus-visible { outline: none; }
 body.resizing-row { cursor: row-resize; user-select: none; }
+
+/* ===== Desktop: everything fits the window flush (like a trading terminal) =====
+   The layout fills from below the header/banners to the bottom of the window; the coin list,
+   the positions panel and the right column scroll inside themselves. The footer is below. */
+@media (min-width: 1181px) {
+  .layout, .layout.list-collapsed { height: calc(100vh - var(--layout-top, 67px)); min-height: 560px; padding-bottom: 14px; grid-template-rows: auto minmax(0, 1fr); align-items: stretch; }
+  .layout > .coin-side:not(.collapsed) { position: static; height: auto; max-height: none; min-height: 0; }
+  .layout > .coin-side.collapsed { position: static; }
+  .layout > .chart-panel { align-self: start; }
+  .layout > .panel.bottom { min-height: 0; overflow-y: auto; }
+  .layout > .side.right { min-height: 0; overflow-y: auto; padding-bottom: 2px; }
+  .layout > .side.right > * { flex: none; }
+}

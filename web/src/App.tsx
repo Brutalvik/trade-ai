@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { aiText, allBots, api, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
@@ -79,6 +79,17 @@ export default function App() {
   useEffect(() => { if (state) saveState(state); }, [state]);
   // Chart maximize: fills the window; Esc (or the button) brings it back.
   const [chartMax, setChartMax] = useState(false);
+  // Desktop: the three columns fill the window below the header and banners exactly.
+  const layoutRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const set = () => {
+      const el = layoutRef.current;
+      if (el) document.documentElement.style.setProperty("--layout-top", `${Math.round(el.getBoundingClientRect().top + window.scrollY)}px`);
+    };
+    set();
+    window.addEventListener("resize", set);
+    return () => window.removeEventListener("resize", set);
+  });
   // Chart height: drag the handle between the chart and Positions (remembered).
   const [chartH, setChartH] = useState(() => Math.max(CHART_MIN, Math.min(CHART_MAX, Number(localStorage.getItem("nexus-chart-h")) || 420)));
   // Left coin-list panel: collapsible and resizable (both remembered).
@@ -218,7 +229,7 @@ export default function App() {
         </div>
       )}
 
-      <main className={`layout ${listCollapsed ? "list-collapsed" : ""}`} style={{ "--list-w": `${listW}px` } as CSSProperties}>
+      <main ref={layoutRef} className={`layout ${listCollapsed ? "list-collapsed" : ""}`} style={{ "--list-w": `${listW}px` } as CSSProperties}>
         {listCollapsed ? (
           <aside className="coin-side collapsed" aria-label="Coin lists (collapsed)">
             <button className="panel-toggle" onClick={() => collapseList(false)} data-tip="Expand panel" aria-label="Expand coin lists">
