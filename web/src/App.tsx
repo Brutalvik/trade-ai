@@ -138,7 +138,12 @@ export default function App() {
           <div className="legend">
             <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
             <span><i style={{ background: "#b45cff" }} />EMA 21</span>
-            {lines.length > 0 && <span className="muted">Dashed lines: Claude's orders and exits</span>}
+            {lines.filter((l, i) => l.price > 0 && lines.findIndex((x) => x.title === l.title) === i).map((l) => (
+              <span key={l.title} title={LINE_HELP[l.title] ?? ""}>
+                <i className="dash" style={{ borderColor: l.color }} />
+                {LINE_NAME[l.title] ?? l.title} {fmtPrice(l.price)}
+              </span>
+            ))}
           </div>
         </section>
 
@@ -1116,6 +1121,26 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
     </div>
   );
 }
+
+// Plain names for the dashed price lines on the chart (shown in the legend under it).
+const LINE_NAME: Record<string, string> = {
+  BOUGHT: "Bought at",
+  EXIT: "Stop-loss",
+  TARGET: "Take-profit",
+  "TRAILING STOP": "Trailing stop",
+  "PROTECT STOP": "Protection stop",
+  "BUY BELOW": "Buy if it dips to",
+  "BUY ABOVE": "Buy if it breaks above",
+};
+const LINE_HELP: Record<string, string> = {
+  BOUGHT: "The price the open position was bought at.",
+  EXIT: "Sells automatically if the price falls to this line.",
+  TARGET: "Profit target: at this price the bot starts trailing the high to lock in gains.",
+  "TRAILING STOP": "Follows the price up; sells if it falls back to this line.",
+  "PROTECT STOP": "Your manual trade sells if the price falls back to this line.",
+  "BUY BELOW": "Claude's standing order: the bot buys if the price dips to this line.",
+  "BUY ABOVE": "Claude's standing order: the bot buys if the price breaks above this line.",
+};
 
 const RISK_TONE: Record<string, string> = { LOW: "buy", MEDIUM: "hold", HIGH: "sell", REJECTED: "sell" };
 
