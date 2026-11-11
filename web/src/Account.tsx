@@ -290,8 +290,8 @@ export const AccessCtx = createContext<Access>({ me: null, can: () => true, open
 export const useAccess = () => useContext(AccessCtx);
 
 const fmtTokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
-// About how many AI analyses a token allowance covers (~10K API tokens = ~100K app tokens each).
-const analysesFor = (tokens: number) => Math.round(tokens / 100_000);
+// About how many AI analyses a token allowance covers (~14K API tokens = ~140K app tokens each).
+const analysesFor = (tokens: number) => Math.round(tokens / 140_000);
 
 // A small lock shown in place of a feature the plan doesn't include.
 export function LockChip({ label, plan = "AI Starter" }: { label: string; plan?: string }) {

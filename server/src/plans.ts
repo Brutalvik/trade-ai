@@ -49,17 +49,17 @@ export const PLANS: Record<PlanId, Plan> = {
   starter: {
     id: "starter", name: "AI Starter", priceUsd: 19,
     blurb: "Member benefits plus AI plans and the AI bot on one coin.",
-    aiTokens: 3_000_000, feePct: 0.1, freeTrades: 300, permissions: [...TRADING, ...AI],
+    aiTokens: 1_000_000, feePct: 0.1, freeTrades: 300, permissions: [...TRADING, ...AI],
   },
   pro: {
     id: "pro", name: "AI Pro", priceUsd: 49,
     blurb: "More AI, auto-pick and risky mode. No transaction charges.",
-    aiTokens: 15_000_000, feePct: 0, freeTrades: Infinity, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
+    aiTokens: 5_000_000, feePct: 0, freeTrades: Infinity, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
   },
   max: {
     id: "max", name: "AI Max", priceUsd: 129,
-    blurb: "The most AI for running the bot all day. No transaction charges.",
-    aiTokens: 60_000_000, feePct: 0, freeTrades: Infinity, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
+    blurb: "The most AI for frequent analyses and longer bot runs. No transaction charges.",
+    aiTokens: 15_000_000, feePct: 0, freeTrades: Infinity, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
   },
 };
 export const PLAN_ORDER: PlanId[] = ["free", "member", "starter", "pro", "max"];
