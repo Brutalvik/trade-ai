@@ -1,11 +1,11 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtUsd, type AppState, type User } from "./api";
+import { api, fmtUsd, type AdminUser, type AppState, type Permission, type PlanId, type PlanInfo, type User } from "./api";
 
 // ---------- Shared modal ----------
 
-function Modal({ title, onClose, children, foot, narrow }: { title: string; onClose: () => void; children: ReactNode; foot?: ReactNode; narrow?: boolean }) {
+function Modal({ title, onClose, children, foot, narrow, wide }: { title: string; onClose: () => void; children: ReactNode; foot?: ReactNode; narrow?: boolean; wide?: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -13,7 +13,7 @@ function Modal({ title, onClose, children, foot, narrow }: { title: string; onCl
   }, [onClose]);
   return createPortal(
     <div className="modal-backdrop">
-      <div className={`modal ${narrow ? "narrow" : ""}`} role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+      <div className={`modal ${narrow ? "narrow" : ""} ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button className="modal-close" onClick={onClose} aria-label="Close" title="Close">✕</button>
@@ -196,6 +196,7 @@ function AuthModal({ onClose, onDone }: { onClose: () => void; onDone: (u: User)
 }
 
 function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void }) {
+  const access = useAccess();
   // This login's own paper account at a glance.
   const acc = state && !state.signedOut ? state : null;
   const eq = acc?.equityNow ?? 0;
@@ -234,7 +235,7 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: Use
         <div className="profile-id">
           <div className="profile-name">{user.firstName} {user.lastName}</div>
           <div className="muted small">@{user.username}</div>
-          <span className="profile-chip">Paper account · member since {new Date(user.createdAt).toLocaleDateString([], { month: "short", year: "numeric" })}</span>
+          <span className="profile-chip">{access.me?.role === "admin" ? "Admin · " : ""}{planName(access.me?.plan)} plan · member since {new Date(user.createdAt).toLocaleDateString([], { month: "short", year: "numeric" })}</span>
         </div>
       </div>
 
@@ -246,6 +247,12 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: Use
           <div><small>Bot</small><b className={acc.bot.running ? "up" : ""}>{acc.bot.running ? "Running" : "Off"}<em>{acc.positions.length} open · {acc.orders?.length ?? 0} orders</em></b></div>
         </div>
       )}
+
+      <TokenMeter usage={access.me?.usage} />
+      <div className="profile-actions">
+        <button className="btn ghost" onClick={access.openPlans}>See plans</button>
+        {access.can("admin.users") && <button className="btn ghost" onClick={access.openAdmin}>Manage users</button>}
+      </div>
 
       <div className="profile-section-title">Account details</div>
       <dl className="profile-fields">
@@ -268,6 +275,134 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: Use
             <button className="btn buy" disabled={busy}>{busy ? "Saving…" : "Save new password"}</button>
           </div>
         </form>
+      )}
+    </Modal>
+  );
+}
+
+
+// ---------- Plans & access (RBAC) ----------
+const PLAN_NAMES: Record<string, string> = { free: "Free", member: "Member", starter: "AI Starter", pro: "AI Pro", max: "AI Max" };
+const planName = (id?: string) => PLAN_NAMES[id ?? "free"] ?? "Free";
+// The signed-in user's plan, role and permissions, shared across the page.
+export type Access = { me: User | null; can: (p: Permission) => boolean; openPlans: () => void; openAdmin: () => void };
+export const AccessCtx = createContext<Access>({ me: null, can: () => true, openPlans: () => {}, openAdmin: () => {} });
+export const useAccess = () => useContext(AccessCtx);
+
+const fmtTokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
+// About how many AI analyses a token allowance covers (~10K API tokens = ~100K app tokens each).
+const analysesFor = (tokens: number) => Math.round(tokens / 100_000);
+
+// A small lock shown in place of a feature the plan doesn't include.
+export function LockChip({ label, plan = "AI Starter" }: { label: string; plan?: string }) {
+  const { openPlans } = useAccess();
+  return (
+    <button className="lock-chip" onClick={openPlans} title={`${label} is included from ${plan}. See plans.`}>
+      🔒 {label} · <span>{plan}+</span>
+    </button>
+  );
+}
+
+export function TokenMeter({ usage }: { usage?: User["usage"] }) {
+  if (!usage) return null;
+  if (usage.limit < 0) return <div className="token-meter"><div className="tm-head"><span>AI tokens this month</span><b>Unlimited</b></div></div>;
+  if (usage.limit === 0) return <div className="token-meter"><div className="tm-head"><span>AI tokens</span><b>Not in your plan</b></div></div>;
+  const pct = Math.min(100, (usage.used / usage.limit) * 100);
+  return (
+    <div className="token-meter">
+      <div className="tm-head"><span>AI tokens this month</span><b>{fmtTokens(usage.used)} / {fmtTokens(usage.limit)}</b></div>
+      <div className="tm-bar"><div className={pct > 90 ? "hot" : ""} style={{ width: `${pct}%` }} /></div>
+      <small className="muted">≈ {analysesFor(Math.max(0, usage.limit - usage.used))} AI analyses left · 10 tokens per AI token used</small>
+    </div>
+  );
+}
+
+const FEATURES: { perm: Permission; label: string }[] = [
+  { perm: "trade.manual", label: "Paper trading, charts, scanner" },
+  { perm: "trade.limit", label: "Limit orders and Protect this trade" },
+  { perm: "ai.analyze", label: "AI plans (Analyze, Ask AI)" },
+  { perm: "bot.run", label: "AI bot on a coin" },
+  { perm: "bot.autopick", label: "Auto-pick (bot chooses coins)" },
+  { perm: "bot.risky", label: "Risky mode" },
+];
+
+export function PlansModal({ onClose }: { onClose: () => void }) {
+  const { me } = useAccess();
+  const [plans, setPlans] = useState<PlanInfo[] | null>(null);
+  useEffect(() => void api.plans().then(setPlans).catch(() => setPlans([])), []);
+  return (
+    <Modal title="Plans" onClose={onClose} wide>
+      <p className="muted small plans-lead">Paper trading is free. Membership removes transaction charges on most trades; AI plans add AI analyses and the AI bot, with a monthly AI token allowance.</p>
+      <div className="plan-grid">
+        {(plans ?? []).map((p) => {
+          const current = (me?.plan ?? "free") === p.id;
+          return (
+            <div key={p.id} className={`plan-card ${current ? "current" : ""} ${p.id}`}>
+              <div className="plan-name">{p.name}{current && <span className="plan-current">Your plan</span>}</div>
+              <div className="plan-price">{p.priceUsd ? <>${p.priceUsd}<small>/month</small></> : "Free"}</div>
+              <p className="small">{p.blurb}</p>
+              <ul className="plan-features">
+                <li>{p.feePct === 0 ? "No transaction charges" : p.freeTrades > 0 ? `${p.freeTrades} trades/month free, then ${p.feePct}%` : `${p.feePct}% charge per trade`}</li>
+                <li>{p.aiTokens ? `${fmtTokens(p.aiTokens)} AI tokens/month (≈ ${analysesFor(p.aiTokens)} analyses)` : "No AI"}</li>
+                {FEATURES.map((f) => (
+                  <li key={f.perm} className={p.permissions.includes(f.perm) ? "yes" : "no"}>{p.permissions.includes(f.perm) ? "✓" : "–"} {f.label}</li>
+                ))}
+              </ul>
+              <button className={`btn ${current ? "ghost" : "buy"} wide`} disabled>{current ? "Current plan" : "Upgrade (billing coming soon)"}</button>
+            </div>
+          );
+        })}
+      </div>
+      <p className="muted tiny">Online billing isn't connected yet: an admin can change your plan meanwhile. Prices are in USD.</p>
+    </Modal>
+  );
+}
+
+export function AdminModal({ onClose, notify }: { onClose: () => void; notify: (m: string, bad?: boolean) => void }) {
+  const [users, setUsers] = useState<AdminUser[] | null>(null);
+  const [plans, setPlans] = useState<PlanInfo[]>([]);
+  const load = () => api.adminUsers().then(setUsers).catch((e) => notify(e.message, true));
+  useEffect(() => {
+    void load();
+    void api.plans().then(setPlans).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const change = async (username: string, b: { plan?: PlanId; role?: "user" | "admin" }) => {
+    try {
+      await api.setUserAccess({ username, ...b });
+      notify(`Updated ${username}`);
+      void load();
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
+  return (
+    <Modal title="Manage users" onClose={onClose} wide>
+      {!users ? <p className="muted small">Loading…</p> : (
+        <div className="table-wrap">
+          <table className="scan">
+            <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>Role</th><th className="num">AI tokens this month</th></tr></thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.username}>
+                  <td><b>{u.firstName} {u.lastName}</b><div className="muted tiny">@{u.username}</div></td>
+                  <td className="small">{u.email}</td>
+                  <td>
+                    <select value={u.plan} onChange={(e) => void change(u.username, { plan: e.target.value as PlanId })}>
+                      {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <select value={u.role} onChange={(e) => void change(u.username, { role: e.target.value as "user" | "admin" })}>
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </td>
+                  <td className="num">{u.usage.limit < 0 ? `${fmtTokens(u.usage.used)} / unlimited` : `${fmtTokens(u.usage.used)} / ${fmtTokens(u.usage.limit)}`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Modal>
   );

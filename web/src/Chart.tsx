@@ -56,6 +56,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
   const lines = useRef<IPriceLine[]>([]);
   const fitted = useRef("");
   const data = useRef<Candle[]>([]); // the candles on screen, for the price-scale fit
+  const levels = useRef<number[]>([]); // plan / order / position line prices, kept in view
 
   useEffect(() => {
     if (!el.current) return;
@@ -74,7 +75,18 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
         const r = original();
         const range = c.timeScale().getVisibleLogicalRange();
         const fit = range ? robustRange(data.current, Math.max(0, Math.floor(range.from)), Math.ceil(range.to)) : null;
-        return fit && r ? { ...r, priceRange: fit } : r;
+        const base = fit ?? r?.priceRange ?? null;
+        if (!base) return r;
+        // Keep the buy / target / exit / order lines on screen, as long as they're within
+        // a sensible distance of the price (a line 10x away would flatten the candles).
+        const last = data.current.at(-1)?.close ?? 0;
+        let { minValue, maxValue } = base;
+        for (const p of levels.current) {
+          if (!(p > 0) || !last || p < last / 3 || p > last * 3) continue;
+          minValue = Math.min(minValue, p);
+          maxValue = Math.max(maxValue, p);
+        }
+        return r ? { ...r, priceRange: { minValue, maxValue } } : { priceRange: { minValue, maxValue } };
       },
     });
     const vol = c.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
@@ -139,9 +151,11 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
     if (!cs) return;
     lines.current.forEach((l) => cs.removePriceLine(l));
     lines.current = [];
+    levels.current = levelLines.map((l) => l.price);
     for (const l of levelLines) {
       if (l.price > 0) lines.current.push(cs.createPriceLine({ price: l.price, color: l.color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: l.title }));
     }
+    chart.current?.priceScale("right").applyOptions({ autoScale: true }); // refit to include the new lines
   }, [JSON.stringify(levelLines), candles.length > 0]);
 
   // The chart is absolutely positioned inside a wrapper, so its size can't

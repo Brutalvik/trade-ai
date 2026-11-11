@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
+import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
-import { AccountButton, SettingsButton } from "./Account";
+import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveScan, saveState, saveUi, savedAnalysis, savedChart, savedScan, savedState, savedUi, type SavedAnalysis } from "./persist";
@@ -24,6 +24,22 @@ function useInterval(fn: () => void, ms: number, deps: unknown[] = []) {
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
+  // Who's signed in, with their plan, role, permissions and AI token use (RBAC).
+  const [me, setMe] = useState<User | null>(null);
+  const [plans, setPlans] = useState<PlanInfo[]>([]);
+  const [plansOpen, setPlansOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const loadMe = useCallback(() => api.me().then((r) => setMe(r.user)).catch(() => setMe(null)), []);
+  useEffect(() => {
+    void loadMe();
+    void api.plans().then(setPlans).catch(() => {});
+    const id = setInterval(() => void loadMe(), 60_000); // keeps the token meter current
+    return () => clearInterval(id);
+  }, [loadMe]);
+  const access = useMemo<Access & { plans: PlanInfo[] }>(
+    () => ({ me, plans, can: (perm) => (me ? (me.permissions ?? []).includes(perm) : true), openPlans: () => setPlansOpen(true), openAdmin: () => setAdminOpen(true) }),
+    [me, plans],
+  );
   // Restore the last session instantly (coin, timeframe, tab, last-seen data); live data replaces it moments later.
   const [pair, setPair] = useState<PairInfo | null>(() => savedUi().pair ?? null);
   const [tf, setTf] = useState<Timeframe>(() => savedUi().tf ?? "5m");
@@ -159,9 +175,10 @@ export default function App() {
   const pairTrades = useMemo(() => (state?.trades ?? []).filter((t) => t.pool === pair?.pool), [state?.trades, pair?.pool]);
 
   return (
+    <AccessCtx.Provider value={access}>
     <div className="app">
       <div className="bg-grid" />
-      <TopBar status={status} state={state} onSelect={selectPair} notify={notify} refresh={() => api.state().then(setState)} />
+      <TopBar status={status} state={state} onSelect={selectPair} notify={notify} refresh={() => { void api.state().then(setState); void loadMe(); }} />
       <BotTradeNotifications state={state} onOpen={openPool} />
       <UpdateBanner serverCommit={status?.commit} />
       {state?.signedOut && (
@@ -227,7 +244,10 @@ export default function App() {
 
       <Footer />
       {toast && <div className={`toast ${toast.bad ? "bad" : ""}`}>{toast.msg}</div>}
+      {plansOpen && <PlansModal onClose={() => setPlansOpen(false)} />}
+      {adminOpen && <AdminModal onClose={() => { setAdminOpen(false); void loadMe(); }} notify={notify} />}
     </div>
+    </AccessCtx.Provider>
   );
 }
 
@@ -453,6 +473,7 @@ function PredictionInfo({ pct }: { pct: number }) {
 }
 
 function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; analyzedAt?: number; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
+  const access = useAccess();
   const { pair, tf, sig, results, cost, onResult, price, botOnThisCoin, analyzedAt, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -534,7 +555,11 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               i
             </button>
           )}
-          <button className="btn ghost" onClick={() => run()} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : sig ? "Analyze again" : "Analyze"}</button>
+          {access.can("ai.analyze") ? (
+            <button className="btn ghost" onClick={() => run()} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : sig ? "Analyze again" : "Analyze"}</button>
+          ) : (
+            <LockChip label="AI plans" />
+          )}
         </span>
       </div>
       {infoOpen && sig && createPortal(
@@ -650,6 +675,24 @@ function ProtectControl({ pos, notify, refresh, compact = false }: { pos: Positi
       ))}
       {!compact && <span className="muted tiny">from its high</span>}
     </div>
+  );
+}
+
+// The platform's transaction charge on the user's plan (free trades left this month, then the rate).
+function FeeLine({ state }: { state: AppState | null }) {
+  const { me, plans, openPlans } = useAccess() as ReturnType<typeof useAccess> & { plans?: PlanInfo[] };
+  if (!me || !state || state.signedOut) return null;
+  const plan = plans?.find((p) => p.id === (me.plan ?? "free"));
+  if (!plan) return null;
+  if (plan.feePct === 0 || plan.freeTrades < 0) return <p className="fee-line">No transaction charges on your {plan.name} plan.</p>;
+  const m = new Date().toISOString().slice(0, 7);
+  const used = state.trades.filter((t) => new Date(t.time).toISOString().slice(0, 7) === m).length;
+  const left = Math.max(0, plan.freeTrades - used);
+  return (
+    <p className="fee-line">
+      {left > 0 ? `${left} of ${plan.freeTrades} free trades left this month, then ` : ""}{plan.feePct}% transaction charge per trade ({plan.name} plan).{" "}
+      {plan.id !== "max" && <button className="link-btn" onClick={openPlans}>See plans</button>}
+    </p>
   );
 }
 
@@ -795,6 +838,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
         </div>
       )}
       {otherOrders > 0 && <p className="muted tiny">{otherOrders} open order{otherOrders === 1 ? "" : "s"} on other coins (see Positions).</p>}
+      <FeeLine state={state} />
       {!pending && <p className="muted tiny">{kind === "limit" ? "Limit orders are checked every 5 seconds, even with the bot off, and you get a notification when one fills." : `Fees ${state?.settings.feePct}% + slippage ${state?.settings.slippagePct}% per side are simulated.`}</p>}
     </div>
   );
@@ -896,6 +940,7 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
 }
 
 function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons = [] }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; riskReasons?: string[]; alerts?: "telegram" | "ntfy" | null }) {
+  const access = useAccess();
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
   // Your choices are saved in this browser, so a refresh or coin change keeps them.
@@ -1036,7 +1081,8 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
         <button role="radio" aria-checked={shownMode === "this"} className={`preset balanced ${shownMode === "this" ? "on" : ""}`} onClick={() => setMode("this")} disabled={running}>
           {running && shownMode === "this" ? active?.symbol : `This coin${pair ? ` (${pair.symbol})` : ""}`}
         </button>
-        <button role="radio" aria-checked={shownMode === "auto"} className={`preset safe ${shownMode === "auto" ? "on" : ""}`} onClick={() => setMode("auto")} disabled={running}>
+        <button role="radio" aria-checked={shownMode === "auto"} className={`preset safe ${shownMode === "auto" ? "on" : ""}`} onClick={() => (access.can("bot.autopick") ? setMode("auto") : access.openPlans())} disabled={running} title={access.can("bot.autopick") ? undefined : "Auto-pick is included from AI Pro"}>
+          {!access.can("bot.autopick") && "🔒 "}
           Auto-pick
         </button>
       </div>
@@ -1247,7 +1293,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={() => void startBot(false)}>Start with safety on</button>
-              <button className="btn sell" onClick={() => void startBot(true)}>I understand, trade anyway</button>
+              {access.can("bot.risky") ? (
+                <button className="btn sell" onClick={() => void startBot(true)}>I understand, trade anyway</button>
+              ) : (
+                <LockChip label="Risky mode" plan="AI Pro" />
+              )}
             </div>
           </div>
         </div>,
@@ -1257,6 +1307,15 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
+        !access.can("bot.run") ? (
+          <div className="lock-card">
+            <b>The AI bot trades for you around the clock.</b>
+            <span className="muted small">It's included from the AI Starter plan, with a monthly AI token allowance.</span>
+            <LockChip label="AI bot" />
+          </div>
+        ) : (mode === "auto" && !access.can("bot.autopick")) ? (
+          <LockChip label="Auto-pick" plan="AI Pro" />
+        ) :
         <button className="btn buy wide" onClick={start} disabled={mode === "this" && !pair}>{mode === "newcoins" ? `START NEW COINS BOT (${newChain === "solana" ? "Solana" : "Base"})` : mode === "auto" ? "START AUTO-PICK BOT" : `START BOT ON ${pair?.symbol ?? "…"}`}</button>
       )}
       <p className="muted small run-mode-hint">{state?.settings.continuous ? "Trades continuously until you stop it." : "Stops by itself after one profitable trade."} Change this in Settings (wrench, top right).</p>
@@ -1303,6 +1362,7 @@ const CHAIN_TABS: { id: ScanChain; label: string }[] = [
 ];
 
 function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; notify: (m: string, bad?: boolean) => void; tf: Timeframe }) {
+  const access = useAccess();
   const [chain, setChain] = useState<ScanChain>(() => (savedUi().scanChain as ScanChain) ?? "all");
   const [data, setData] = useState<ScanResult | null>(() => savedScan(savedUi().scanChain ?? "all") ?? null);
   const [err, setErr] = useState("");
@@ -1413,7 +1473,11 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
                     </>
                   )}
                   <td className="col-action" onClick={(e) => e.stopPropagation()}>
-                    <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask AI"}</button>
+                    {access.can("ai.analyze") ? (
+                      <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask AI"}</button>
+                    ) : (
+                      <LockChip label="Ask AI" />
+                    )}
                   </td>
                 </tr>
               );

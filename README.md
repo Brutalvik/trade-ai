@@ -28,6 +28,22 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 - **Settings** (wrench, top right): choose whether the bot stops by itself after one profitable trade (the default) or trades continuously, and see whether phone alerts are on.
 - **Accounts:** sign up with a unique username, first and last name, email and password; sign in with username or email. Passwords are hashed with scrypt; sessions are signed, HTTP-only cookies that last 30 days. The profile (click your initials) shows your details and lets you reset your password, which signs out your other devices. Accounts are stored in the same Upstash Redis database, so no extra setup is needed. Every login has its own paper account (new accounts start with $1,000): cash, positions, trades, bot, settings and limit orders. Signed out, the page shows an empty $0 account. The scheduler wakes every account that has a bot running, protected trades or limit orders. The single shared account from before was moved to its owner's login (a backup copy is kept).
 
+## Plans and roles (RBAC)
+
+Every feature checks a permission; a user's permissions come from their plan plus their role.
+
+| Plan | Price | Transaction charge | AI tokens / month | Includes |
+|---|---|---|---|---|
+| Free | $0 | 0.5% per trade | none | paper trading, limit orders, Protect |
+| Member | $9 | 100 trades free/month, then 0.2% | none | Free + lower charges |
+| AI Starter | $19 | 300 free, then 0.1% | 3M (about 30 analyses) | + AI plans, AI bot on a coin |
+| AI Pro | $49 | none | 15M (about 150) | + auto-pick, risky mode |
+| AI Max | $129 | none | 60M (about 600) | same, more AI |
+
+- **AI tokens:** 10 app tokens per token of an AI API, for every model asked (two models cost both). Usage is metered per user per month; at the limit, AI requests are refused and the bot keeps managing open positions but makes no new plans.
+- **Roles:** user or admin. Admins manage users' plans and roles (profile, Manage users) and have unlimited AI tokens. The platform owner is the first admin.
+- **Billing** isn't connected yet: admins set plans; prices shown are proposed.
+
 ## New coins
 
 The 🚀 New coins tab lists pools from minutes to 3 days old, each with a rug-risk level (LOW / MEDIUM / HIGH / REJECTED) and the reasons. Solana uses RugCheck (mint/freeze authority, creator rug history, holder concentration, locked liquidity); Base uses honeypot.is (can you sell, buy/sell tax). Open a coin to see its chart, get the AI's plan and trade it like any other coin; skip Rejected and High-risk ones.

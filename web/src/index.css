@@ -449,3 +449,32 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .risk-list li { margin: 3px 0; }
 .risky-pill { margin: 0 0 8px; padding: 6px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; color: #ff8fab; background: rgba(255, 61, 113, 0.1); border: 1px solid rgba(255, 61, 113, 0.45); }
 .avoid-setup { margin: 4px 0 8px; padding: 8px 10px; border-radius: 10px; font-size: 12px; line-height: 1.45; color: #ffb3c4; background: rgba(255, 61, 113, 0.08); border: 1px solid rgba(255, 61, 113, 0.4); }
+
+/* Plans, admin, locks */
+.modal.wide { width: min(1080px, 100%); max-height: min(88vh, 900px); }
+.plans-lead { margin-top: 10px !important; }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 12px 0; }
+.plan-card { display: flex; flex-direction: column; gap: 6px; padding: 14px; border-radius: 14px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.25); }
+.plan-card.current { border-color: var(--cyan); box-shadow: 0 0 18px rgba(0, 229, 255, 0.15); }
+.plan-card.pro, .plan-card.max { background: linear-gradient(160deg, rgba(180, 92, 255, 0.1), rgba(0, 0, 0, 0.25)); }
+.plan-name { font-family: Orbitron, sans-serif; font-size: 14px; letter-spacing: 1px; color: var(--text); display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.plan-current { font-family: inherit; font-size: 10px; padding: 2px 8px; border-radius: 999px; background: rgba(0, 229, 255, 0.15); color: var(--cyan); letter-spacing: 0; }
+.plan-price { font-size: 24px; font-weight: 700; color: var(--text); }
+.plan-price small { font-size: 12px; color: var(--muted); font-weight: 500; }
+.plan-features { list-style: none; padding: 0; margin: 4px 0 8px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; flex: 1; }
+.plan-features li.no { color: var(--muted); opacity: 0.6; }
+.plan-features li.yes { color: #bff7e3; }
+.lock-chip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 10px; border: 1px dashed rgba(180, 92, 255, 0.6); background: rgba(180, 92, 255, 0.08); color: #d9b8ff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.lock-chip span { color: #f0dcff; }
+.lock-chip:hover { background: rgba(180, 92, 255, 0.16); }
+.lock-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px; border-radius: 12px; border: 1px dashed rgba(180, 92, 255, 0.5); background: rgba(180, 92, 255, 0.06); }
+.token-meter { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.25); display: flex; flex-direction: column; gap: 6px; }
+.tm-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.tm-head b { color: var(--text); font-family: "JetBrains Mono", ui-monospace, monospace; }
+.tm-bar { height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.tm-bar > div { height: 100%; background: linear-gradient(90deg, #00e5ff, #b45cff); }
+.tm-bar > div.hot { background: linear-gradient(90deg, #ffc857, #ff3d71); }
+.profile-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.fee-line { font-size: 11px; color: var(--muted); margin-top: 6px; }
+select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+.link-btn { background: none; border: 0; padding: 0; color: var(--cyan); font-size: inherit; cursor: pointer; text-decoration: underline; }

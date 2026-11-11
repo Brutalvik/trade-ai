@@ -6,6 +6,7 @@ import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, 
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
@@ -42,6 +43,7 @@ export type Position = {
 };
 
 export type Trade = {
+  platformFeeUsd?: number; // the platform's transaction charge on this trade (depends on the plan)
   id: string;
   time: number;
   side: "BUY" | "SELL";
@@ -240,6 +242,9 @@ type Account = {
   busy: boolean; // a bot step is running: don't swap the state under it
   guarding: boolean;
   active?: boolean; // last value written to the active-accounts list
+  plan?: PlanId; // the user's plan and role (refreshed from their user record about once a minute)
+  role?: Role;
+  planAt?: number;
 };
 const NEW_ACCOUNT_CASH = 1000;
 const als = new AsyncLocalStorage<Account>();
@@ -249,13 +254,15 @@ const acct = (): Account => als.getStore() ?? (fallback ??= newAccount(null));
 let fallback: Account | null = null;
 
 // Run fn inside a user's account (null = a signed-out visitor: an empty, unsaved $0 account).
-export function withAccount<T>(key: string | null, fn: () => Promise<T>): Promise<T> {
+export function withAccount<T>(key: string | null, fn: () => Promise<T>, access?: { plan: PlanId; role: Role }): Promise<T> {
   const k = key?.toLowerCase() ?? null;
   let a = k ? accounts.get(k) : undefined;
   if (!a) {
     a = newAccount(k);
     if (k) accounts.set(k, a);
   }
+  // A request knows the user's current plan and role: use them right away (no stale cache).
+  if (access) Object.assign(a, { plan: access.plan, role: access.role, planAt: Date.now() });
   return als.run(a, fn);
 }
 export const currentAccountKey = () => acct().key;
@@ -325,6 +332,47 @@ export async function sync() {
   a.loaded = true;
   if (!saved && first) save(); // a brand-new account: keep its starting balance
   if (a.active === undefined) a.active = (await activeAccounts()).includes(a.key);
+  if (!a.planAt || Date.now() - a.planAt > 60_000) {
+    const u = await store.kvGet<{ plan?: PlanId; role?: Role }>(`user:${a.key}`);
+    // The platform owner is its admin on the top plan, even before their record says so
+    // (their bot keeps running on the scheduler without them signing in).
+    const owner = process.env.OWNER_USERNAME?.trim().toLowerCase() || (await store.kvGet<string>("owner"));
+    const isOwner = owner === a.key && !u?.role;
+    a.plan = isOwner ? "max" : planOf(u?.plan).id;
+    a.role = isOwner ? "admin" : (u?.role ?? "user");
+    a.planAt = Date.now();
+  }
+}
+
+// ---------- Plans: AI tokens and transaction charges ----------
+const usageKey = (key: string) => `usage:${key}:${month()}`;
+// AI tokens left this month (app tokens; Infinity for admins).
+async function tokensLeft(): Promise<number> {
+  const a = acct();
+  if (!a.key) return Infinity; // scripts and tests without a login
+  const limit = tokenLimit(a.plan, a.role);
+  if (!Number.isFinite(limit)) return Infinity;
+  return limit - ((await store.kvGet<number>(usageKey(a.key))) ?? 0);
+}
+// Charge the AI tokens an analysis used: 10 app tokens per AI API token, for every model asked.
+async function chargeTokens(results: ModelResult[]) {
+  const a = acct();
+  const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
+  if (!a.key || !apiTokens) return 0;
+  const appTokens = apiTokens * APP_TOKENS_PER_API_TOKEN;
+  const k = usageKey(a.key);
+  await store.kvSet(k, ((await store.kvGet<number>(k)) ?? 0) + appTokens);
+  return appTokens;
+}
+// The platform's transaction charge for the next trade: free for the first `freeTrades`
+// trades this month on the user's plan, then the plan's rate.
+function platformFeePct() {
+  if (!acct().key) return 0; // scripts and tests without a login
+  const p = planOf(acct().plan);
+  if (p.feePct <= 0) return 0;
+  const m = month();
+  const tradesThisMonth = state.trades.filter((t) => month(t.time) === m).length;
+  return tradesThisMonth < p.freeTrades ? 0 : p.feePct;
 }
 
 function save() {
@@ -389,8 +437,9 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   if (!(pair.priceUsd > 0)) throw new Error("No live price for this token");
   const { feePct, slippagePct } = state.settings;
   const feeUsd = usd * (feePct / 100);
+  const platformFeeUsd = usd * (platformFeePct() / 100);
   const fillPrice = pair.priceUsd * (1 + (slippagePct + extraSlipPct) / 100);
-  const qty = (usd - feeUsd) / fillPrice;
+  const qty = (usd - feeUsd - platformFeeUsd) / fillPrice;
   state.cash -= usd;
   const existing = state.positions.find((p) => p.pool === pair.pool && p.source === source);
   if (existing) {
@@ -402,7 +451,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   } else {
     state.positions.push({ id: uid(), chain: pair.chain, pool: pair.pool, symbol: pair.symbol, qty, entryPrice: fillPrice, costUsd: usd, openedAt: Date.now(), source, lastPrice: pair.priceUsd, ...plan });
   }
-  const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, reason, source };
+  const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, platformFeeUsd, reason, source };
   state.trades.unshift(t);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES; // keep the newest only
   recordEquity();
@@ -419,7 +468,8 @@ export function sell(positionId: string, price: number, fraction: number, reason
   const fillPrice = price * (1 - (slippagePct + (p.extraSlipPct ?? 0)) / 100);
   const gross = qty * fillPrice;
   const feeUsd = gross * (feePct / 100);
-  const net = gross - feeUsd;
+  const platformFeeUsd = gross * (platformFeePct() / 100);
+  const net = gross - feeUsd - platformFeeUsd;
   const costPart = p.costUsd * f;
   state.cash += net;
   p.qty -= qty;
@@ -429,7 +479,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
     state.orders = (state.orders ?? []).filter((o) => o.positionId !== p.id); // its limit sells go with it
   }
   else p.realizedUsd = (p.realizedUsd ?? 0) + (net - costPart);
-  const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, reason, source: p.source };
+  const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, platformFeeUsd, reason, source: p.source };
   state.trades.unshift(t);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES;
   recordEquity();
@@ -518,7 +568,9 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
       : `Dip and buy-now orders are allowed right now (the bot pauses them if the 1-hour trend turns down or the coin falls more than ${maxDrop}% in an hour).`,
     `Exact exit rules: once up ${ex.be}%, the stop moves to break-even, then a profit lock keeps at least ${ex.lock}% of the best gain; it sells half at ${ex.half}% of the way from entry to your target; at the target it trails ${ex.trail}% below the highest price. Orders with a win chance below ${ex.minWin}% are not used. After a losing trade it waits before re-buying, and skips the coin for the day after 2 losses.`,
   ].join("\n");
+  if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
   const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context);
+  await chargeTokens(results);
   state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
@@ -970,6 +1022,10 @@ export async function tick(persist = true) {
     // 3. Ask AI only when something calls for it (never more than once per 2 min).
     const why = claudeDue(cfg, q?.price ?? null);
     let askedAt = 0;
+    if (why && (await tokensLeft()) <= 0) {
+      noteOnce(`tokens:${month()}`, "Out of AI tokens for this month on your plan: the bot can't make new plans. Open positions are still managed. Upgrade your plan to keep the bot trading.", "bad");
+      return;
+    }
     if (why && Date.now() - state.bot.lastAnalysisAt >= MIN_CLAUDE_GAP_MS) {
       // Save "asked Claude at ..." BEFORE the slow, paid call, so no other
       // request or server decides a check is due and asks again meanwhile.

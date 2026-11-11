@@ -38,7 +38,8 @@ export type PlanOrder = z.infer<typeof OrderSchema>;
 // Kept as an alias: the UI and older code call a model's answer its "signal".
 export type Signal = Plan;
 
-export type ModelResult = { model: string; ok: true; signal: Plan; ms: number } | { model: string; ok: false; error: string; ms: number };
+// tokens = AI API tokens this call used (input + output, including cache), for metering.
+export type ModelResult = { model: string; ok: true; signal: Plan; ms: number; tokens?: number } | { model: string; ok: false; error: string; ms: number; tokens?: number };
 
 // An order the server checked against fees and risk, ready for the bot.
 // evPct = expected profit per trade after fees, from Claude's win chance:
@@ -128,7 +129,7 @@ ${context ? `\n${context}\n` : ""}
 Write your trading plan (standing orders) for roughly the next few hours.`;
 }
 
-async function askClaude(prompt: string): Promise<Plan> {
+async function askClaude(prompt: string): Promise<{ plan: Plan; tokens: number }> {
   anthropic ??= new Anthropic();
   const res = await anthropic.beta.messages.parse({
     model: CLAUDE_MODEL,
@@ -141,10 +142,12 @@ async function askClaude(prompt: string): Promise<Plan> {
   });
   if (res.stop_reason === "refusal") throw new Error("The AI declined this request");
   if (!res.parsed_output) throw new Error(`The AI returned no parseable signal (${res.stop_reason})`);
-  return res.parsed_output;
+  const u: any = res.usage ?? {};
+  const tokens = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+  return { plan: res.parsed_output, tokens };
 }
 
-async function askOpenAI(prompt: string): Promise<Plan> {
+async function askOpenAI(prompt: string): Promise<{ plan: Plan; tokens: number }> {
   openai ??= new OpenAI();
   const res = await openai.responses.parse({
     model: OPENAI_MODEL,
@@ -153,13 +156,15 @@ async function askOpenAI(prompt: string): Promise<Plan> {
     text: { format: zodTextFormat(PlanSchema, "trading_plan") },
   });
   if (!res.output_parsed) throw new Error("OpenAI returned no parseable signal");
-  return res.output_parsed;
+  const u: any = res.usage ?? {};
+  return { plan: res.output_parsed, tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) };
 }
 
-async function timed(model: string, fn: () => Promise<Plan>): Promise<ModelResult> {
+async function timed(model: string, fn: () => Promise<{ plan: Plan; tokens: number }>): Promise<ModelResult> {
   const t = Date.now();
   try {
-    return { model, ok: true, signal: await fn(), ms: Date.now() - t };
+    const r = await fn();
+    return { model, ok: true, signal: r.plan, ms: Date.now() - t, tokens: r.tokens };
   } catch (e: any) {
     return { model, ok: false, error: e?.message ?? String(e), ms: Date.now() - t };
   }

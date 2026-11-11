@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { promisify } from "node:util";
 import type { Request, Response } from "express";
 import { createStore } from "./store.js";
+import { month, permissionsFor, PLANS, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 
 const store = createStore();
 const scrypt = promisify(crypto.scrypt) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
@@ -21,8 +22,10 @@ type User = {
   passVer: number; // bumped on password change: old sessions stop working
   createdAt: number;
   avatarUrl?: string | null; // profile picture (coming later)
+  plan?: PlanId; // what they pay for (default free)
+  role?: Role; // user | admin
 };
-export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null };
+export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role };
 
 const COOKIE = "nexus_session";
 const SESSION_DAYS = 30;
@@ -31,7 +34,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const userKey = (u: string) => `user:${u.toLowerCase()}`;
 const emailKey = (e: string) => `email:${e.toLowerCase()}`;
-const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null });
+const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user" });
 
 let secret: Buffer | null = null;
 async function key() {
@@ -104,22 +107,72 @@ async function ownerName(claimFor?: User | null) {
   return (await store.kvGet<string>("owner")) ?? null;
 }
 
-// The signed-in user's account key (lowercase username), or null when signed out.
-// Every login has its own paper account; the first sign-in after accounts became
-// per-user also records who owned the old shared one (so it can move to them).
-export async function accountKey(req: Request): Promise<string | null> {
-  const u = await sessionUser(req);
+// Everyone who has an account (for the admin page).
+const USERS_INDEX = "users-index";
+const indexed = new Set<string>();
+async function addToIndex(name: string) {
+  const k = name.toLowerCase();
+  if (indexed.has(k)) return;
+  const list = (await store.kvGet<string[]>(USERS_INDEX)) ?? [];
+  if (!list.includes(k)) await store.kvSet(USERS_INDEX, [...list, k]);
+  indexed.add(k);
+}
+
+// The owner of the platform's original account is its admin (on the top plan).
+async function ensureOwnerRole(u: User): Promise<User> {
+  const owner = await ownerName(u); // claims the old shared account once, if nobody has
+  if (owner !== u.username.toLowerCase() || (u.role === "admin" && u.plan === "max")) return u;
+  const updated: User = { ...u, role: "admin", plan: "max" };
+  await store.kvSet(userKey(u.username), updated);
+  return updated;
+}
+
+export type Auth = { key: string; plan: PlanId; role: Role; user: User };
+// Who is making this request (null when signed out), with their plan and role.
+export async function requestAuth(req: Request): Promise<Auth | null> {
+  let u = await sessionUser(req);
   if (!u) return null;
-  await ownerName(u); // claims the old shared account once, if nobody has
-  return u.username.toLowerCase();
+  u = await ensureOwnerRole(u);
+  await addToIndex(u.username);
+  return { key: u.username.toLowerCase(), plan: planOf(u.plan).id, role: u.role ?? "user", user: u };
+}
+// The signed-in user's account key (lowercase username), or null when signed out.
+export async function accountKey(req: Request): Promise<string | null> {
+  return (await requestAuth(req))?.key ?? null;
+}
+
+// This month's AI token use for an account (app tokens).
+const usageKey = (key: string, m = month()) => `usage:${key}:${m}`;
+export async function tokenUsage(key: string, plan: PlanId, role: Role) {
+  const used = (await store.kvGet<number>(usageKey(key))) ?? 0;
+  const limit = tokenLimit(plan, role);
+  return { month: month(), used, limit: Number.isFinite(limit) ? limit : -1 };
+}
+
+// Admin: list users and change a user's plan / role.
+export async function listUsers() {
+  const names = (await store.kvGet<string[]>(USERS_INDEX)) ?? [];
+  const users = await Promise.all(names.map((n) => store.kvGet<User>(userKey(n))));
+  return Promise.all(
+    users.filter((u): u is User => !!u).map(async (u) => ({ ...pub(u), usage: await tokenUsage(u.username.toLowerCase(), planOf(u.plan).id, u.role ?? "user") })),
+  );
+}
+export async function setUserAccess(username: string, plan?: string, role?: string) {
+  const u = await store.kvGet<User>(userKey(String(username)));
+  if (!u) throw new Error("User not found");
+  if (plan !== undefined && !(plan in PLANS)) throw new Error("Unknown plan");
+  if (role !== undefined && role !== "user" && role !== "admin") throw new Error("Unknown role");
+  const updated: User = { ...u, plan: (plan as PlanId) ?? u.plan, role: (role as Role) ?? u.role };
+  await store.kvSet(userKey(u.username), updated);
+  return pub(updated);
 }
 
 // ---------- Routes ----------
 
 export async function me(req: Request) {
-  const u = await sessionUser(req);
-  if (u) await ownerName(u);
-  return { user: u ? { ...pub(u), owner: true } : null };
+  const a = await requestAuth(req);
+  if (!a) return { user: null };
+  return { user: { ...pub(a.user), owner: true, permissions: permissionsFor(a.plan, a.role), usage: await tokenUsage(a.key, a.plan, a.role) } };
 }
 
 export async function signUp(req: Request, res: Response) {
@@ -139,6 +192,7 @@ export async function signUp(req: Request, res: Response) {
     await store.kvDel(userKey(username));
     throw new Error("An account with that email already exists");
   }
+  await addToIndex(username);
   await setSession(res, user);
   return { user: { ...pub(user), owner: true } };
 }

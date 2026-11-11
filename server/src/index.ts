@@ -10,6 +10,7 @@ import { storageEnvNames } from "./store.js";
 import { alertChannel } from "./alerts.js";
 import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
+import { can, planOf, publicPlans, type Permission } from "./plans.js";
 
 const app = express();
 app.use(cors());
@@ -19,8 +20,8 @@ app.use(express.json());
 // (on Vercel, each request may run on a different short-lived server).
 // Each request runs inside the signed-in user's own paper account (signed out: an empty one).
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
-  const key = await auth.accountKey(req).catch(() => null);
-  await engine.withAccount(key, async () => {
+  const a = await auth.requestAuth(req).catch(() => null);
+  await engine.withAccount(a?.key ?? null, async () => {
     try {
       await engine.ensureMigrated();
       await engine.sync();
@@ -32,7 +33,7 @@ const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (r
       if (res.statusCode < 400) res.status(400);
       res.json({ error: e?.message ?? String(e) });
     }
-  });
+  }, a ? { plan: a.plan, role: a.role } : undefined);
 };
 
 app.get(
@@ -72,16 +73,41 @@ app.get("/api/scan", wrap(async (req) => scanOpportunities(String(req.query.chai
 // New coins: young pools with a rug-risk score (Solana via RugCheck, Base via honeypot.is).
 app.get("/api/newcoins", wrap(async (req) => scanNewCoins(String(req.query.chain ?? "solana") as NewCoinChain)));
 
-// Trading needs a signed-in user (each has their own paper account); signed out you see $0.
-const signedIn = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
-  if (!(await auth.accountKey(req).catch(() => null))) {
-    res.status(401).json({ error: "Sign in to use your paper account." });
-    return;
-  }
+// RBAC: a route needs a signed-in user, and optionally a permission from their plan / role.
+const NEEDS: Record<Permission, string> = {
+  "trade.manual": "trading",
+  "trade.limit": "limit orders",
+  "trade.protect": "Protect this trade",
+  "ai.analyze": "AI plans",
+  "bot.run": "the AI bot",
+  "bot.autopick": "auto-pick",
+  "bot.risky": "risky mode",
+  "admin.users": "managing users",
+};
+const guard = (perm: Permission | null, fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
+  const a = await auth.requestAuth(req).catch(() => null);
+  if (!a) return void res.status(401).json({ error: "Sign in to use your paper account." });
+  if (perm && !can(a.plan, a.role, perm))
+    return void res.status(403).json(
+      perm === "admin.users" ? { error: "Only admins can do this." } : { error: `Your ${planOf(a.plan).name} plan doesn't include ${NEEDS[perm]}. See Plans to upgrade.`, upgrade: true },
+    );
   return fn(req, res);
 };
+const signedIn = (fn: (req: Request, res: Response) => Promise<unknown>) => guard(null, fn);
+const needs = (perm: Permission, fn: (req: Request, res: Response) => Promise<unknown>) => guard(perm, fn);
 
-app.post("/api/analyze", signedIn(wrap(async (req) => engine.runAnalysis(req.body.chain, req.body.pool, req.body.tf ?? "5m"))));
+// Plans (public) and admin: users' plans and roles.
+app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
+app.get("/api/admin/users", needs("admin.users", async (_req, res) => void res.json(await auth.listUsers())));
+app.post("/api/admin/users", needs("admin.users", async (req, res) => {
+  try {
+    res.json(await auth.setUserAccess(String(req.body?.username ?? ""), req.body?.plan, req.body?.role));
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message ?? String(e) });
+  }
+}));
+
+app.post("/api/analyze", needs("ai.analyze", wrap(async (req) => engine.runAnalysis(req.body.chain, req.body.pool, req.body.tf ?? "5m"))));
 
 app.get(
   "/api/state",
@@ -94,7 +120,7 @@ app.get(
 
 app.post(
   "/api/trade",
-  signedIn(wrap(async (req) => {
+  needs("trade.manual", wrap(async (req) => {
     const { side, chain, pool, usd, positionId, fraction } = req.body;
     const pair = await getPair(chain, pool);
     if (side === "BUY") return engine.buy(pair, Number(usd), "manual", "Manual buy");
@@ -120,13 +146,24 @@ app.post("/api/auth/signin", authRoute(auth.signIn));
 app.post("/api/auth/signout", authRoute(auth.signOut));
 app.post("/api/auth/password", authRoute(auth.changePassword));
 app.post("/api/reset", signedIn(wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10)))));
-app.post("/api/bot/start", signedIn(wrap(async (req) => engine.startBot(req.body))));
+app.post(
+  "/api/bot/start",
+  needs("bot.run", async (req, res) => {
+    // Auto-pick and risky mode need their own permissions.
+    const a = (await auth.requestAuth(req))!;
+    if (req.body?.pick === "auto" && !can(a.plan, a.role, "bot.autopick"))
+      return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick. See Plans to upgrade.`, upgrade: true });
+    if (req.body?.allowRisky && !can(a.plan, a.role, "bot.risky"))
+      return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include risky mode. See Plans to upgrade.`, upgrade: true });
+    return wrap(async (r) => engine.startBot(r.body))(req, res);
+  }),
+);
 app.post("/api/bot/stop", signedIn(wrap(async () => engine.stopBot())));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
 // Limit orders: { side: "BUY", chain, pool, symbol, price, usd } or { side: "SELL", positionId, price, fraction }.
-app.post("/api/orders", signedIn(wrap(async (req) => engine.placeOrder(req.body ?? {}))));
+app.post("/api/orders", needs("trade.limit", wrap(async (req) => engine.placeOrder(req.body ?? {}))));
 app.post("/api/orders/cancel", signedIn(wrap(async (req) => engine.cancelOrder(String(req.body?.id ?? "")))));
-app.post("/api/protect", signedIn(wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0)))));
+app.post("/api/protect", needs("trade.protect", wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0)))));
 
 // While the dashboard is open it pings this every ~20 s. It only runs a bot step
 // if one is due, and Claude is only asked on the bot's own schedule, so extra

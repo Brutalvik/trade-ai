@@ -21,7 +21,7 @@ export type Signal = { stance: "BUY_NOW" | "WAIT_FOR_TRIGGER" | "AVOID"; confide
 export type ModelResult = { model: string; ok: true; signal: Signal; ms: number } | { model: string; ok: false; error: string; ms: number };
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
 export type Position = { id: string; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
-export type Trade = { id: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin" };
+export type Trade = { id: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
 export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins"; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean };
 export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
 export type AppState = {
@@ -66,7 +66,12 @@ export type ScanResult = { source: "trending" | "boosted"; chain: ScanChain; row
 // Older saved logs, trades and plans may still name the model; show "AI" instead.
 export const aiText = (s: string) => s.replace(/\bClaude plan: /g, "AI plan: ").replace(/\bClaude \([^)]*\)/g, "AI").replace(/\bClaude's\b/g, "the AI's").replace(/\bClaude\b/g, "AI");
 export type LimitOrder = { id: string; side: "BUY" | "SELL"; chain: string; pool: string; symbol: string; price: number; usd?: number; positionId?: string; fraction?: number; createdAt: number };
-export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean };
+export type PlanId = "free" | "member" | "starter" | "pro" | "max";
+export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.analyze" | "bot.run" | "bot.autopick" | "bot.risky" | "admin.users";
+export type Usage = { month: string; used: number; limit: number }; // limit -1 = unlimited
+export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; permissions: Permission[] }; // freeTrades -1 = unlimited
+export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; usage?: Usage };
+export type AdminUser = User & { usage: Usage };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
 
 async function req<T>(path: string, body?: unknown): Promise<T> {
@@ -100,6 +105,9 @@ export const api = {
   signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),
   signOut: () => req("/auth/signout", {}),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
+  plans: () => req<PlanInfo[]>("/plans"),
+  adminUsers: () => req<AdminUser[]>("/admin/users"),
+  setUserAccess: (b: { username: string; plan?: PlanId; role?: "user" | "admin" }) => req<User>("/admin/users", b),
   reset: (startCash: number) => req("/reset", { startCash }),
   startBot: (cfg: BotConfig) => req("/bot/start", cfg),
   stopBot: () => req("/bot/stop", {}),
