@@ -195,6 +195,11 @@ export default function App() {
     return reasons;
   }, [results, sig?.stance, botSig?.trendDown, pair?.change.h1, pair?.liquidityUsd]);
   const botOnThisCoin = allBots(state).some((b) => b.bot.running && b.bot.config?.pool === pair?.pool && b.bot.config?.pick === "this");
+  // The bot is really fetching a plan for this coin: running here, not paused (skip / limits),
+  // and not holding the coin (a holding bot manages its trade instead of planning).
+  const botPausedHere = allBots(state).find((b) => b.bot.running && b.bot.config?.pool === pair?.pool && b.bot.blocked)?.bot.blocked ?? null;
+  const botHolding = !!state?.positions.some((p) => p.source === "bot" && p.pool === pair?.pool);
+  const botPlanning = botOnThisCoin && !botPausedHere && !botHolding;
   // Chart lines: the bot's open trade on this coin, otherwise Claude's standing orders.
   const orderLines = useMemo<ChartLine[]>(
     () => (state?.orders ?? []).filter((x) => x.pool === pair?.pool).map((x) => ({ price: x.price, color: x.side === "BUY" ? "#7cf7ff" : "#ffb86b", title: x.side === "BUY" ? "LIMIT BUY" : "LIMIT SELL" })),
@@ -276,7 +281,7 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
+          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
             <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} onOpen={openPool} pairPool={pair?.pool}>
               {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
@@ -623,7 +628,7 @@ function PredictionInfo({ pct }: { pct: number }) {
   );
 }
 
-function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; analyzedAt?: number; patterns?: FramePatterns[]; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
+function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; botPlanning?: boolean; botPaused?: string | null; analyzedAt?: number; patterns?: FramePatterns[]; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
   const access = useAccess();
   const { pair, tf, sig, results, cost, onResult, price, botOnThisCoin, analyzedAt, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
@@ -737,7 +742,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
         ) : (
           <span className="title-actions">
-            {!sig && botOnThisCoin ? null : access.can("ai.analyze") ? (
+            {!sig && props.botPlanning ? null : access.can("ai.analyze") ? (
               <button className="btn ghost" onClick={() => run()} disabled={!pair || !hasAI}>{sig ? "Analyze again" : "Analyze"}</button>
             ) : (
               <LockChip label="AI plans" />
@@ -815,8 +820,10 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         </>
       ) : (
         <>
-          {botOnThisCoin ? (
+          {props.botPlanning ? (
             <BotPlanning symbol={pair?.symbol ?? ""} icon={pair?.imageUrl} />
+          ) : props.botPaused ? (
+            <p className="muted small">The bot on this coin isn't trading right now ({props.botPaused}), so it isn't asking the AI for a plan. Press Analyze to see the AI's view anyway.</p>
           ) : (
             <p className="muted small">Press Analyze to get the AI's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
           )}
@@ -2134,7 +2141,7 @@ function BotPlanning({ symbol, icon }: { symbol: string; icon?: string }) {
       </div>
       <div className="bp-text">
         <span className="bp-title">Planning the next trade</span>
-        <span className="bp-step" key={step}>{PLAN_STEPS[step]}…</span>
+        <span className="bp-step" key={t > 45 ? "slow" : step}>{t > 45 ? "Taking longer than usual: waiting for the AI…" : `${PLAN_STEPS[step]}…`}</span>
         <span className="bp-dots">
           {PLAN_STEPS.map((s, i) => <i key={s} className={i < step ? "done" : i === step ? "now" : ""} />)}
           <em>{t}s</em>
