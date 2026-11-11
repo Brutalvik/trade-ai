@@ -188,7 +188,7 @@ app.post(
     const { side, chain, pool, usd, positionId, fraction } = req.body;
     const pair = await getPair(chain, pool);
     if (side === "BUY") return engine.buy(pair, Number(usd), "manual", "Manual buy");
-    return engine.sell(positionId, pair.priceUsd, Number(fraction ?? 1), "Manual sell");
+    return engine.sellByUser(positionId, pair.priceUsd, Number(fraction ?? 1));
   })),
 );
 

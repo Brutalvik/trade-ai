@@ -1463,6 +1463,14 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
       </div>
       {ruleInfoOpen && <RewardRuleInfo on={running ? active?.rewardRule !== false : rewardRule} risky={!!(running ? active?.allowRisky : false)} onClose={() => setRuleInfoOpen(false)} />}
       {running && active?.allowRisky && <div className="risky-pill">⚠ Risky mode: buys while falling · max 25% per trade · 5-min cool-down</div>}
+      {!running && mode === "this" && pair && (() => {
+        const mine = state?.positions.find((p) => p.source === "manual" && p.pool === pair.pool);
+        return mine ? (
+          <div className="adopt-note">
+            You hold <b>{mine.symbol}</b> ({fmtUsd(mine.qty * mine.lastPrice)}). Starting the bot hands it over: the bot sells it for you automatically (exit 8% below the price unless you set one, target +16%, then its profit lock and trailing stop).
+          </div>
+        ) : null;
+      })()}
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
@@ -1590,16 +1598,28 @@ function Positions({ state, notify, refresh, onOpen }: { state: AppState | null;
             const value = p.qty * p.lastPrice;
             const pnl = value - p.costUsd;
             return (
-              <tr key={p.id}>
-                <td><button className="link-btn token-link" onClick={() => onOpen(p.chain, p.pool)} title={`Open the ${p.symbol} chart`}><b>{p.symbol}</b></button></td>
-                <td>{p.source === "bot" ? `🤖 bot${state.bots?.length ? ` ${p.botId ?? 1}` : ""}` : "manual"}</td>
+              <tr
+                key={p.id}
+                className="pos-row"
+                tabIndex={0}
+                title={`Open the ${p.symbol} chart`}
+                onClick={() => onOpen(p.chain, p.pool)}
+                onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) onOpen(p.chain, p.pool); }}
+              >
+                <td>
+                  <span className="pos-token">
+                    {p.imageUrl ? <img src={p.imageUrl} alt="" loading="lazy" /> : <span className="pos-token-dot">{p.symbol.slice(0, 1)}</span>}
+                    <b>{p.symbol}</b>
+                  </span>
+                </td>
+                <td title={p.adopted ? "You bought it; the bot sells it" : undefined}>{p.source === "bot" ? `🤖 bot${state.bots?.length ? ` ${p.botId ?? 1}` : ""}${p.adopted ? " · yours" : ""}` : "manual"}</td>
                 <td className="mono">{fmtUsd(p.costUsd)}</td>
                 <td className="mono">{fmtPrice(p.entryPrice)}</td>
                 <td className="mono">{fmtPrice(p.lastPrice)}</td>
                 <td className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)} ({fmtPct((pnl / p.costUsd) * 100)})</td>
                 <td className="hide-sm mono">{p.takeProfit ? fmtPrice(p.takeProfit) : "–"} / {p.stopLoss ? fmtPrice(p.stopLoss) : "–"}</td>
                 <td className="hide-sm">{p.sellBy ? fmtTime(p.sellBy) : "–"}</td>
-                <td>
+                <td className="pos-actions" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                   {p.source === "manual" && <ProtectControl pos={p} notify={notify} refresh={refresh} compact />}
                   <button className="chip" onClick={async () => { try { await api.sell(p.chain, p.pool, p.id, 1); notify(`Closed ${p.symbol}`); refresh(); } catch (e: any) { notify(e.message, true); } }}>Close</button>
                 </td>

@@ -49,7 +49,7 @@ const inflight = new Map<string, Promise<unknown>>();
 
 // GeckoTerminal's free tier allows ~30 calls/min, so space its calls out.
 // CoinMarketCap's keyless API refused after ~1 request/second in testing (recovers in ~16s).
-const GAP_MS: Record<string, number> = { "api.geckoterminal.com": 2200, "api.dexscreener.com": 250, "api.jup.ag": 2100, "pro-api.coinmarketcap.com": 1100 };
+const GAP_MS: Record<string, number> = { "api.geckoterminal.com": 2200, "api.dexscreener.com": 250, "api.jup.ag": 2100, "api.coingecko.com": 2500, "pro-api.coinmarketcap.com": 1100 };
 const COOLDOWN_MS: Record<string, number> = { "pro-api.coinmarketcap.com": 15_000 };
 const nextSlot = new Map<string, number>();
 async function throttle(host: string) {

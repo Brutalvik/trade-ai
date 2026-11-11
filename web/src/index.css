@@ -858,3 +858,13 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .coin-tabs { align-items: stretch; }
 .coin-tabs button { margin-bottom: 0; padding: 8px 10px 7px; }
 .coin-top .coin-arrow, .coin-top .panel-toggle { align-self: center; }
+
+/* Positions: whole row opens the chart; Close / Protect are separate clicks */
+.pos-row { cursor: pointer; transition: background 0.12s; }
+.pos-row:hover { background: rgba(0, 229, 255, 0.05); }
+.pos-row:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
+.pos-token { display: inline-flex; align-items: center; gap: 8px; }
+.pos-token img, .pos-token-dot { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; flex: none; background: rgba(255, 255, 255, 0.06); }
+.pos-token-dot { display: inline-grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--muted); }
+.pos-actions { cursor: default; white-space: nowrap; }
+.adopt-note { margin: 0 0 10px; padding: 9px 12px; border-radius: 12px; font-size: 12px; line-height: 1.45; color: #c6d2f0; background: rgba(0, 229, 255, 0.06); border: 1px solid rgba(0, 229, 255, 0.3); }

@@ -15,6 +15,8 @@ import { noteCommunityBuy } from "./lists.js";
 
 export type Position = {
   id: string;
+  adopted?: boolean; // bought by hand, then handed to a bot to sell
+  imageUrl?: string; // the coin's picture (shown in Positions)
   botId?: string; // which bot manages it ("1" when missing)
   chain: string;
   pool: string;
@@ -546,7 +548,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
     existing.costUsd += usd;
     Object.assign(existing, plan);
   } else {
-    state.positions.push({ id: uid(), chain: pair.chain, pool: pair.pool, symbol: pair.symbol, qty, entryPrice: fillPrice, costUsd: usd, openedAt: Date.now(), source, lastPrice: pair.priceUsd, ...plan });
+    state.positions.push({ id: uid(), chain: pair.chain, pool: pair.pool, symbol: pair.symbol, ...(pair.imageUrl ? { imageUrl: pair.imageUrl } : {}), qty, entryPrice: fillPrice, costUsd: usd, openedAt: Date.now(), source, lastPrice: pair.priceUsd, ...plan });
   }
   const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, platformFeeUsd, reason, source, ...(source === "bot" ? { botId: plan?.botId ?? "1" } : {}) };
   state.trades.unshift(t);
@@ -712,7 +714,47 @@ export function startBot(cfg: BotConfig, botId = "1", maxBots = 3) {
   if (id !== "1" && !slotOf(st, id)) {
     st.bots = [...(st.bots ?? []), { id, bot: { ...fresh().bot, coinStats: {}, day: null }, lastSignal: null }].sort((a, b) => a.id.localeCompare(b.id));
   }
-  return withBot(id, () => startBotHere(cfg));
+  return withBot(id, () => {
+    startBotHere(cfg);
+    if (cfg.pick !== "auto" && cfg.pool) adoptManualPosition(cfg);
+  });
+}
+
+// "Buy by hand, let the bot sell": starting a bot on a coin you hold hands that position to the
+// bot. It keeps any exit you set; otherwise the exit is 8% below the current price and the target
+// 16% up (gain twice the risk). Then break-even, profit lock, take-half and trailing apply.
+const ADOPT_RISK = 0.08;
+function adoptManualPosition(cfg: BotConfig) {
+  const id = currentBotId();
+  if (state.positions.some((p) => p.source === "bot" && p.pool === cfg.pool)) return;
+  const p = state.positions.find((x) => x.source === "manual" && x.pool === cfg.pool);
+  if (!p) return;
+  const now = p.lastPrice || p.entryPrice;
+  p.source = "bot";
+  p.botId = id;
+  p.adopted = true;
+  if (!(p.stopLoss && p.stopLoss < now)) p.stopLoss = now * (1 - ADOPT_RISK);
+  if (!(p.target && p.target > now)) p.target = Math.max(p.entryPrice, now) * (1 + 2 * ADOPT_RISK);
+  p.takeProfit = p.target;
+  p.trailPct = trailFor(cfg, state.lastSignal?.atrPct);
+  delete p.protectPct; // the bot's exits replace "Protect this trade"
+  delete p.protectSince;
+  rec("bot.setting", `Bot ${id} took over your ${p.symbol} position to sell it automatically`, { positionId: p.id, symbol: p.symbol, stopLoss: p.stopLoss, target: p.target });
+  log(`Took over your ${p.symbol} position (${fmt(p.entryPrice)} entry). It sells below ${fmt(p.stopLoss)}; at ${fmt(p.target)} it starts trailing ${p.trailPct}% below the high.`, "good");
+  save();
+}
+
+// A sell you make yourself. Selling a coin a bot bought stops that bot, so it doesn't buy it back.
+export function sellByUser(positionId: string, price: number, fraction: number) {
+  const p = state.positions.find((x) => x.id === positionId);
+  const t = sell(positionId, price, fraction, "Manual sell");
+  if (p && p.source === "bot") {
+    const id = p.botId ?? "1";
+    withBot(id, () => {
+      if (state.bot.running) stopBot(`You sold ${p.symbol} yourself, so bot ${id} stopped. Start it again to keep trading.`);
+    });
+  }
+  return t;
 }
 
 function startBotHere(cfg: BotConfig) {
@@ -1603,7 +1645,9 @@ export async function refreshPositionPrices() {
   await Promise.all(
     state.positions.map(async (p) => {
       try {
-        p.lastPrice = (await getPair(p.chain, p.pool)).priceUsd;
+        const pr = await getPair(p.chain, p.pool);
+        p.lastPrice = pr.priceUsd;
+        if (!p.imageUrl && pr.imageUrl) p.imageUrl = pr.imageUrl; // positions opened before pictures were kept
       } catch {}
     }),
   );

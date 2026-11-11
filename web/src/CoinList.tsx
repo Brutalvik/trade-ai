@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, fmtBig, fmtPrice, type ListCoin, type ListKind, type PairInfo } from "./api";
 
 const KINDS: { id: ListKind; label: string; hint: string }[] = [
-  { id: "crypto", label: "Crypto", hint: "Biggest Solana coins by market cap" },
+  { id: "crypto", label: "Crypto", hint: "All coins ranked by market cap (charts come from each coin's busiest on-chain market)" },
   { id: "top", label: "Top", hint: "Trending Solana coins ranked by a quick score from their price, volume and buyers (not AI)" },
   { id: "trending", label: "Trending", hint: "Trending on Solana in the last hour" },
   { id: "held", label: "Most held", hint: "Coins with the most holders" },
@@ -43,7 +43,20 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
     if (c.pair) return onSelect(c.pair);
     setOpening(c.mint);
     try {
-      const found = (await api.search(c.mint)).filter((p) => p.chain === "solana" && p.tokenAddress === c.mint).sort((a, b) => b.liquidityUsd - a.liquidityUsd)[0];
+      let found: PairInfo | undefined;
+      if (c.query) {
+        // A ranked coin (any chain): its busiest market, or a wrapped version (BTC -> WBTC / cbBTC).
+        const sym = c.query.toUpperCase();
+        const names = [sym, `W${sym}`, `CB${sym}`, `${sym}.E`, `B${sym}`];
+        // Copycat tokens reuse big names, so the market's price must also match the real coin's (±2%).
+        const near = (p: PairInfo) => c.priceUsd > 0 && Math.abs(p.priceUsd - c.priceUsd) / c.priceUsd < 0.02;
+        const res = [...(await api.search(sym)), ...(sym.length <= 5 ? await api.search(`W${sym}`).catch(() => []) : [])]
+          .filter((p) => names.includes(p.symbol.toUpperCase()) && near(p))
+          .sort((a, b) => b.liquidityUsd - a.liquidityUsd);
+        found = res[0];
+      } else {
+        found = (await api.search(c.mint)).filter((p) => p.chain === "solana" && p.tokenAddress === c.mint).sort((a, b) => b.liquidityUsd - a.liquidityUsd)[0];
+      }
       if (found) onSelect({ ...found, imageUrl: found.imageUrl ?? c.icon });
       else notify(`No chart found for ${c.symbol} yet`, true);
     } catch (e: any) {
@@ -95,7 +108,7 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
             {c.icon ? <img src={c.icon} alt="" loading="lazy" /> : <span className="coin-dot">{c.symbol.slice(0, 1)}</span>}
             <span className="coin-id">
               <b>{c.symbol}</b>
-              <span className="muted">{kind === "crypto" ? `#${i + 1} · ` : ""}{fmtBig(c.mcap)} MC</span>
+              <span className="muted">{kind === "crypto" ? `#${c.rank ?? i + 1} · ` : ""}{fmtBig(c.mcap)} MC</span>
             </span>
             <span className="coin-nums">
               <b><Price p={c.priceUsd} /></b>

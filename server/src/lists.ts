@@ -1,5 +1,5 @@
 // Coin lists for the left sidebar (Solana only, so every coin can be bought for real):
-//   crypto    – biggest Solana tokens by market cap (Jupiter, stablecoins left out)
+//   crypto    – every coin by market-cap rank (CoinGecko; Solana tokens from Jupiter as a fallback)
 //   top       – trending Solana coins ranked by our quick score (the old Opportunities list)
 //   trending  – Jupiter's top trending (last hour)
 //   held      – most holders (Jupiter: top traded / organic / trending, sorted by holders)
@@ -17,6 +17,7 @@ export type ListCoin = {
   holders?: number; volume24h?: number; liquidity?: number; verified?: boolean; buys?: number; buyers?: number;
   pair?: PairInfo; // known pool (bonding / graduated / community lists)
   score?: number | null; verdict?: "BUY ZONE" | "WAIT" | "AVOID"; why?: string; // Top list: the quick chart score
+  rank?: number; query?: string; // Crypto list: market-cap rank; search text to find its chart
 };
 
 const store = createStore();
@@ -100,7 +101,18 @@ export async function coinList(kind: string): Promise<{ kind: ListKind; coins: L
   const k = kind as ListKind;
   let coins: ListCoin[] = [];
   if (k === "crypto") {
-    coins = (await jup("toporganicscore/24h?limit=100")).map(fromJup).filter((c) => notStable(c) && (c.liquidity ?? 0) > 100_000).sort((a, b) => b.mcap - a.mcap);
+    // Every coin by market-cap rank (CoinGecko); if it's busy, the biggest Solana tokens instead.
+    try {
+      const cg = await cachedJson<any[]>("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&price_change_percentage=24h", 300_000, { retries: 0 });
+      coins = (Array.isArray(cg) ? cg : []).map((x) => ({
+        mint: `cg:${x.id}`, symbol: String(x.symbol ?? "").toUpperCase(), name: x.name ?? "", icon: x.image || undefined,
+        priceUsd: n(x.current_price), mcap: n(x.market_cap), change24h: n(x.price_change_percentage_24h), volume24h: n(x.total_volume),
+        rank: x.market_cap_rank ?? undefined, query: String(x.symbol ?? "").toUpperCase(),
+      }));
+    } catch {
+      coins = [];
+    }
+    if (!coins.length) coins = (await jup("toporganicscore/24h?limit=100")).map(fromJup).filter((c) => notStable(c) && (c.liquidity ?? 0) > 100_000).sort((a, b) => b.mcap - a.mcap);
   } else if (k === "top") {
     // The old Opportunities list: trending Solana coins ranked by a quick score from their own stats.
     const scan = await scanOpportunities("solana", 3);
@@ -131,5 +143,5 @@ export async function coinList(kind: string): Promise<{ kind: ListKind; coins: L
   } else {
     coins = await community();
   }
-  return { kind: k, coins: coins.slice(0, 50) };
+  return { kind: k, coins: coins.slice(0, k === "crypto" ? 100 : 50) };
 }
