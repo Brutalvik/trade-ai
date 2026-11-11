@@ -9,7 +9,7 @@ import type { Analysis, AppState, Candle, PairInfo, ScanResult, Timeframe } from
 export type SavedBotSettings = { cfg?: Record<string, number>; custom?: boolean; mode?: "this" | "auto" | "newcoins"; newChain?: "solana" | "base"; autoChain?: string; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; disabled?: string[] };
 
 // One saved Claude analysis per coin (only what the page shows, not the raw data sent).
-export type SavedAnalysis = { at: number; results: Analysis["results"]; consensus: Analysis["consensus"] };
+export type SavedAnalysis = { at: number; results: Analysis["results"]; consensus: Analysis["consensus"]; patterns?: Analysis["patterns"] };
 
 const KEY = "nexus-v1";
 type Saved = {
@@ -75,7 +75,7 @@ export function saveScan(chain: string, r: ScanResult) {
 // Claude's plan per coin, so switching coins (or refreshing) doesn't need a new, paid analysis.
 export const savedAnalysis = (pool: string): SavedAnalysis | undefined => mem.analyses[pool];
 export function saveAnalysis(pool: string, a: Analysis | SavedAnalysis, at = Date.now()): SavedAnalysis {
-  const entry: SavedAnalysis = { at: "at" in a ? a.at : at, results: a.results, consensus: a.consensus };
+  const entry: SavedAnalysis = { at: "at" in a ? a.at : at, results: a.results, consensus: a.consensus, ...(a.patterns ? { patterns: a.patterns } : {}) };
   const keep = Object.entries({ ...mem.analyses, [pool]: entry }).sort((x, y) => y[1].at - x[1].at).slice(0, 20);
   mem.analyses = Object.fromEntries(keep);
   write();

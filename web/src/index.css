@@ -1005,3 +1005,12 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .layout > .chart-panel:not(.maximized) { min-height: 0; }
 /* the tip dot moves at a steady speed, so the line draws at the same steady speed (dot stays on the tip) */
 .cl-line { animation-timing-function: linear; }
+
+/* Chart patterns under the AI plan */
+.pattern-box { margin-top: 2px; }
+.pattern-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.pattern-chip { position: relative; display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--muted); cursor: default; }
+.pattern-chip.up { color: #5ff2b4; border-color: rgba(0, 245, 160, 0.35); background: rgba(0, 245, 160, 0.06); }
+.pattern-chip.down { color: #ff7a93; border-color: rgba(255, 60, 100, 0.35); background: rgba(255, 60, 100, 0.06); }
+.pattern-chip b { font-weight: 700; opacity: 0.8; font-size: 10px; }
+.pattern-chip[data-tip]:hover::after { white-space: normal; width: 240px; }

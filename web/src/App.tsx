@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { type FramePatterns, aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
@@ -276,7 +276,7 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
+          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
             <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} onOpen={openPool} pairPool={pair?.pool}>
               {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
@@ -559,7 +559,7 @@ function PredictionInfo({ pct }: { pct: number }) {
   );
 }
 
-function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; analyzedAt?: number; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
+function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; analyzedAt?: number; patterns?: FramePatterns[]; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
   const access = useAccess();
   const { pair, tf, sig, results, cost, onResult, price, botOnThisCoin, analyzedAt, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
@@ -725,6 +725,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               {sig.orders.map((o, i) => (
                 <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
               ))}
+              <PatternChips patterns={props.patterns} />
               <div className="muted tiny">
                 Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then the AI makes a new one.
               </div>
@@ -1081,6 +1082,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   const [ruleInfoOpen, setRuleInfoOpen] = useState(false);
   const [strongMode, setStrongMode] = useState(savedBot.strongMode ?? true); // Strong mode (stricter entries)
   const [strongInfoOpen, setStrongInfoOpen] = useState(false);
+  const [lookInfoOpen, setLookInfoOpen] = useState(false);
   const [takeProfitUsd, setTakeProfitUsd] = useState<number>(savedBot.takeProfitUsd ?? 0);
   // Safety settings the user switched off (each one confirmed with "I understand" and logged).
   const [offKnobs, setOffKnobs] = useState<string[]>(savedBot.disabled ?? []);
@@ -1559,6 +1561,27 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
           </div>
         );
       })()}
+      {(() => {
+        const on = !shownOff.includes("aiSecondLook");
+        return (
+          <div className={`rule-switch ${on ? "is-on strong" : ""}`}>
+            <span>
+              <span className="rule-title">
+                <b>AI second look at the stop</b>
+                <button type="button" className="info-btn small" onClick={() => setLookInfoOpen(true)} aria-label="What the AI second look does" title="What the AI second look does">i</button>
+              </span>
+              <span className="muted tiny">{on ? "On: before a stop-loss or time-limit sale, the AI may hold once if it still sees a profit." : "Off: stop-loss and time limit always sell."}</span>
+            </span>
+            <span data-tip={running ? "Stop the bot to change this" : undefined}>
+              <button type="button" role="switch" aria-checked={on} aria-label="AI second look at the stop" className={`mini-switch ${on ? "on" : ""}`} disabled={running}
+                onClick={() => setOffKnobs((k) => (on ? [...k, "aiSecondLook"] : k.filter((x) => x !== "aiSecondLook")))}>
+                <span />
+              </button>
+            </span>
+          </div>
+        );
+      })()}
+      {lookInfoOpen && <SecondLookInfo on={!shownOff.includes("aiSecondLook")} onClose={() => setLookInfoOpen(false)} />}
       {strongInfoOpen && <StrongModeInfo on={running ? active?.strongMode !== false : strongMode} onClose={() => setStrongInfoOpen(false)} />}
       <div className="rule-switch">
         <span>
@@ -1839,7 +1862,49 @@ const OFF_WARN: Record<string, string> = {
   dailyLossPct: "The bot keeps opening trades after a bad day. There is no daily loss limit.",
   rewardRule: "The bot may buy setups where the possible loss is bigger than the possible gain after fees.",
 };
-const OFF_LABEL: Record<string, string> = { riskPerTradePct: "Risk per trade", minConfidence: "Minimum win chance", maxDrawdownPct: "Emergency stop", breakEvenAtPct: "Profit guard", trailPct: "Trailing stop", lockPct: "Profit lock", partialAtPct: "Take half", maxDrop1hPct: "Skip dips while falling", cooldownMin: "Cool-down after a loss", dailyLossPct: "Daily loss limit" };
+const OFF_LABEL: Record<string, string> = { riskPerTradePct: "Risk per trade", minConfidence: "Minimum win chance", maxDrawdownPct: "Emergency stop", breakEvenAtPct: "Profit guard", trailPct: "Trailing stop", lockPct: "Profit lock", partialAtPct: "Take half", maxDrop1hPct: "Skip dips while falling", cooldownMin: "Cool-down after a loss", dailyLossPct: "Daily loss limit", aiSecondLook: "AI second look at the stop" };
+
+// Chart patterns found by code, shown under the AI's plan (the AI reads the same list).
+function PatternChips({ patterns }: { patterns?: FramePatterns[] }) {
+  const hits = (patterns ?? []).flatMap((f) => f.hits.map((h) => ({ ...h, tf: f.tf })));
+  if (!patterns) return null;
+  return (
+    <div className="pattern-box">
+      <div className="label-sm">Chart patterns the AI saw</div>
+      {hits.length ? (
+        <div className="pattern-chips">
+          {hits.map((h) => (
+            <span key={`${h.tf}:${h.key}`} className={`pattern-chip ${h.bias}`}
+              data-tip={`${h.note}.${h.stat && h.stat.seen >= 2 ? ` Earlier on this chart: ${h.stat.worked} of ${h.stat.seen} times it followed through.` : " No earlier track record on this chart."}`}>
+              {h.bias === "up" ? "↑" : h.bias === "down" ? "↓" : "↔"} {h.tf} {h.label.split(" (")[0].split(",")[0]}
+              {h.stat && h.stat.seen >= 2 ? <b>{Math.round((h.stat.worked / h.stat.seen) * 100)}%</b> : null}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="muted tiny">None clear right now.</div>
+      )}
+    </div>
+  );
+}
+
+// What the AI second look does.
+function SecondLookInfo({ on, onClose }: { on: boolean; onClose: () => void }) {
+  return (
+    <Modal title="AI second look at the stop" onClose={onClose} narrow>
+      <p className="rule-now">Right now: <b className={on ? "up" : "amber"}>{on ? "ON" : "OFF"}</b></p>
+      <p>When the price touches a trade's stop-loss, or its time limit runs out, the bot asks the AI to look at the chart again before selling. If the AI sees a concrete reason the trade can still end in profit, the bot keeps it open.</p>
+      <ul className="small">
+        <li><b>Once per trade at the stop.</b> If the price hits the new exit, it sells: no third chance.</li>
+        <li><b>Limited extra risk.</b> The new last exit can be lower than the old stop, but never more than 1.5× the original risk below your buy price. Example: bought at $1.00 with a stop at $0.95 (5% risk): the lowest possible exit is $0.925 (7.5%).</li>
+        <li><b>Strict test.</b> The AI must give a win chance at or above your minimum, a target that is a profit after fees, and holding must make money on average from the current price. Otherwise it sells.</li>
+        <li><b>Time limit.</b> It can extend the hold by 10 to 120 minutes, up to 3 times; the exit there can only stay or go up.</li>
+        <li><b>Safe default.</b> If the AI is slow, unreachable, or out of tokens, it sells as before. Each look is a small AI call.</li>
+      </ul>
+      <p className="muted small">Holding past a stop can turn a small loss into a bigger one: a coin that hits its stop often keeps falling. The emergency stop and daily loss limit still apply.</p>
+    </Modal>
+  );
+}
 
 // What Strong mode does.
 function StrongModeInfo({ on, onClose }: { on: boolean; onClose: () => void }) {

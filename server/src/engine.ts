@@ -2,7 +2,8 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { audit, ledger, type AuditType } from "./audit.js";
-import { analyze, BOT_MODEL, CLAUDE_MODEL, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
+import { analyze, BOT_MODEL, CLAUDE_MODEL, reviewHold, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
+import { findPatterns, patternsText, patternTags, type FramePatterns } from "./patterns.js";
 import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
@@ -45,6 +46,10 @@ export type Position = {
   realizedUsd?: number; // P&L already taken by partial sales (new coins: half at the first target)
   best?: number; // highest closing price since the buy (for the profit lock)
   locked?: boolean; // the stop is a profit lock (above break-even)
+  patterns?: string[]; // chart patterns on screen when the bot bought
+  secondLook?: boolean; // the AI already kept this trade open once at its stop-loss
+  firstStop?: number; // the stop-loss before the AI's second look moved it
+  extensions?: number; // times the AI extended the holding time
 };
 
 export type Trade = {
@@ -68,6 +73,7 @@ export type Trade = {
   auto?: boolean; // sold automatically by "Protect this trade"
   strategy?: "newcoin";
   botId?: string; // bot trades: which bot ("1" when missing)
+  patterns?: string[]; // bot buys: chart patterns on screen when it bought
 };
 
 export type BotConfig = {
@@ -180,7 +186,7 @@ type State = {
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[] } | null;
   // Extra bots (2 and 3). Bot 1 is `bot` / `lastSignal` above, so older saved states keep working.
   bots?: BotSlot[];
 };
@@ -620,12 +626,11 @@ const PLAN_FRAMES: { tf: Timeframe; label: string; show: number }[] = [
   { tf: "1d", label: "1-day candles (last ~month): the big picture", show: 30 },
 ];
 
-export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean } = {}) {
-  const pair = await getPair(chain, pool);
+async function loadFrames(chain: string, pool: string, pair: PairInfo, only?: Timeframe[]) {
   // One timeframe at a time (CoinMarketCap allows ~1 request/second); skip any that fail,
   // e.g. no daily candles yet for a brand-new coin.
   const frames: Frame[] = [];
-  for (const f of PLAN_FRAMES) {
+  for (const f of PLAN_FRAMES.filter((x) => !only || only.includes(x.tf))) {
     // Try twice: a free data source can briefly refuse (rate limit); don't silently drop a timeframe.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -637,6 +642,14 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
       }
     }
   }
+  return frames;
+}
+
+export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean } = {}) {
+  const pair = await getPair(chain, pool);
+  const frames = await loadFrames(chain, pool, pair);
+  // Chart patterns found by code on each timeframe, with how each did earlier on the same chart.
+  const patterns = frames.map((f) => findPatterns(f.tf, f.candles));
   const primary = frames.find((f) => f.tf === "5m" && f.snap) ?? frames.find((f) => f.snap);
   if (!primary?.snap) throw new Error("Not enough candle history for this token yet");
   const snap = primary.snap;
@@ -668,6 +681,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   };
   const journal = tradeJournal(state.trades, pool, pair.symbol);
   const context = [
+    patternsText(patterns),
     journal,
     cfg && strongOn(cfg)
       ? `Strong mode is ON: a dip order is only bought after the price bounces off its low (by about ${Math.max(0.6, (primary.snap?.atrPct ?? 1) * 0.5).toFixed(1)}%), never far above the dip price; breakouts must still be above the level when checked; your win chances are scaled by this account's real results${(() => { const f = oddsFactor(state.trades); return f < 1 ? ` (currently x${f.toFixed(2)}: be more conservative)` : ""; })()}.`
@@ -687,11 +701,11 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const model = opts.forBot ? BOT_MODEL : CLAUDE_MODEL;
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
   rec("ai.analysis", `${opts.forBot ? "Bot re-plan" : "AI analysis"} on ${pair.symbol}: ${apiTokens.toLocaleString()} AI tokens (${appTokens.toLocaleString()} app tokens)`, { symbol: pair.symbol, pool, model, apiTokens, appTokens, forBot: !!opts.forBot, stance: consensus.stance });
-  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown, atrPct: primary.snap.atrPct };
+  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown, atrPct: primary.snap.atrPct, patterns };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
   save();
-  return { pair, snapshot: snap, results, consensus };
+  return { pair, snapshot: snap, results, consensus, patterns };
 }
 
 // ---------- Bot ----------
@@ -929,7 +943,7 @@ export function streakPauseUntil(trades: Trade[]): number | null {
 // ---------- Trade journal for the AI ----------
 // What the account's bot trades taught us, summarised for the AI so it plans with real results:
 // how each kind of setup has done, how fast losing trades get stopped out, and this coin's day.
-type Trip = { pool: string; symbol: string; setup: "dip" | "breakout" | "now"; openedAt: number; closedAt: number; pnl: number; pnlPct: number; stopped: boolean; cost: number };
+type Trip = { pool: string; symbol: string; setup: "dip" | "breakout" | "now"; openedAt: number; closedAt: number; pnl: number; pnlPct: number; stopped: boolean; cost: number; patterns: string[] };
 export function botTrips(trades: Trade[]): Trip[] {
   const out: Trip[] = [];
   const open = new Map<string, Trip>();
@@ -938,7 +952,7 @@ export function botTrips(trades: Trade[]): Trip[] {
     const k = `${t.pool}:${t.botId ?? "1"}`;
     if (t.side === "BUY") {
       const setup = /breakout/.test(t.reason) ? "breakout" : /dip/.test(t.reason) ? "dip" : "now";
-      open.set(k, { pool: t.pool, symbol: t.symbol, setup, openedAt: t.time, closedAt: 0, pnl: 0, pnlPct: 0, stopped: false, cost: t.usd });
+      open.set(k, { pool: t.pool, symbol: t.symbol, setup, openedAt: t.time, closedAt: 0, pnl: 0, pnlPct: 0, stopped: false, cost: t.usd, patterns: t.patterns ?? [] });
     } else {
       const tr = open.get(k);
       if (!tr) continue;
@@ -965,6 +979,12 @@ export function tradeJournal(trades: Trade[], pool: string, symbol: string): str
     if (!xs.length) continue;
     lines.push(`- ${k === "dip" ? "Dip buys" : k === "breakout" ? "Breakout buys" : "Buy-now orders"}: ${xs.length} trades, ${xs.filter((t) => t.pnl > 0).length} profitable, average ${(xs.reduce((s, t) => s + t.pnlPct, 0) / xs.length).toFixed(1)}%.`);
   }
+  // How trades did by the chart pattern on screen when the bot bought (2+ trades each).
+  const byPat = new Map<string, Trip[]>();
+  for (const t of trips) for (const p of t.patterns) byPat.set(p, [...(byPat.get(p) ?? []), t]);
+  const patLines = [...byPat].filter(([, xs]) => xs.length >= 2).sort((a, b) => b[1].length - a[1].length).slice(0, 6)
+    .map(([p, xs]) => `${p}: ${xs.length} trades, ${xs.filter((t) => t.pnl > 0).length} profitable, average ${(xs.reduce((s, t) => s + t.pnlPct, 0) / xs.length).toFixed(1)}%`);
+  if (patLines.length) lines.push(`- By chart pattern at the buy: ${patLines.join("; ")}.`);
   const stops = trips.filter((t) => t.stopped);
   if (stops.length) {
     const mins = stops.map((t) => (t.closedAt - t.openedAt) / 60_000).sort((a, b) => a - b);
@@ -984,6 +1004,62 @@ export const MIN_REWARD_RISK = 1.5; // gain after fees must be at least this man
 export const RISKY_MAX_POSITION_PCT = 25; // risky mode: at most this % of the account per trade
 // Trailing stop sized to how much the coin normally swings: 3x its average 5-minute range,
 // never tighter than the setting, never wider than 12%.
+// The AI's second look at a trade that hit its stop-loss or its time limit. Hard limits:
+// - at the stop: once per trade; the new exit is never lower than entry - 1.5x the original risk
+// - at the time limit: the exit can only stay or rise; at most 3 extensions of 10-120 min
+// - the AI must give a win chance at or above your minimum, a target that is a profit after
+//   costs, and holding must make money on average from here; otherwise (or on any error) it sells.
+export const SECOND_LOOK_MAX_RISK = 1.5;
+async function secondLook(cfg: BotConfig, pos: Position, price: number, why: "stop" | "time"): Promise<boolean> {
+  const firstStop = pos.firstStop ?? pos.stopLoss ?? 0;
+  const risk = pos.entryPrice - firstStop;
+  const hardFloor = why === "stop" ? pos.entryPrice - SECOND_LOOK_MAX_RISK * risk : (pos.stopLoss ?? 0);
+  if (why === "stop" && (!(risk > 0) || price <= hardFloor)) return false;
+  try {
+    const pair = await getPair(pos.chain, pos.pool);
+    const frames = await loadFrames(pos.chain, pos.pool, pair, ["5s", "5m", "1h"]);
+    const pats = frames.map((f) => findPatterns(f.tf, f.candles));
+    const cost = roundTripCostPct();
+    const d = await Promise.race([
+      reviewHold({ pair, frames, costPct: cost, why, entry: pos.entryPrice, price, stop: pos.stopLoss ?? 0, hardFloor, heldMin: (Date.now() - pos.openedAt) / 60_000, target: pos.target, patterns: patternsText(pats) }),
+      new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 45_000)),
+    ]);
+    await chargeTokens([{ model: BOT_MODEL, ok: false, error: "", ms: 0, tokens: d.tokens }]);
+    // The price may have moved while the AI was thinking.
+    const now = (await quote(pos.chain, pos.pool, Date.now() - 15_000)).price || price;
+    const exit = why === "stop" ? Math.max(hardFloor, d.lastExit) : Math.max(pos.stopLoss ?? 0, d.lastExit);
+    const p = Math.max(0, Math.min(100, d.winChancePct)) / 100;
+    const ev = p * ((d.target - now) / now) - (1 - p) * ((now - exit) / now);
+    const profitTarget = d.target >= pos.entryPrice * (1 + cost / 100);
+    const ok = d.hold && d.winChancePct >= minWin(cfg) && profitTarget && ev > 0 && exit > 0 && exit < now * 0.998 && now > hardFloor;
+    const tag = why === "stop" ? "at the stop-loss" : "at the time limit";
+    if (!ok) {
+      log(`AI second look ${tag} on ${pos.symbol}: sell. ${d.hold ? `It wanted to hold, but the bot's limits said no (${d.winChancePct}% win chance${profitTarget ? "" : ", target not a profit after fees"}${ev > 0 ? "" : ", loses on average from here"}).` : d.reason}`);
+      return false;
+    }
+    const mins = Math.round(Math.max(10, Math.min(120, d.extraMinutes || 30)));
+    if (why === "stop") {
+      pos.firstStop = firstStop;
+      pos.secondLook = true;
+    } else pos.extensions = (pos.extensions ?? 0) + 1;
+    pos.stopLoss = exit;
+    pos.locked = false;
+    pos.sellBy = Date.now() + mins * 60_000;
+    if (!pos.trailing) {
+      pos.target = d.target;
+      pos.takeProfit = d.target;
+    }
+    acct().dirty = true;
+    log(`AI second look ${tag} on ${pos.symbol}: holding (${d.winChancePct}% win chance to reach ${fmt(d.target)}). New last exit ${fmt(exit)}, for up to ${mins} more min. ${d.reason}`, "good");
+    alert(`🧠 ${pos.symbol}: AI kept the trade open ${tag}. Last exit ${fmt(exit)}, target ${fmt(d.target)}. ${d.reason}`);
+    rec("ai.analysis", `AI second look on ${pos.symbol}: held ${tag}`, { symbol: pos.symbol, pool: pos.pool, model: BOT_MODEL, apiTokens: d.tokens, why, exit, target: d.target, winChancePct: d.winChancePct });
+    return true;
+  } catch (e: any) {
+    log(`AI second look on ${pos.symbol} failed (${e?.message ?? e}): selling as planned.`, "bad");
+    return false;
+  }
+}
+
 export function trailFor(cfg: Pick<BotConfig, "trailPct">, atrPct?: number) {
   const base = cfg.trailPct ?? 3;
   const swing = atrPct && Number.isFinite(atrPct) ? atrPct * 3 : 0;
@@ -1046,7 +1122,7 @@ async function autoPick(cfg: BotConfig) {
   }
   const { pair, result } = best;
   state.bot.target = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, chosenAt: Date.now() };
-  state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus, atrPct: result.snapshot?.atrPct };
+  state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus, atrPct: result.snapshot?.atrPct, patterns: result.patterns };
   log(`Auto-pick chose ${pair.symbol}. AI: ${summary}. ${result.consensus.note}`, "good");
 }
 
@@ -1311,6 +1387,17 @@ async function tickBot(persist: boolean) {
         reason = "Take-profit hit"; // positions from before trailing stops
         sellAt = Math.max(pos.takeProfit, price);
       }
+      // Second look: before a stop-loss or time-limit sale, the AI checks whether holding can
+      // still end in profit. Once per trade at the stop; up to 3 time extensions; sells on any doubt.
+      if (reason && pos.source === "bot" && !pos.strategy && !isOff(cfg, "aiSecondLook")) {
+        const atStop = reason === "Stop-loss hit" && !pos.secondLook;
+        const atTime = reason === "Maximum holding time reached" && (pos.extensions ?? 0) < 3;
+        if ((atStop || atTime) && (await tokensLeft()) > 0) {
+          const kept = await secondLook(cfg, pos, price, atStop ? "stop" : "time");
+          if (kept) return;
+          reason += " (AI second look: sell)";
+        }
+      }
       if (reason) {
         const t = sell(pos.id, sellAt, 1, reason);
         if (pos.strategy) t.strategy = pos.strategy;
@@ -1526,7 +1613,9 @@ async function tickBot(persist: boolean) {
         botId: currentBotId(),
         sellBy: Date.now() + o.maxHoldMinutes * 60_000,
         predictedWinPct: o.winChancePct,
+        ...(sig.patterns ? { patterns: patternTags(sig.patterns) } : {}),
       });
+      if (sig.patterns) t.patterns = patternTags(sig.patterns);
       log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.`, "good");
       alert(`🤖 Bought ${pair.symbol}: $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}, target ${fmt(o.target)}. Risking ~$${riskUsd.toFixed(2)}.`);
       // The plan is used up; Claude plans again after this trade closes.

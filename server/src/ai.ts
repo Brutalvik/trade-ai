@@ -103,6 +103,8 @@ Rules:
   Base winChancePct on that reachable target.
 - Set cancelBelow/cancelAbove so the plan is dropped when the market moves away from your thesis.
 - Never promise profit. Be honest about uncertainty in confidence.
+- Chart patterns found by code are listed below with how each did earlier on this same chart. Use them: a breakout from a range with volume or a bull flag supports a buy_breakout just above the level; a double top, breakdown or stretched price argues for patience. Weigh each pattern by its track record on this chart, not by its name.
+- Your trade journal (below) shows which setups have really worked for this account; lean toward those.
 - Prices are in USD and may be tiny numbers; keep full precision.`;
 
 // One timeframe of chart data for Claude.
@@ -297,4 +299,53 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
     agreement,
     note,
   };
+}
+
+// ---------- Second look: the bot asks before a stop-loss or time-limit sale ----------
+// The price touched the stop (or the time limit ran out). Claude looks at the chart again and
+// decides: sell now, or hold with a new last-resort exit. The bot enforces hard limits on top.
+const HoldSchema = z.object({
+  hold: z.boolean().describe("true = keep the trade open; false = sell now"),
+  winChancePct: z.number().describe("If held, honest chance (0-100) the price reaches `target` before `lastExit`"),
+  target: z.number().describe("USD price you expect it can reach if held (above the current price)"),
+  lastExit: z.number().describe("USD last-resort exit if held: sell if the price falls to this. Below the current price, at or above the hard floor given."),
+  extraMinutes: z.number().describe("How many more minutes to hold (10-120)"),
+  reason: z.string().describe("1-2 short sentences in plain words"),
+});
+export type HoldDecision = z.infer<typeof HoldSchema> & { tokens: number };
+
+export async function reviewHold(input: {
+  pair: PairInfo; frames: Frame[]; costPct: number; why: "stop" | "time";
+  entry: number; price: number; stop: number; hardFloor: number; heldMin: number; target?: number; patterns: string;
+}): Promise<HoldDecision> {
+  const { pair, frames, why, entry, price, stop, hardFloor } = input;
+  const sections = frames.map((f) => {
+    const rows = f.candles.slice(-Math.min(f.show, 48)).map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
+    const ind = f.snap ? `EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} volume ratio ${f.snap.volRatio.toFixed(2)}` : "";
+    return `## ${f.label}\n${ind}\n${JSON.stringify(rows)}`;
+  });
+  const prompt = `The bot holds ${pair.symbol} (${pair.chain}). Bought at $${entry}, now $${price} (${(((price - entry) / entry) * 100).toFixed(2)}%), held ${Math.round(input.heldMin)} min.
+${why === "stop" ? `The price just touched the stop-loss at $${stop}. Normally the bot sells now.` : `The maximum holding time just ran out. Normally the bot sells now. Current exit: $${stop}.`}
+${input.target ? `Original target: $${input.target}.` : ""}
+Round-trip costs: ${input.costPct.toFixed(2)}%. Liquidity $${Math.round(pair.liquidityUsd)}. Change 5m ${pair.change.m5}% 1h ${pair.change.h1}%. Last hour ${pair.buys1h ?? "?"} buys / ${pair.sells1h ?? "?"} sells.
+${why === "stop" ? `Hard floor for a new exit: $${hardFloor} (the bot will never accept a lower one).` : `A new exit can only be at or above the current exit $${stop}.`}
+
+${input.patterns}
+
+${sections.join("\n\n")}
+
+Decide: sell now, or hold. Hold ONLY if the chart gives a concrete reason the drop is noise or a retest that is holding (support, a pattern still valid, buyers stepping in), and the trade can realistically end in profit after costs. Most touched stops should be sold: a falling coin usually keeps falling. Be honest and calibrated.`;
+  anthropic ??= new Anthropic();
+  const res = await anthropic.beta.messages.parse({
+    model: BOT_MODEL,
+    max_tokens: 3000,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    output_config: { effort: "low", format: betaZodOutputFormat(HoldSchema) },
+    system: "You manage the exit of an open short-term crypto trade. Capital protection comes first; only hold when there is a clear, concrete reason. Prices are USD, keep full precision.",
+    messages: [{ role: "user", content: prompt }],
+  });
+  if (!res.parsed_output) throw new Error(`no decision (${res.stop_reason})`);
+  const u: any = res.usage ?? {};
+  return { ...res.parsed_output, tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) };
 }

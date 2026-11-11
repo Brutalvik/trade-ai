@@ -56,7 +56,7 @@ export type AppState = {
   storage: Status["storage"];
   orders?: LimitOrder[]; // open limit buys / sells
   signedOut?: boolean; // true = not signed in as the account owner: an empty $0 view
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; patterns?: FramePatterns[] } | null;
   bots?: BotSlot[]; // extra bots (2 and 3); bot 1 is bot / lastSignal
 };
 export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };
@@ -91,7 +91,9 @@ export type Holding = { mint: string; symbol: string; name: string; amount: numb
 export type WalletView = { address: string | null; holdings: Holding[]; totalUsd: number; updatedAt: number; rpc?: "custom" | "public" };
 export type AuditEntry = { t: number; type: string; by?: string; summary: string; data?: Record<string, unknown> };
 export type Page<T> = { total: number; items: T[] };
-export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
+// Chart patterns the server found on each timeframe, with how each did earlier on the same chart.
+export type FramePatterns = { tf: string; hits: { key: string; label: string; bias: "up" | "down" | "neutral"; level?: number; note: string; stat?: { seen: number; worked: number; avgPct: number } }[] };
+export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus; patterns?: FramePatterns[] };
 
 // Signed out and pressed something that needs an account (buy, start bot, analyze...):
 // open the sign-in / register window instead of showing an error.
