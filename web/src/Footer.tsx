@@ -63,7 +63,7 @@ function TermsModal({ onClose }: { onClose: () => void }) {
           </ul>
 
           <h3>5. AI plans and the bots</h3>
-          <p>AI plans, win chances, targets, "Buy zone" labels and scores are automated estimates that are often wrong. The bots act automatically on your paper account according to your settings: they buy, sell and stop without asking you. Your plan sets how many bots can run at once. A coin you buy by hand can be handed to a bot, and selling a bot's coin yourself stops that bot. The full rules are on the Trading rules page.</p>
+          <p>AI plans, win chances, targets, momentum labels (Hot / Mixed / Cold) and scores are automated estimates that are often wrong. The bots act automatically on your paper account according to your settings: they buy, sell and stop without asking you. Your plan sets how many bots can run at once. A coin you buy by hand can be handed to a bot, and selling a bot's coin yourself stops that bot. The full rules are on the Trading rules page.</p>
 
           <h3>6. Your settings and recorded consent</h3>
           <p>Some choices remove protections: risky mode, lifting the daily loss limit, turning off a safety setting (such as the emergency stop, profit guard or cool-down) or the 1.5× reward rule. Each needs you to confirm "I understand". We record each confirmation as proof of your choice: the setting, the warning shown, which bot, the time, and your IP address and browser. You accept the results of the settings you choose.</p>

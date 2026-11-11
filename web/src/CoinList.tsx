@@ -5,7 +5,7 @@ import { savedUi } from "./persist";
 
 const KINDS: { id: ListKind; label: string; hint: string }[] = [
   { id: "crypto", label: "Crypto", hint: "All coins ranked by market cap (charts come from each coin's busiest on-chain market)" },
-  { id: "top", label: "Top", hint: "Trending Solana coins ranked by a quick score from their price, volume and buyers (not AI)" },
+  { id: "top", label: "Top", hint: "Trending Solana coins ranked by momentum: Hot / Mixed / Cold from their price, volume and buyers. This is not the AI's plan" },
   { id: "trending", label: "Trending", hint: "Trending on Solana in the last hour" },
   { id: "held", label: "Most held", hint: "Coins with the most holders" },
   { id: "graduated", label: "Graduated", hint: "pump.fun coins that finished their bonding curve, busiest first" },
@@ -122,7 +122,7 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
             <span className="coin-nums">
               <b><Price p={c.priceUsd} /></b>
               {kind === "top" && c.verdict ? (
-                <span className={`verdict ${c.verdict === "BUY ZONE" ? "up" : c.verdict === "AVOID" ? "down" : "amber"}`} title={c.why}>{c.verdict === "BUY ZONE" ? "Buy zone" : c.verdict === "AVOID" ? "Avoid" : "Wait"}{c.score != null ? ` · ${c.score}` : ""}</span>
+                <span className={`verdict ${c.verdict === "BUY ZONE" ? "up" : c.verdict === "AVOID" ? "down" : "amber"}`} title={`Momentum score from price, volume and buyers (not the AI's plan; open the coin for the AI Signal). ${c.why ?? ""}`}>{c.verdict === "BUY ZONE" ? "Hot" : c.verdict === "AVOID" ? "Cold" : "Mixed"}{c.score != null ? ` · ${c.score}` : ""}</span>
               ) : kind === "held" && c.holders ? (
                 <span className="muted">{fmtCount(c.holders)} holders</span>
               ) : kind === "community" && c.buyers ? (
