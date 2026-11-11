@@ -306,43 +306,24 @@ export function LockChip({ label, plan = "AI Starter" }: { label: string; plan?:
   );
 }
 
-// AI token usage bar (profile). Limited plans: used of the monthly allowance (+ top-ups).
-// Unlimited (admins): usage against the top plan's allowance, with the estimated AI cost.
-// Plans without AI: an empty bar with a link to the plans.
+// AI token usage bar (profile): just the share of this month's tokens used.
+// Unlimited accounts (admins) are measured against the top plan's allowance.
 const MAX_PLAN_TOKENS = 15_000_000;
-const AI_COST_PER_M_APP_TOKENS = 1.1; // about $ of AI API cost per 1M app tokens (Opus 5.5; Sonnet bot re-plans cost less)
 export function TokenMeter({ usage }: { usage?: User["usage"] }) {
   const { openPlans } = useAccess();
   if (!usage) return null;
-  const topup = usage.topup ?? 0;
-  const monthName = new Date(`${usage.month}-01T00:00:00Z`).toLocaleDateString([], { month: "long", year: "numeric", timeZone: "UTC" });
-  if (usage.limit === 0)
-    return (
-      <div className="token-meter">
-        <div className="tm-head"><span>AI token usage · {monthName}</span><b>0 / 0</b></div>
-        <div className="tm-bar" />
-        <small className="muted">AI isn't in your plan. <button className="link-btn" onClick={openPlans}>See plans</button></small>
-      </div>
-    );
-  const unlimited = usage.limit < 0;
-  const ref = unlimited ? MAX_PLAN_TOKENS : usage.limit;
-  const pct = Math.min(100, (usage.used / ref) * 100);
-  const left = Math.max(0, usage.limit - usage.used) + topup;
+  const noAi = usage.limit === 0;
+  const ref = usage.limit < 0 ? MAX_PLAN_TOKENS : usage.limit;
+  const pct = noAi ? 0 : Math.min(100, (usage.used / ref) * 100);
   return (
     <div className="token-meter">
       <div className="tm-head">
-        <span>AI token usage · {monthName}</span>
-        <b>{fmtTokens(usage.used)} / {unlimited ? "unlimited" : fmtTokens(usage.limit)}</b>
+        <span>AI token usage</span>
+        <b>{noAi ? <button className="link-btn" onClick={openPlans}>Not in your plan</button> : `${pct.toFixed(0)}%`}</b>
       </div>
       <div className="tm-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)} aria-label="AI tokens used this month">
         <div className={pct > 90 ? "hot" : pct > 70 ? "warm" : ""} style={{ width: `${Math.max(pct, usage.used > 0 ? 1 : 0)}%` }} />
       </div>
-      <div className="tm-foot">
-        <small className="muted">{pct.toFixed(0)}% {unlimited ? `of AI Max's ${fmtTokens(MAX_PLAN_TOKENS)} (for reference)` : "used"}</small>
-        <small className="muted">{unlimited ? `≈ $${((usage.used / 1_000_000) * AI_COST_PER_M_APP_TOKENS).toFixed(2)} AI cost this month` : `≈ ${analysesFor(left)} analyses left`}</small>
-      </div>
-      {topup > 0 && <div className="tm-head"><span>+ Top-up tokens (don't expire)</span><b>{fmtTokens(topup)}</b></div>}
-      <small className="muted tiny">10 app tokens per AI token used · resets on the 1st (UTC)</small>
     </div>
   );
 }

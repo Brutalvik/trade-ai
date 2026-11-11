@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
+import { RulesPage } from "./Rules";
 import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
@@ -28,6 +29,17 @@ export default function App() {
   const [me, setMe] = useState<User | null>(null);
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const [plansOpen, setPlansOpen] = useState(false);
+  // The trading rules page lives at #rules (linked from the footer, shareable).
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const on = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  const closeRules = () => {
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+    setHash("");
+  };
   const [adminOpen, setAdminOpen] = useState(false);
   const loadMe = useCallback(() => api.me().then((r) => setMe(r.user)).catch(() => setMe(null)), []);
   useEffect(() => {
@@ -245,6 +257,7 @@ export default function App() {
       <Footer />
       {toast && <div className={`toast ${toast.bad ? "bad" : ""}`}>{toast.msg}</div>}
       {plansOpen && <PlansModal onClose={() => setPlansOpen(false)} />}
+      {hash === "#rules" && <RulesPage presets={PRESETS} plans={plans} onClose={closeRules} />}
       {adminOpen && <AdminModal onClose={() => { setAdminOpen(false); void loadMe(); }} notify={notify} />}
     </div>
     </AccessCtx.Provider>

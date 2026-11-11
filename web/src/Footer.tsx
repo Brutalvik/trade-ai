@@ -14,6 +14,7 @@ export function Footer() {
             v{__APP_VERSION__}
             {__APP_COMMIT__ ? ` (${__APP_COMMIT__})` : ""}
           </span>
+          <a className="link" href="#rules">Trading rules</a>
           <button className="link" onClick={() => setOpen(true)}>
             Terms &amp; Conditions
           </button>

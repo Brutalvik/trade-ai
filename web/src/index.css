@@ -509,3 +509,23 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .tm-bar { height: 8px !important; }
 .tm-bar > div.warm { background: linear-gradient(90deg, #00e5ff, #ffc857); }
 .tm-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+/* Trading rules page */
+.rules-page { position: fixed; inset: 0; z-index: 150; background: #050914; overflow-y: auto; }
+.rules-top { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 14px; padding: 12px 20px; background: rgba(5, 9, 20, 0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
+.rules-top h1 { flex: 1; margin: 0; font-family: Orbitron, sans-serif; font-size: 18px; letter-spacing: 2px; color: var(--cyan); }
+.rules-body { display: grid; grid-template-columns: 240px 1fr; gap: 28px; max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
+.rules-toc { position: sticky; top: 76px; align-self: start; display: flex; flex-direction: column; gap: 2px; }
+.rules-toc button { text-align: left; background: none; border: 0; padding: 6px 10px; border-radius: 8px; color: var(--muted); font-size: 13px; cursor: pointer; }
+.rules-toc button:hover { background: rgba(0, 229, 255, 0.08); color: var(--text); }
+.rules-content { min-width: 0; color: #c6d2f0; font-size: 14px; line-height: 1.65; }
+.rules-content section { padding: 6px 0 18px; border-bottom: 1px solid var(--border); scroll-margin-top: 80px; }
+.rules-content h2 { font-size: 17px; color: var(--text); margin: 14px 0 8px; }
+.rules-content ul, .rules-content ol { padding-left: 20px; margin: 6px 0; }
+.rules-content li { margin: 5px 0; }
+.rules-content i { color: var(--muted); font-style: normal; font-size: 12px; }
+.rules-content a { color: var(--cyan); cursor: pointer; }
+.rules-lead { font-size: 15px; color: var(--text); margin-top: 0; }
+.rules-formula { margin: 8px 0; padding: 8px 12px; border-radius: 10px; background: rgba(0, 229, 255, 0.06); border: 1px solid rgba(0, 229, 255, 0.25); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px; color: #bff2ff; }
+.rules-table td { white-space: normal; }
+@media (max-width: 860px) { .rules-body { grid-template-columns: 1fr; } .rules-toc { position: static; flex-direction: row; flex-wrap: wrap; } }
