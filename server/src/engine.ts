@@ -646,7 +646,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const trendDown = h1 ? h1.ema9 < h1.ema21 && h1.price < h1.ema21 : false;
   const cfg = state.bot.config;
   const maxDrop = cfg?.maxDrop1hPct ?? 10;
-  const dipsBlocked = !cfg?.allowRisky && !isOff(cfg, "maxDrop1hPct") && (trendDown || pair.change.h1 <= -maxDrop);
+  const dipsBlocked = ((cfg && strongOn(cfg)) || (!cfg?.allowRisky && !isOff(cfg, "maxDrop1hPct"))) && (trendDown || pair.change.h1 <= -maxDrop);
   const recent = state.trades.filter((t) => t.pool === pool && t.source === "bot" && t.side === "SELL").slice(0, 5);
   // The AI's own track record (all coins): predicted win chance vs what really happened.
   const scored = state.trades.filter((t) => t.source === "bot" && t.side === "SELL" && typeof t.predictedWinPct === "number").slice(0, 30);
@@ -666,7 +666,12 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     trail: cfg?.trailPct ?? 3,
     minWin: cfg ? minWin(cfg) : 45,
   };
+  const journal = tradeJournal(state.trades, pool, pair.symbol);
   const context = [
+    journal,
+    cfg && strongOn(cfg)
+      ? `Strong mode is ON: a dip order is only bought after the price bounces off its low (by about ${Math.max(0.6, (primary.snap?.atrPct ?? 1) * 0.5).toFixed(1)}%), never far above the dip price; breakouts must still be above the level when checked; your win chances are scaled by this account's real results${(() => { const f = oddsFactor(state.trades); return f < 1 ? ` (currently x${f.toFixed(2)}: be more conservative)` : ""; })()}.`
+      : "",
     recent.length
       ? `Recent bot trades on this coin (newest first): ${recent.map((t) => `${new Date(t.time).toISOString().slice(11, 16)} UTC ${(t.pnlUsd ?? 0) >= 0 ? "+" : ""}$${(t.pnlUsd ?? 0).toFixed(2)} (${t.reason})`).join("; ")}.`
       : "No recent bot trades on this coin.",
@@ -675,7 +680,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
       ? `IMPORTANT: right now the bot will NOT fill buy_dip or buy_now orders (${trendDown ? "the 1-hour trend is down" : `the coin fell ${Math.abs(pair.change.h1).toFixed(1)}% in the last hour`}). Only a buy_breakout can be used; otherwise choose AVOID.`
       : `Dip and buy-now orders are allowed right now (the bot pauses them if the 1-hour trend turns down or the coin falls more than ${maxDrop}% in an hour).`,
     `Exact exit rules: once up ${ex.be}%, the stop moves to break-even, then a profit lock keeps at least ${ex.lock}% of the best gain; it sells half at ${ex.half}% of the way from entry to your target; at the target it trails ${ex.trail}% below the highest price. Orders with a win chance below ${ex.minWin}% are not used. After a losing trade it waits before re-buying, and skips the coin for the day after 2 losses.`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
   if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
   const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined);
   const appTokens = await chargeTokens(results);
@@ -921,6 +926,60 @@ export function streakPauseUntil(trades: Trade[]): number | null {
   const until = sells[0].time + STREAK_PAUSE_MIN * 60_000;
   return Date.now() < until ? until : null;
 }
+// ---------- Trade journal for the AI ----------
+// What the account's bot trades taught us, summarised for the AI so it plans with real results:
+// how each kind of setup has done, how fast losing trades get stopped out, and this coin's day.
+type Trip = { pool: string; symbol: string; setup: "dip" | "breakout" | "now"; openedAt: number; closedAt: number; pnl: number; pnlPct: number; stopped: boolean; cost: number };
+export function botTrips(trades: Trade[]): Trip[] {
+  const out: Trip[] = [];
+  const open = new Map<string, Trip>();
+  for (const t of [...trades].reverse()) { // oldest first
+    if (t.source !== "bot") continue;
+    const k = `${t.pool}:${t.botId ?? "1"}`;
+    if (t.side === "BUY") {
+      const setup = /breakout/.test(t.reason) ? "breakout" : /dip/.test(t.reason) ? "dip" : "now";
+      open.set(k, { pool: t.pool, symbol: t.symbol, setup, openedAt: t.time, closedAt: 0, pnl: 0, pnlPct: 0, stopped: false, cost: t.usd });
+    } else {
+      const tr = open.get(k);
+      if (!tr) continue;
+      tr.pnl += t.pnlUsd ?? 0;
+      if (/Took half/.test(t.reason)) continue; // the rest is still open
+      tr.closedAt = t.time;
+      tr.stopped = /Stop-loss|Emergency/.test(t.reason);
+      tr.pnlPct = tr.cost > 0 ? (tr.pnl / tr.cost) * 100 : 0;
+      out.push(tr);
+      open.delete(k);
+    }
+  }
+  return out.reverse(); // newest first
+}
+export function tradeJournal(trades: Trade[], pool: string, symbol: string): string {
+  const trips = botTrips(trades).slice(0, 40);
+  if (trips.length < 3) return "Trade journal: fewer than 3 finished bot trades so far, so no pattern yet.";
+  const lines: string[] = [];
+  const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
+  const won = trips.filter((t) => t.pnl > 0);
+  lines.push(`Trade journal (this account's last ${trips.length} finished bot trades): ${won.length} profitable (${pct(won.length, trips.length)}%), average result ${(trips.reduce((s, t) => s + t.pnlPct, 0) / trips.length).toFixed(1)}% per trade after fees.`);
+  for (const k of ["dip", "breakout", "now"] as const) {
+    const xs = trips.filter((t) => t.setup === k);
+    if (!xs.length) continue;
+    lines.push(`- ${k === "dip" ? "Dip buys" : k === "breakout" ? "Breakout buys" : "Buy-now orders"}: ${xs.length} trades, ${xs.filter((t) => t.pnl > 0).length} profitable, average ${(xs.reduce((s, t) => s + t.pnlPct, 0) / xs.length).toFixed(1)}%.`);
+  }
+  const stops = trips.filter((t) => t.stopped);
+  if (stops.length) {
+    const mins = stops.map((t) => (t.closedAt - t.openedAt) / 60_000).sort((a, b) => a - b);
+    const fast = mins.filter((m) => m <= 15).length;
+    lines.push(`- ${stops.length} trades hit the exit; median time from buy to exit ${Math.round(mins[Math.floor(mins.length / 2)])} min${fast ? ` (${fast} within 15 min: entries were early, or exits sat inside normal noise; place exits beyond recent swing lows and prefer confirmed entries)` : ""}.`);
+  }
+  const winsHeld = won.map((t) => (t.closedAt - t.openedAt) / 60_000);
+  if (winsHeld.length) lines.push(`- Winning trades were held about ${Math.round(winsHeld.reduce((a, b) => a + b, 0) / winsHeld.length)} min on average.`);
+  const coin = trips.filter((t) => t.pool === pool);
+  if (coin.length) lines.push(`- On ${symbol}: ${coin.length} finished trades, ${coin.filter((t) => t.pnl > 0).length} profitable, last ${coin.slice(0, 3).map((t) => `${t.pnlPct >= 0 ? "+" : ""}${t.pnlPct.toFixed(1)}% (${t.setup})`).join(", ")}.`);
+  const last5 = trips.slice(0, 5);
+  if (last5.length === 5 && last5.every((t) => t.pnl <= 0)) lines.push("- The last 5 trades all lost: the market may have turned against these setups. Prefer AVOID unless the setup is clearly better than recent ones.");
+  return lines.join("\n");
+}
+
 export const MIN_REWARD_RISK = 1.5; // gain after fees must be at least this many times the loss
 export const RISKY_MAX_POSITION_PCT = 25; // risky mode: at most this % of the account per trade
 // Trailing stop sized to how much the coin normally swings: 3x its average 5-minute range,
