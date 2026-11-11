@@ -103,7 +103,8 @@ export type BotConfig = {
   // Anything else (default) = buy the instant the trigger price is hit.
   waitForHold?: boolean;
   rewardRule?: boolean;
-  takeProfitUsd?: number; // sell the whole position once it is up this many dollars after fees (0 / missing = off) // only buy when the gain after fees is >= 1.5x the loss (default on; off = the old rules)
+  takeProfitUsd?: number;
+  disabled?: string[]; // settings the user switched off (each with a recorded "I understand") // sell the whole position once it is up this many dollars after fees (0 / missing = off) // only buy when the gain after fees is >= 1.5x the loss (default on; off = the old rules)
   // Safety rules (defaults apply when missing, including bots started before they existed).
   cooldownMin?: number; // after a losing trade, don't re-buy that coin for this long (default 30)
   dailyLossPct?: number; // stop opening trades for the rest of the UTC day after losing this % (default 10)
@@ -643,7 +644,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const trendDown = h1 ? h1.ema9 < h1.ema21 && h1.price < h1.ema21 : false;
   const cfg = state.bot.config;
   const maxDrop = cfg?.maxDrop1hPct ?? 10;
-  const dipsBlocked = !cfg?.allowRisky && (trendDown || pair.change.h1 <= -maxDrop);
+  const dipsBlocked = !cfg?.allowRisky && !isOff(cfg, "maxDrop1hPct") && (trendDown || pair.change.h1 <= -maxDrop);
   const recent = state.trades.filter((t) => t.pool === pool && t.source === "bot" && t.side === "SELL").slice(0, 5);
   // The AI's own track record (all coins): predicted win chance vs what really happened.
   const scored = state.trades.filter((t) => t.source === "bot" && t.side === "SELL" && typeof t.predictedWinPct === "number").slice(0, 30);
@@ -694,7 +695,9 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
 
 const isAuto = (cfg: BotConfig) => cfg.pick === "auto";
 // The minimum win chance in force: lower in risky mode (the user accepted the risk).
-const minWin = (cfg: BotConfig) => (cfg.allowRisky ? Math.min(cfg.minConfidence, cfg.riskyMinWin ?? 30) : cfg.minConfidence);
+// A setting the user switched off (Settings → its checkbox → "I understand").
+export const isOff = (cfg: Pick<BotConfig, "disabled"> | null | undefined, key: string) => !!cfg?.disabled?.includes(key);
+const minWin = (cfg: BotConfig) => (isOff(cfg, "minConfidence") ? 0 : cfg.allowRisky ? Math.min(cfg.minConfidence, cfg.riskyMinWin ?? 30) : cfg.minConfidence);
 const isNew = (cfg: BotConfig) => cfg.pick === "newcoins";
 // Extra slippage on thin liquidity: buying size S from a pool with liquidity L moves the
 // price roughly 2*S/L (each side of the pool holds about half). Clamped to 0.2-10%.
@@ -767,7 +770,7 @@ function startBotHere(cfg: BotConfig) {
   }
   rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
     symbol: cfg.symbol, pool: cfg.pool, pick: cfg.pick ?? "this", positionPct: cfg.positionPct, riskPerTradePct: cfg.riskPerTradePct, minConfidence: cfg.minConfidence,
-    dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky,
+    dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky, settingsOff: cfg.disabled ?? [], rewardRule: cfg.rewardRule !== false,
   });
   if (cfg.allowRisky)
     rec("consent.risky_mode", `Accepted "I understand, trade anyway" for ${cfg.symbol}`, {
@@ -868,6 +871,7 @@ function dailyBlock(cfg: BotConfig): string | null {
     state.bot.day = { date: today, startEquity: equity() };
   }
   const limit = cfg.dailyLossPct ?? 10;
+  if (isOff(cfg, "dailyLossPct")) return null; // switched off by the user
   if (state.bot.dailyOverride === today) return null; // the user chose to keep trading today
   const lostPct = ((state.bot.day.startEquity - equity()) / state.bot.day.startEquity) * 100;
   return lostPct >= limit ? `daily loss limit reached (down ${lostPct.toFixed(1)}% today, limit ${limit}%); resumes at 00:00 UTC` : null;
@@ -878,6 +882,7 @@ function dailyBlock(cfg: BotConfig): string | null {
 // after each stop-loss).
 export const RISKY_COOLDOWN_MIN = 5;
 function coinBlock(cfg: BotConfig, pool: string, symbol: string): string | null {
+  if (isOff(cfg, "cooldownMin")) return null; // switched off by the user
   const cs = state.bot.coinStats[pool];
   if (!cs || !cs.losses) return null;
   if (cs.losses >= 2 && cs.lossDay === utcDay()) return `${symbol} lost ${cs.losses} trades in a row today, so it's skipped until 00:00 UTC`;
@@ -1119,7 +1124,8 @@ async function tickBot(persist: boolean) {
       // the latest once up fees + 1.5% (new coins: only after their half-profit sale).
       const guardAt = protectAt(cfg, cost);
       const floor = pos.entryPrice * (1 + (cost + GUARD_PROFIT_PCT) / 100);
-      if (gainPct >= guardAt && (pos.strategy !== "newcoin" || pos.partialDone)) {
+      const guardOn = !isOff(cfg, "breakEvenAtPct");
+      if (guardOn && gainPct >= guardAt && (pos.strategy !== "newcoin" || pos.partialDone)) {
         if (!pos.stopLoss || pos.stopLoss < floor) {
           pos.stopLoss = floor;
           log(`${pos.symbol} up ${gainPct.toFixed(1)}%: profit guard on. It now sells no lower than ${fmt(floor)}, a small profit after fees.`, "good");
@@ -1138,7 +1144,7 @@ async function tickBot(persist: boolean) {
       }
       // Profit lock: once the best gain reaches the break-even level, the stop follows it up
       // so the trade keeps at least lockPct% of its best gain (judged on closing prices).
-      const lockPct = cfg.lockPct ?? 50;
+      const lockPct = isOff(cfg, "lockPct") ? 0 : (cfg.lockPct ?? 50);
       let newBestThisCheck = false;
       if (q.peakHigh > (pos.best ?? pos.entryPrice)) {
         pos.best = q.peakHigh;
@@ -1147,7 +1153,7 @@ async function tickBot(persist: boolean) {
       const best = pos.best ?? pos.entryPrice;
       const bestGainPct = ((best - pos.entryPrice) / pos.entryPrice) * 100;
       if (lockPct > 0 && bestGainPct >= guardAt && (pos.strategy !== "newcoin" || pos.partialDone)) {
-        const lock = Math.max(floor, pos.entryPrice + (best - pos.entryPrice) * (lockPct / 100));
+        const lock = Math.max(guardOn ? floor : pos.entryPrice * (1 + cost / 100), pos.entryPrice + (best - pos.entryPrice) * (lockPct / 100));
         if (!pos.stopLoss || lock > pos.stopLoss * 1.001) {
           pos.stopLoss = lock;
           pos.locked = lock > floor;
@@ -1157,7 +1163,7 @@ async function tickBot(persist: boolean) {
         }
       }
       // Take half before the target: targets often sit at resistance, where a run can stall.
-      const partialAt = cfg.partialAtPct ?? 100;
+      const partialAt = isOff(cfg, "partialAtPct") ? 0 : (cfg.partialAtPct ?? 100);
       if (pos.strategy !== "newcoin" && partialAt > 0 && !pos.partialDone && pos.target && pos.target > pos.entryPrice) {
         const level = pos.entryPrice + (pos.target - pos.entryPrice) * (partialAt / 100);
         const be = pos.entryPrice * (1 + cost / 100);
@@ -1184,6 +1190,11 @@ async function tickBot(persist: boolean) {
       // At the target, don't sell yet: ride it with a trailing stop.
       const trail = pos.trailPct ?? cfg.trailPct ?? 3;
       let newHighThisCheck = false;
+      if (isOff(cfg, "trailPct") && pos.strategy !== "newcoin" && pos.target && q.high >= pos.target) {
+        const t = sell(pos.id, Math.max(pos.target, price), 1, "Reached the target (trailing stop off)");
+        log(`${pos.symbol} reached its target ${fmt(pos.target)}: sold everything @ ${fmt(t.price)} (trailing stop is off).`, "good");
+        return;
+      }
       if (!pos.trailing && pos.target && q.high >= pos.target) {
         pos.trailing = true;
         pos.peak = Math.max(pos.target, q.peakHigh);
@@ -1328,7 +1339,7 @@ async function tickBot(persist: boolean) {
       if (o.kind !== "buy_breakout") {
         const drop = pair.change.h1;
         const maxDrop = cfg.maxDrop1hPct ?? 10;
-        if (!cfg.allowRisky && (sig.trendDown || drop <= -maxDrop)) {
+        if (!cfg.allowRisky && !isOff(cfg, "maxDrop1hPct") && (sig.trendDown || drop <= -maxDrop)) {
           if (triggerMet(o, q))
             noteOnce(`trend:${sig.at}:${i}`, `${t3.symbol} reached the ${label}, but it's falling (${sig.trendDown ? "1-hour trend is down" : `${drop.toFixed(1)}% in the last hour`}), so dip orders are paused. A crash is not a dip.`);
           continue;
@@ -1367,7 +1378,7 @@ async function tickBot(persist: boolean) {
       // Size: positionPct of the account (never more than the cash on hand). With a risk per
       // trade set, it may be smaller: hitting the exit then loses about riskPerTradePct of the
       // account (exit distance plus round-trip costs). Risk 0 = always use positionPct.
-      const riskPct = cfg.riskPerTradePct ?? 1.5;
+      const riskPct = isOff(cfg, "riskPerTradePct") ? 0 : (cfg.riskPerTradePct ?? 1.5);
       const exitLossPct = ((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100 + roundTripCostPct();
       const bySize = riskPct > 0 ? (equity() * riskPct) / 100 / (exitLossPct / 100) : Infinity;
       const sizePct = cfg.allowRisky ? Math.min(cfg.positionPct, RISKY_MAX_POSITION_PCT) : cfg.positionPct; // risky trades stay small
@@ -1653,6 +1664,7 @@ export function overrideDailyLimit() {
 
 // Emergency stop: sell everything and switch off if equity falls below the limit.
 function checkDrawdown(cfg: BotConfig) {
+  if (isOff(cfg, "maxDrawdownPct")) return false; // switched off by the user
   const eq = equity();
   const base = (cfg.startEquity ??= eq); // bots started before this rule: count from today
   if (eq >= base * (1 - cfg.maxDrawdownPct / 100)) return false;

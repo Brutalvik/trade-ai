@@ -629,20 +629,34 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
   }, [stale, pair?.pool, hasAI, botOnThisCoin]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="panel">
-      <div className="panel-title">
-        <span>AI SIGNAL</span>
-        <span className="title-actions">
-          {sig && (explain.why || sig.note) && (
-            <button className={`info-btn ${glow ? "glow" : ""}`} onClick={openInfo} aria-label="Why the AI decided this" title="Why the AI decided this">
-              i
-            </button>
-          )}
-          {access.can("ai.analyze") ? (
-            <button className="btn ghost" onClick={() => run()} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : sig ? "Analyze again" : "Analyze"}</button>
-          ) : (
-            <LockChip label="AI plans" />
-          )}
+      <div className="panel-title ai-title">
+        <span className="ai-title-left">
+          <span>AI SIGNAL</span>
+          {(() => {
+            const can = !!(sig && (explain.why || sig.note));
+            return (
+              <button className={`info-btn ${glow && can ? "glow" : ""}`} onClick={can ? openInfo : undefined} disabled={!can} aria-label="Why the AI decided this" title={can ? "Why the AI decided this" : "Analyze a coin to see why the AI decided"}>
+                i
+              </button>
+            );
+          })()}
         </span>
+        {loading ? (
+          // While the AI works, the rest of the header becomes an animated "analyzing" bar.
+          <div className="ai-analyzing" role="status" aria-live="polite">
+            <span className="ai-scan" aria-hidden="true" />
+            <span className="ai-analyzing-text">Analyzing{pair ? ` ${pair.symbol}` : ""}</span>
+            <span className="ai-dots" aria-hidden="true"><i /><i /><i /></span>
+          </div>
+        ) : (
+          <span className="title-actions">
+            {access.can("ai.analyze") ? (
+              <button className="btn ghost" onClick={() => run()} disabled={!pair || !hasAI}>{sig ? "Analyze again" : "Analyze"}</button>
+            ) : (
+              <LockChip label="AI plans" />
+            )}
+          </span>
+        )}
       </div>
       {infoOpen && sig && createPortal(
         <div className="modal-backdrop">
@@ -1043,13 +1057,16 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   const [rewardRule, setRewardRule] = useState(savedBot.rewardRule ?? true); // 1.5x reward rule (off = old rules)
   const [ruleInfoOpen, setRuleInfoOpen] = useState(false);
   const [takeProfitUsd, setTakeProfitUsd] = useState<number>(savedBot.takeProfitUsd ?? 0);
+  // Safety settings the user switched off (each one confirmed with "I understand" and logged).
+  const [offKnobs, setOffKnobs] = useState<string[]>(savedBot.disabled ?? []);
+  const [offAsk, setOffAsk] = useState<{ key: string; label: string; then?: () => void } | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   // Changes in the popup are drafts: Confirm keeps them, Cancel / ✕ / Escape / clicking outside undoes them.
-  const [snap, setSnap] = useState<{ cfg: typeof cfg; custom: boolean; waitForHold: boolean } | null>(null);
+  const [snap, setSnap] = useState<{ cfg: typeof cfg; custom: boolean; waitForHold: boolean; offKnobs: string[] } | null>(null);
   const [feeDraft, setFeeDraft] = useState("");
   const [slipDraft, setSlipDraft] = useState("");
   const openRules = (asCustom = false) => {
-    setSnap({ cfg, custom, waitForHold });
+    setSnap({ cfg, custom, waitForHold, offKnobs });
     setFeeDraft(String(state?.settings.feePct ?? 1));
     setSlipDraft(String(state?.settings.slippagePct ?? 0.5));
     if (asCustom) setCustom(true);
@@ -1060,6 +1077,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
       setCfg(snap.cfg);
       setCustom(snap.custom);
       setWaitForHold(snap.waitForHold);
+      setOffKnobs(snap.offKnobs);
     }
     setRulesOpen(false);
   };
@@ -1097,7 +1115,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   };
   // "Custom" shows the input boxes; picking a preset goes back to the summary view.
   const [custom, setCustom] = useState(savedBot.custom ?? false);
-  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd } }), [cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd]);
+  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd, disabled: offKnobs } }), [cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd, offKnobs]);
   const pick = (p: PresetKey) => {
     setCustom(false);
     setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
@@ -1122,8 +1140,35 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
       setWaitForHold(!!a.waitForHold);
       setRewardRule(a.rewardRule !== false);
       setTakeProfitUsd(a.takeProfitUsd ?? 0);
+      setOffKnobs(a.disabled ?? []);
     }
   }, [running, active]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownOff = running ? (active?.disabled ?? []) : offKnobs;
+  const knobOff = (k: string) => shownOff.includes(k);
+  // The checkbox next to a setting: ticked = on. Unticking asks "I understand" first.
+  const knobToggle = (k: string, label: string) => (
+    <label className="knob-switch" title={knobOff(k) ? `${label} is off: tick to turn it back on` : `Untick to turn ${label} off`}>
+      <input
+        type="checkbox"
+        checked={!knobOff(k)}
+        disabled={running}
+        onChange={(e) => (e.target.checked ? setOffKnobs((o) => o.filter((x) => x !== k)) : setOffAsk({ key: k, label }))}
+      />
+      <span>{knobOff(k) ? "Off" : "On"}</span>
+    </label>
+  );
+  const confirmOff = async () => {
+    if (!offAsk) return;
+    const { key, label, then } = offAsk;
+    setOffAsk(null);
+    try {
+      await api.consentOff({ setting: key, label, warning: OFF_WARN[key] ?? "", botId });
+    } catch (e: any) {
+      return notify(`Couldn't record your consent, so nothing was changed: ${e.message}`, true);
+    }
+    if (then) then();
+    else setOffKnobs((o) => [...new Set([...o, key])]);
+  };
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
@@ -1155,7 +1200,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
     setRiskOpen(false);
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, takeProfitUsd, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, takeProfitUsd, disabled: offKnobs, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
     try {
       await api.startBot(full, botId);
       notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})${allowRisky ? " · risky mode" : ""}`);
@@ -1314,16 +1359,17 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
                   <li>Puts <b>{shown.positionPct}%</b> of the account into every trade (≈{fmtUsd(perTrade)} now); a trade that hits its exit loses part of that, usually 5–10%</li>
                 )}
                 <li>The AI writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
-                <li>Sells below the AI's exit price. Once up <b>{(() => { const c = 2 * ((state?.settings.feePct ?? 1) + (state?.settings.slippagePct ?? 0.5)); return Math.max(c + 1, Math.min(shown.breakEvenAtPct, c + 1.5)).toFixed(1); })()}%</b> (your setting, or fees + 1.5% if that comes first) it locks a small profit after fees, so a winner can't turn into a loss</li>
+                <li className={knobOff("breakEvenAtPct") ? "off-line" : ""}>Sells below the AI's exit price. Once up <b>{(() => { const c = 2 * ((state?.settings.feePct ?? 1) + (state?.settings.slippagePct ?? 0.5)); return Math.max(c + 1, Math.min(shown.breakEvenAtPct, c + 1.5)).toFixed(1); })()}%</b> (your setting, or fees + 1.5% if that comes first) it locks a small profit after fees, so a winner can't turn into a loss</li>
                 {(running ? active?.takeProfitUsd : takeProfitUsd) ? <li>Sells everything once the trade is up <b>${running ? active?.takeProfitUsd : takeProfitUsd}</b> after fees</li> : null}
-                <li>Profit lock: from then on it keeps at least <b>{shown.lockPct}%</b> of the best gain, so a run that fades still ends in profit</li>
-                <li>Takes half the profit {shown.partialAtPct >= 100 ? <b>at the target</b> : <><b>{shown.partialAtPct}%</b> of the way to the target</>}, then lets the rest ride on a trailing stop sized to the coin's swings</li>
-                <li>At the AI's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
+                <li className={knobOff("lockPct") ? "off-line" : ""}>Profit lock: from then on it keeps at least <b>{shown.lockPct}%</b> of the best gain, so a run that fades still ends in profit</li>
+                <li className={knobOff("partialAtPct") ? "off-line" : ""}>Takes half the profit {shown.partialAtPct >= 100 ? <b>at the target</b> : <><b>{shown.partialAtPct}%</b> of the way to the target</>}, then lets the rest ride on a trailing stop sized to the coin's swings</li>
+                <li className={knobOff("trailPct") ? "off-line" : ""}>At the AI's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
                 <li>Asks the AI again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
-                <li>No dip buys while a coin is falling (down more than <b>{shown.maxDrop1hPct}%</b> in an hour, or a 1-hour downtrend)</li>
-                <li>After a losing trade, waits <b>{shown.cooldownMin} min</b> before re-buying that coin; skips it for the day after 2 losses in a row</li>
-                <li>Stops opening trades for the day after losing <b>{shown.dailyLossPct}%</b> in a day</li>
-                <li>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
+                <li className={knobOff("maxDrop1hPct") ? "off-line" : ""}>No dip buys while a coin is falling (down more than <b>{shown.maxDrop1hPct}%</b> in an hour, or a 1-hour downtrend)</li>
+                <li className={knobOff("cooldownMin") ? "off-line" : ""}>After a losing trade, waits <b>{shown.cooldownMin} min</b> before re-buying that coin; skips it for the day after 2 losses in a row</li>
+                <li className={knobOff("dailyLossPct") ? "off-line" : ""}>Stops opening trades for the day after losing <b>{shown.dailyLossPct}%</b> in a day</li>
+                <li className={knobOff("maxDrawdownPct") ? "off-line" : ""}>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
+                {shownOff.length > 0 && <li className="down">Turned off by you: <b>{shownOff.map((k) => OFF_LABEL[k] ?? k).join(", ")}</b></li>}
               </ul>
               </div>
               <label className="check small">
@@ -1339,81 +1385,66 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
                 <span className="muted tiny">{running ? "Stop the bot to change these." : "Change any number to switch to Custom."}</span>
               </div>
               <div className="grid2 knobs">
-                <label>
-                  Risk per trade (% of account)
-                  <input type="number" step="0.5" value={shown.riskPerTradePct} onChange={set("riskPerTradePct")} disabled={running} />
+                <div className={`knob ${knobOff("riskPerTradePct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Risk per trade (% of account)</span>{knobToggle("riskPerTradePct", "Risk per trade")}</span>                  <input type="number" step="0.5" value={shown.riskPerTradePct} onChange={set("riskPerTradePct")} disabled={running || knobOff("riskPerTradePct")} />
                   <small>How much one losing trade should cost. The bot sizes each trade from the AI's exit price so that hitting it loses about this much (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)} now). Smaller = survives losing streaks. 0 = off: always use the full "Money per trade" amount.</small>
-                </label>
-                <label>
-                  Money per trade (% of account)
-                  <input type="number" value={shown.positionPct} onChange={set("positionPct")} disabled={running} />
+                </div>
+                <div className="knob">
+                  <span className="knob-title"><span>Money per trade (% of account)</span></span>                  <input type="number" value={shown.positionPct} onChange={set("positionPct")} disabled={running} />
                   <small>{shown.riskPerTradePct > 0 ? `Upper limit: never more than ${shown.positionPct}% of the account (${fmtUsd(perTrade)}) in one trade, even if the exit is very close.` : `Every trade uses ${shown.positionPct}% of the account (${fmtUsd(perTrade)} now), never more than your cash.`}</small>
-                </label>
-                <label>
-                  Minimum win chance (%)
-                  <input type="number" value={shown.minConfidence} onChange={set("minConfidence")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("minConfidence") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Minimum win chance (%)</span>{knobToggle("minConfidence", "Minimum win chance")}</span>                  <input type="number" value={shown.minConfidence} onChange={set("minConfidence")} disabled={running || knobOff("minConfidence")} />
                   <small>For each order, the AI estimates the chance it reaches its target before its exit price. Orders below this aren't used. Every order must also make money on average after fees. Higher = fewer, safer trades.</small>
-                </label>
-                <label>
-                  Minimum win chance in risky mode (%)
-                  <input type="number" min={0} max={100} value={shown.riskyMinWin} onChange={set("riskyMinWin")} disabled={running} />
+                </div>
+                <div className="knob">
+                  <span className="knob-title"><span>Minimum win chance in risky mode (%)</span></span>                  <input type="number" min={0} max={100} value={shown.riskyMinWin} onChange={set("riskyMinWin")} disabled={running} />
                   <small>Used instead of the minimum above when you start in risky mode ("I understand, trade anyway"). Lower = more trades, including ones that lose money on average.</small>
-                </label>
-                <label>
-                  Backup re-check (minutes)
-                  <input type="number" value={shown.analyzeMin} onChange={set("analyzeMin")} disabled={running} />
+                </div>
+                <div className="knob">
+                  <span className="knob-title"><span>Backup re-check (minutes)</span></span>                  <input type="number" value={shown.analyzeMin} onChange={set("analyzeMin")} disabled={running} />
                   <small>The AI is asked after every trade and whenever its plan expires or the price leaves its range. This is the longest it waits otherwise. Each ask costs a few cents.</small>
-                </label>
-                <label>
-                  Emergency stop if I lose (%)
-                  <input type="number" value={shown.maxDrawdownPct} onChange={set("maxDrawdownPct")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("maxDrawdownPct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Emergency stop if I lose (%)</span>{knobToggle("maxDrawdownPct", "Emergency stop")}</span>                  <input type="number" value={shown.maxDrawdownPct} onChange={set("maxDrawdownPct")} disabled={running || knobOff("maxDrawdownPct")} />
                   <small>Counted from the account value when the bot starts ({fmtUsd(stopBase)}{running ? "" : " now"}). If it drops below {fmtUsd(floor)}, it sells everything and switches off.</small>
-                </label>
-                <label>
-                  Protect a trade once it's up (%)
-                  <input type="number" value={shown.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("breakEvenAtPct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Protect a trade once it's up (%)</span>{knobToggle("breakEvenAtPct", "Profit guard")}</span>                  <input type="number" value={shown.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running || knobOff("breakEvenAtPct")} />
                   <small>Once a trade is up this much, the bot won't let it turn into a loss.</small>
-                </label>
-                <label>
-                  Sell everything once up ($)
-                  <input type="number" min={0} step={10} value={takeProfitUsd} onChange={(e) => setTakeProfitUsd(Math.max(0, Number(e.target.value) || 0))} disabled={running} />
+                </div>
+                <div className="knob">
+                  <span className="knob-title"><span>Sell everything once up ($)</span></span>                  <input type="number" min={0} step={10} value={takeProfitUsd} onChange={(e) => setTakeProfitUsd(Math.max(0, Number(e.target.value) || 0))} disabled={running} />
                   <small>Locks in a sure profit: once the trade is up this many dollars after fees, the bot sells all of it. 0 = off (it rides the trade with its usual exits).</small>
-                </label>
-                <label>
-                  Trailing stop (%)
-                  <input type="number" value={shown.trailPct} onChange={set("trailPct")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("trailPct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Trailing stop (%)</span>{knobToggle("trailPct", "Trailing stop")}</span>                  <input type="number" value={shown.trailPct} onChange={set("trailPct")} disabled={running || knobOff("trailPct")} />
                   <small>After the AI's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
-                </label>
-                <label>
-                  Profit lock (% of best gain kept)
-                  <input type="number" min={0} max={90} value={shown.lockPct} onChange={set("lockPct")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("lockPct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Profit lock (% of best gain kept)</span>{knobToggle("lockPct", "Profit lock")}</span>                  <input type="number" min={0} max={90} value={shown.lockPct} onChange={set("lockPct")} disabled={running || knobOff("lockPct")} />
                   <small>Once the trade is up the break-even amount, the stop follows the best price so it keeps at least this share of the gain. 0 = off.</small>
-                </label>
-                <label>
-                  Take half at (% of the way to target)
-                  <input type="number" min={0} max={100} value={shown.partialAtPct} onChange={set("partialAtPct")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("partialAtPct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Take half at (% of the way to target)</span>{knobToggle("partialAtPct", "Take half")}</span>                  <input type="number" min={0} max={100} value={shown.partialAtPct} onChange={set("partialAtPct")} disabled={running || knobOff("partialAtPct")} />
                   <small>Sells half when the price gets this far toward the target, since runs often stall just short of it. 0 = off.</small>
-                </label>
-                <label>
-                  Skip dips if it fell more than (% in 1 hour)
-                  <input type="number" value={shown.maxDrop1hPct} onChange={set("maxDrop1hPct")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("maxDrop1hPct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Skip dips if it fell more than (% in 1 hour)</span>{knobToggle("maxDrop1hPct", "Skip dips while falling")}</span>                  <input type="number" value={shown.maxDrop1hPct} onChange={set("maxDrop1hPct")} disabled={running || knobOff("maxDrop1hPct")} />
                   <small>A crash is not a dip. If the coin dropped more than this in the last hour (or its 1-hour trend is down), the bot won't buy dips. Breakout buys are still allowed.</small>
-                </label>
-                <label>
-                  Cool-down after a loss (minutes)
-                  <input type="number" value={shown.cooldownMin} onChange={set("cooldownMin")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("cooldownMin") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Cool-down after a loss (minutes)</span>{knobToggle("cooldownMin", "Cool-down after a loss")}</span>                  <input type="number" value={shown.cooldownMin} onChange={set("cooldownMin")} disabled={running || knobOff("cooldownMin")} />
                   <small>After a losing trade, the bot won't buy that coin again for this long. After 2 losses in a row it skips the coin for the rest of the day.</small>
-                </label>
-                <label>
-                  Daily loss limit (%)
-                  <input type="number" value={shown.dailyLossPct} onChange={set("dailyLossPct")} disabled={running} />
+                </div>
+                <div className={`knob ${knobOff("dailyLossPct") ? "off" : ""}`}>
+                  <span className="knob-title"><span>Daily loss limit (%)</span>{knobToggle("dailyLossPct", "Daily loss limit")}</span>                  <input type="number" value={shown.dailyLossPct} onChange={set("dailyLossPct")} disabled={running || knobOff("dailyLossPct")} />
                   <small>If the account loses this much in one day, the bot stops opening new trades until midnight UTC ({new Date(Math.ceil(Date.now() / 86_400_000) * 86_400_000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} your time). Open trades still sell normally.</small>
-                </label>
-                <label>
-                  My target ($)
-                  <input type="number" value={shown.goalUsd} onChange={set("goalUsd")} disabled={running} />
+                </div>
+                <div className="knob">
+                  <span className="knob-title"><span>My target ($)</span></span>                  <input type="number" value={shown.goalUsd} onChange={set("goalUsd")} disabled={running} />
                   <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
-                </label>
+                </div>
               </div>
               <TradingCosts fee={feeDraft} slip={slipDraft} setFee={setFeeDraft} setSlip={setSlipDraft} />
             </div>
@@ -1424,6 +1455,25 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
           </div>
         </div>,
         document.body, // render at page level: the panel's blur effect would otherwise trap the popup inside it
+      )}
+      {offAsk && createPortal(
+        <div className="modal-backdrop on-top">
+          <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="off-title">
+            <div className="modal-head">
+              <h2 id="off-title">Turn off {offAsk.label}?</h2>
+              <button className="modal-close" onClick={() => setOffAsk(null)} aria-label="Close" title="Close">✕</button>
+            </div>
+            <div className="modal-body">
+              <p className="risk-lead">{OFF_WARN[offAsk.key]}</p>
+              <p className="muted small">The bot keeps trading without this protection{botId !== "1" ? ` (bot ${botId})` : ""}. You can turn it back on any time. Your choice is saved in your activity history.</p>
+            </div>
+            <div className="modal-foot">
+              <button className="btn ghost" onClick={() => setOffAsk(null)}>Keep it on</button>
+              <button className="btn sell" onClick={() => void confirmOff()}>I understand, turn it off</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
       {riskOpen && createPortal(
         <div className="modal-backdrop">
@@ -1465,6 +1515,21 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
           className={`mini-switch ${(running ? active?.rewardRule !== false : rewardRule) ? "on" : ""}`}
           onClick={async () => {
             const next = !(running ? active?.rewardRule !== false : rewardRule);
+            if (!next && !offAsk) {
+              const apply = async () => {
+                setRewardRule(false);
+                if (running) {
+                  try {
+                    await api.botRewardRule(false, botId);
+                    await refresh();
+                    notify("Reward rule off: old rules", true);
+                  } catch (e: any) {
+                    notify(e.message, true);
+                  }
+                }
+              };
+              return setOffAsk({ key: "rewardRule", label: "Gain must be 1.5× the risk", then: () => void apply() });
+            }
             setRewardRule(next);
             if (running) {
               try {
@@ -1698,6 +1763,22 @@ function TrackRecord({ state }: { state: AppState | null }) {
     </div>
   );
 }
+
+// What turning each safety setting off means (shown in the "I understand" popup and saved with it).
+const OFF_WARN: Record<string, string> = {
+  riskPerTradePct: "Every trade will use the full 'Money per trade' amount, whatever the distance to the exit. One losing trade can cost much more of your account.",
+  minConfidence: "The bot will use orders with any win chance, including ones the AI expects to fail most of the time.",
+  maxDrawdownPct: "Nothing will stop the bots if the account keeps falling. They can lose most of the account.",
+  breakEvenAtPct: "Winning trades can fall all the way back to the stop-loss and end as losses.",
+  trailPct: "At the target the bot sells everything instead of riding the trend, so it gives up any further rise.",
+  lockPct: "The stop won't follow the price up, so a big gain can shrink back before the bot sells.",
+  partialAtPct: "No half is sold at the target; the whole position stays in the trade.",
+  maxDrop1hPct: "The bot will buy dips even while a coin is crashing.",
+  cooldownMin: "After a loss the bot can buy the same coin again right away, and it keeps trading a coin after 2 losses in a row.",
+  dailyLossPct: "The bot keeps opening trades after a bad day. There is no daily loss limit.",
+  rewardRule: "The bot may buy setups where the possible loss is bigger than the possible gain after fees.",
+};
+const OFF_LABEL: Record<string, string> = { riskPerTradePct: "Risk per trade", minConfidence: "Minimum win chance", maxDrawdownPct: "Emergency stop", breakEvenAtPct: "Profit guard", trailPct: "Trailing stop", lockPct: "Profit lock", partialAtPct: "Take half", maxDrop1hPct: "Skip dips while falling", cooldownMin: "Cool-down after a loss", dailyLossPct: "Daily loss limit" };
 
 // What the "Gain must be 1.5x the risk" switch does, with a worked example.
 function RewardRuleInfo({ on, risky, onClose }: { on: boolean; risky: boolean; onClose: () => void }) {

@@ -10,6 +10,7 @@ const store = createStore();
 export type AuditType =
   | "consent.risky_mode" // accepted "I understand, trade anyway"
   | "consent.daily_limit" // lifted today's daily loss limit
+  | "consent.setting_off" // switched a safety setting off ("I understand")
   | "bot.start"
   | "bot.stop"
   | "bot.pause" // a safety rule paused the bot (daily loss limit, ...)

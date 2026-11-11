@@ -244,6 +244,22 @@ app.post(
 app.post("/api/bot/stop", signedIn(wrap(async (req) => engine.stopBot("Stopped by user", String(req.body?.botId ?? "1")))));
 app.post("/api/bot/remove", signedIn(wrap(async (req) => engine.removeBot(String(req.body?.botId ?? "")))));
 // "Continue anyway" past today's daily loss limit (the user confirmed the risk).
+// "I understand": the user switched a safety setting off. Kept in the activity log as proof.
+app.post("/api/consent/setting-off", signedIn(async (req, res) => {
+  const a = (await auth.requestAuth(req))!;
+  const b = req.body ?? {};
+  const setting = String(b.setting ?? "").slice(0, 40);
+  const label = String(b.label ?? setting).slice(0, 80);
+  if (!setting) return void res.status(400).json({ error: "Which setting?" });
+  await history.audit(a.key, "consent.setting_off", `Accepted "I understand" and turned off: ${label}${b.botId ? ` (bot ${String(b.botId).slice(0, 2)})` : ""}`, {
+    setting, label, botId: b.botId ? String(b.botId).slice(0, 2) : null,
+    warningShown: String(b.warning ?? "").slice(0, 600),
+    ip: String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() || null,
+    userAgent: String(req.headers["user-agent"] ?? "").slice(0, 200),
+    at: new Date().toISOString(),
+  });
+  res.json({ ok: true });
+}));
 app.post("/api/bot/override-daily", needs("bot.run", wrap(async () => engine.overrideDailyLimit())));
 app.post("/api/bot/reward-rule", needs("bot.run", wrap(async (req) => engine.setRewardRule(req.body?.on !== false, String(req.body?.botId ?? "1")))));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
