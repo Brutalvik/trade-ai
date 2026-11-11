@@ -384,3 +384,19 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .risk-tag.high { color: #ff5c85; background: rgba(255, 61, 113, 0.14); border-color: rgba(255, 61, 113, 0.6); box-shadow: 0 0 12px rgba(255, 61, 113, 0.25); }
 .risk-tag.medium { color: #ffc857; background: rgba(255, 200, 87, 0.12); border-color: rgba(255, 200, 87, 0.5); }
 .risk-tag.low { color: #00f5a0; background: rgba(0, 245, 160, 0.1); border-color: rgba(0, 245, 160, 0.45); }
+
+/* Opportunities / New coins tables: aligned columns */
+.scan { table-layout: auto; }
+.scan th, .scan td { vertical-align: middle; padding: 12px 12px; }
+.scan th { padding-top: 10px; padding-bottom: 10px; white-space: nowrap; }
+.scan th:first-child, .scan td:first-child { padding-left: 10px; }
+.scan .num { text-align: right; font-variant-numeric: tabular-nums; }
+.scan td.num { font-family: "JetBrains Mono", ui-monospace, monospace; }
+.scan .col-coin { min-width: 130px; }
+.scan .col-signal { width: 300px; min-width: 240px; white-space: normal; }
+.scan .col-signal .why { max-width: 300px; margin-top: 5px; line-height: 1.45; }
+.scan .col-action { width: 1%; text-align: right; padding-right: 10px; }
+.scan .empty-cell { color: var(--muted); opacity: 0.6; }
+.scan td .tiny { margin-top: 2px; }
+.scan tbody tr:last-child td { border-bottom: 0; }
+@media (max-width: 760px) { .scan .col-signal { width: auto; min-width: 180px; } .scan th, .scan td { padding: 10px 8px; } }

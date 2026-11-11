@@ -1106,7 +1106,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
 function GoalLadder({ state }: { state: AppState | null }) {
   const eq = state?.equityNow ?? 0;
-  const start = state?.startCash ?? 10;
+  const start = state?.startCash || 10; // signed out: the $0 view still shows the usual ladder
   const steps = [start, start * 1.5, start * 2, start * 10, start * 100];
   const [cash, setCash] = useState("10");
   return (
@@ -1114,7 +1114,7 @@ function GoalLadder({ state }: { state: AppState | null }) {
       <div className="panel-title"><span>GROWTH LADDER</span><span className="muted small">peak {fmtUsd(state?.peakEquity ?? 0)}</span></div>
       <div className="ladder">
         {steps.map((s, i) => {
-          const pct = Math.max(0, Math.min(100, (eq / s) * 100));
+          const pct = s > 0 ? Math.max(0, Math.min(100, (eq / s) * 100)) : 0;
           return (
             <div key={i} className={`rung ${eq >= s ? "done" : ""}`}>
               <span className="mono">{fmtUsd(s, 0)}</span>
@@ -1196,16 +1196,16 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
         <table className="scan">
           <thead>
             <tr>
-              <th>Coin</th>
-              <th>Price</th>
-              <th className="hide-sm">1h</th>
-              <th className="hide-sm">24h</th>
-              <th>Signal</th>
-              <th title="Buy only at or below this price">Buy below</th>
-              <th title="Sell for profit at this price">Sell at</th>
-              <th className="hide-sm" title="Get out if price falls below this">Exit if below</th>
+              <th className="col-coin">Coin</th>
+              <th className="num">Price</th>
+              <th className="num hide-sm">1h</th>
+              <th className="num hide-sm">24h</th>
+              <th className="col-signal">Signal</th>
+              <th className="num" title="Buy only at or below this price">Buy below</th>
+              <th className="num" title="Sell for profit at this price">Sell at</th>
+              <th className="num hide-sm" title="Get out if price falls below this">Exit if below</th>
               <th className="hide-sm" title="Buy before this time, sell by this time">When</th>
-              <th />
+              <th className="col-action" />
             </tr>
           </thead>
           <tbody>
@@ -1218,10 +1218,10 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
                     <b>{pair.symbol}</b>
                     <div className="muted tiny">{pair.chain} · liq {fmtBig(pair.liquidityUsd)}</div>
                   </td>
-                  <td className="mono">{fmtPrice(pair.priceUsd)}</td>
-                  <td className={`hide-sm ${pair.change.h1 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h1)}</td>
-                  <td className={`hide-sm ${pair.change.h24 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h24)}</td>
-                  <td title={plan?.why}>
+                  <td className="mono num">{fmtPrice(pair.priceUsd)}</td>
+                  <td className={`num hide-sm ${pair.change.h1 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h1)}</td>
+                  <td className={`num hide-sm ${pair.change.h24 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h24)}</td>
+                  <td className="col-signal" title={plan?.why}>
                     {a && a !== "loading" ? (
                       <span className={`tag ${a.stance === "BUY_NOW" ? "buy" : a.stance === "AVOID" ? "sell" : "hold"}`}>AI: {STANCE_LABEL[a.stance ?? "AVOID"]} {a.confidence}%</span>
                     ) : (
@@ -1231,22 +1231,27 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
                   </td>
                   {a && a !== "loading" && a.orders?.length > 0 ? (
                     <>
-                      <td className="mono up">{a.orders[0].kind === "buy_breakout" ? "above " : ""}{fmtPrice(a.orders[0].triggerPrice)}</td>
-                      <td className="mono up">{fmtPrice(a.orders[0].target)}<div className="muted tiny">then trails</div></td>
-                      <td className="mono down hide-sm">{fmtPrice(a.orders[0].stopLoss)}</td>
+                      <td className="mono num up">{a.orders[0].kind === "buy_breakout" ? "above " : ""}{fmtPrice(a.orders[0].triggerPrice)}</td>
+                      <td className="mono num up">{fmtPrice(a.orders[0].target)}<div className="muted tiny">then trails</div></td>
+                      <td className="mono num down hide-sm">{fmtPrice(a.orders[0].stopLoss)}</td>
                       <td className="hide-sm small">plan valid until {fmtTime(a.expiresAt)}{a.orders.length > 1 ? <><br />+1 more order</> : null}</td>
                     </>
                   ) : go && plan && !(a && a !== "loading") ? (
                     <>
-                      <td className="mono">{fmtPrice(plan.buyBelow)}</td>
-                      <td className="mono up">{fmtPrice(plan.sellAt)}<div className="muted tiny">+{plan.netGainPct.toFixed(1)}% after fees</div></td>
-                      <td className="mono down hide-sm">{fmtPrice(plan.exitBelow)}</td>
+                      <td className="mono num">{fmtPrice(plan.buyBelow)}</td>
+                      <td className="mono num up">{fmtPrice(plan.sellAt)}<div className="muted tiny">+{plan.netGainPct.toFixed(1)}% after fees</div></td>
+                      <td className="mono num down hide-sm">{fmtPrice(plan.exitBelow)}</td>
                       <td className="hide-sm small">buy by {fmtTime(plan.buyBy)}<br />sell by {fmtTime(plan.sellBy)}</td>
                     </>
                   ) : (
-                    <td colSpan={4} className="muted small">{a && a !== "loading" ? "AI: no orders worth placing now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask AI." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}</td>
+                    <>
+                      <td className="num empty-cell" title={a && a !== "loading" ? "AI: no orders worth placing now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask AI." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}>–</td>
+                      <td className="num empty-cell">–</td>
+                      <td className="num empty-cell hide-sm">–</td>
+                      <td className="empty-cell hide-sm">{a && a !== "loading" ? "No orders now" : !plan ? "Data busy" : plan.verdict === "AVOID" ? "Don't buy" : "Wait"}</td>
+                    </>
                   )}
-                  <td onClick={(e) => e.stopPropagation()}>
+                  <td className="col-action" onClick={(e) => e.stopPropagation()}>
                     <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask AI"}</button>
                   </td>
                 </tr>
