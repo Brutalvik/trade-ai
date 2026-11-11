@@ -560,6 +560,24 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
   const [loading, setLoading] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [glow, setGlow] = useState(false);
+  // While analyzing: a step that changes every ~1.5 s. After: the (i) flips once like a coin.
+  const [step, setStep] = useState(0);
+  const [flip, setFlip] = useState(false);
+  const wasLoading = useRef(false);
+  useEffect(() => {
+    if (loading) {
+      setStep(0);
+      const id = setInterval(() => setStep((x) => x + 1), 1500);
+      wasLoading.current = true;
+      return () => clearInterval(id);
+    }
+    if (wasLoading.current) {
+      wasLoading.current = false;
+      setFlip(true);
+      const t = setTimeout(() => setFlip(false), 700);
+      return () => clearTimeout(t);
+    }
+  }, [loading]);
 
   // Claude's explanation for the current plan (shown in the (i) popup).
   const okResult = results?.find((x) => x.ok);
@@ -635,7 +653,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           {(() => {
             const can = !!(sig && (explain.why || sig.note));
             return (
-              <button className={`info-btn ${glow && can ? "glow" : ""}`} onClick={can ? openInfo : undefined} disabled={!can} aria-label="Why the AI decided this" title={can ? "Why the AI decided this" : "Analyze a coin to see why the AI decided"}>
+              <button className={`info-btn ${glow && can ? "glow" : ""} ${flip && can ? "coin-flip" : ""}`} onClick={can ? openInfo : undefined} disabled={!can} aria-label="Why the AI decided this" title={can ? "Why the AI decided this" : "Analyze a coin to see why the AI decided"}>
                 i
               </button>
             );
@@ -643,10 +661,10 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         </span>
         {loading ? (
           // While the AI works, the rest of the header becomes an animated "analyzing" bar.
-          <div className="ai-analyzing" role="status" aria-live="polite">
-            <span className="ai-scan" aria-hidden="true" />
-            <span className="ai-analyzing-text">Analyzing{pair ? ` ${pair.symbol}` : ""}</span>
-            <span className="ai-dots" aria-hidden="true"><i /><i /><i /></span>
+          <div className="ai-working" role="status" aria-live="polite">
+            <span className="ai-candles" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
+            <span className="ai-working-text" key={step % AI_STEPS.length}>{AI_STEPS[step % AI_STEPS.length]}</span>
+            <span className="ai-sweep-line" aria-hidden="true" />
           </div>
         ) : (
           <span className="title-actions">
@@ -1857,6 +1875,9 @@ function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h
     </div>
   );
 }
+
+// What the AI is doing, shown in turn while it analyzes.
+const AI_STEPS = ["Reading candles…", "Checking volume…", "Spotting the trend…", "Weighing risk…", "Writing the plan…"];
 
 // Signed out: a clearly labelled example of what the AI panel shows, with a sign-in button.
 function DemoSignal({ pair, price }: { pair: PairInfo | null; price?: number }) {
