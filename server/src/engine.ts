@@ -36,6 +36,8 @@ export type Position = {
   partialDone?: boolean; // new coins: half already sold at the first target
   extraSlipPct?: number; // extra slippage for thin liquidity, applied on the way out too
   realizedUsd?: number; // P&L already taken by partial sales (new coins: half at the first target)
+  best?: number; // highest closing price since the buy (for the profit lock)
+  locked?: boolean; // the stop is a profit lock (above break-even)
 };
 
 export type Trade = {
@@ -70,6 +72,8 @@ export type BotConfig = {
   checkEverySec: number;
   maxDrawdownPct: number; // bot stops itself below this
   breakEvenAtPct: number; // move stop to break-even once up this much
+  lockPct?: number; // profit lock: once up breakEvenAtPct, never give back more than (100 - lockPct)% of the best gain (default 50; 0 = off)
+  partialAtPct?: number; // sell half once the price is this % of the way to the target (default 75; 0 = off)
   goalUsd: number;
   // "this" = trade the coin above; "auto" = pick the best coin from Opportunities each round.
   pick?: "this" | "auto" | "newcoins";
@@ -670,6 +674,14 @@ async function newCoinsStep(cfg: BotConfig) {
   alert(`🚀 ${msg}`);
 }
 
+const lockNoted = new Map<string, number>();
+function noteKey(pos: Position, gainPct: number) {
+  const step = Math.floor(gainPct / 5);
+  if ((lockNoted.get(pos.id) ?? -1) >= step) return false;
+  lockNoted.set(pos.id, step);
+  return true;
+}
+
 export async function tick(persist = true) {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg || busy) return;
@@ -695,6 +707,41 @@ export async function tick(persist = true) {
         if (!pos.stopLoss || pos.stopLoss < be) {
           pos.stopLoss = be;
           log(`${pos.symbol} up ${gainPct.toFixed(1)}%: stop moved to break-even after fees (${fmt(be)}).`, "good");
+        }
+      }
+      // Profit lock: once the best gain reaches the break-even level, the stop follows it up
+      // so the trade keeps at least lockPct% of its best gain (judged on closing prices).
+      const lockPct = cfg.lockPct ?? 50;
+      let newBestThisCheck = false;
+      if (q.peakHigh > (pos.best ?? pos.entryPrice)) {
+        pos.best = q.peakHigh;
+        newBestThisCheck = true;
+      }
+      const best = pos.best ?? pos.entryPrice;
+      const bestGainPct = ((best - pos.entryPrice) / pos.entryPrice) * 100;
+      if (lockPct > 0 && bestGainPct >= Math.max(cfg.breakEvenAtPct, cost * 1.5) && (pos.strategy !== "newcoin" || pos.partialDone)) {
+        const be = pos.entryPrice * (1 + cost / 100);
+        const lock = Math.max(be, pos.entryPrice + (best - pos.entryPrice) * (lockPct / 100));
+        if (!pos.stopLoss || lock > pos.stopLoss * 1.001) {
+          pos.stopLoss = lock;
+          pos.locked = lock > be;
+          dirty = true;
+          if (pos.locked && noteKey(pos, bestGainPct)) // first lock, then every +5% of best gain
+            log(`${pos.symbol} best gain +${bestGainPct.toFixed(1)}%: profit lock raised to ${fmt(lock)} (keeps at least ${lockPct}% of the gain).`, "good");
+        }
+      }
+      // Take half before the target: targets often sit at resistance, where a run can stall.
+      const partialAt = cfg.partialAtPct ?? 75;
+      if (pos.strategy !== "newcoin" && partialAt > 0 && !pos.partialDone && pos.target && pos.target > pos.entryPrice) {
+        const level = pos.entryPrice + (pos.target - pos.entryPrice) * (partialAt / 100);
+        const be = pos.entryPrice * (1 + cost / 100);
+        if (level > be && q.high >= level) {
+          const t = sell(pos.id, Math.max(level, price), 0.5, `Took half ${partialAt}% of the way to the target`);
+          pos.partialDone = true;
+          if (!pos.stopLoss || pos.stopLoss < be) pos.stopLoss = be; // the rest can't turn into a loss
+          log(`${pos.symbol}: sold half @ ${fmt(t.price)} (P&L +$${t.pnlUsd!.toFixed(2)}), ${partialAt}% of the way to the ${fmt(pos.target)} target. The rest rides with the profit lock.`, "good");
+          alert(`💰 ${pos.symbol}: sold half @ ${fmt(t.price)}, +$${t.pnlUsd!.toFixed(2)}. Riding the rest.`);
+          return;
         }
       }
       // New coins: at the first target sell half (like a limit order), then trail the rest.
@@ -734,8 +781,8 @@ export async function tick(persist = true) {
       if (pos.trailing && trailLow <= trailStop) {
         reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
         sellAt = Math.min(trailStop, price);
-      } else if (pos.stopLoss && q.low <= pos.stopLoss) {
-        reason = pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
+      } else if (pos.stopLoss && (pos.stopLoss >= pos.entryPrice ? (newBestThisCheck ? price : q.closeLow) : q.low) <= pos.stopLoss) {
+        reason = pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
         sellAt = Math.min(pos.stopLoss, price);
       } else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
       else if (!pos.target && pos.takeProfit && q.high >= pos.takeProfit) {

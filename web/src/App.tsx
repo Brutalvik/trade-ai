@@ -688,15 +688,18 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   );
 }
 
-type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number; riskPerTradePct: number; newCoinPct: number; newStopPct: number; newTakePct: number; newTrailPct: number; newMaxMin: number; newMaxPerDay: number };
+type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number; riskPerTradePct: number; newCoinPct: number; newStopPct: number; newTakePct: number; newTrailPct: number; newMaxMin: number; newMaxPerDay: number; lockPct: number; partialAtPct: number };
+// Profit protection, the same for every preset: keep at least half of the best gain once
+// up the break-even amount, and take half 75% of the way to the target.
+const PROFIT_DEFAULTS = { lockPct: 50, partialAtPct: 75 };
 const NEW_COIN_DEFAULTS = { newCoinPct: 3, newStopPct: 15, newTakePct: 30, newTrailPct: 10, newMaxMin: 45, newMaxPerDay: 5 };
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
-  safe: { label: "Safe", blurb: "Risks 1% of the account per trade, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7, riskPerTradePct: 1, ...NEW_COIN_DEFAULTS },
-  balanced: { label: "Balanced", blurb: "Risks 1.5% of the account per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10, riskPerTradePct: 1.5, ...NEW_COIN_DEFAULTS },
-  aggressive: { label: "Aggressive", blurb: "Risks 3% per trade, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15, riskPerTradePct: 3, ...NEW_COIN_DEFAULTS },
+  safe: { label: "Safe", blurb: "Risks 1% of the account per trade, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7, riskPerTradePct: 1, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
+  balanced: { label: "Balanced", blurb: "Risks 1.5% of the account per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10, riskPerTradePct: 1.5, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
+  aggressive: { label: "Aggressive", blurb: "Risks 3% per trade, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15, riskPerTradePct: 3, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
 };
 type PresetKey = keyof typeof PRESETS;
-const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct", "riskPerTradePct", "newCoinPct", "newStopPct", "newTakePct", "newTrailPct", "newMaxMin", "newMaxPerDay"];
+const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct", "riskPerTradePct", "newCoinPct", "newStopPct", "newTakePct", "newTrailPct", "newMaxMin", "newMaxPerDay", "lockPct", "partialAtPct"];
 const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
 
 // "Started 2:33:51 PM · running 12m 05s" (ticks every second), or "Stopped … · ran …".
@@ -852,7 +855,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
-    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, newCoinPct: active.newCoinPct ?? 3, newStopPct: active.newStopPct ?? 15, newTakePct: active.newTakePct ?? 30, newTrailPct: active.newTrailPct ?? 10, newMaxMin: active.newMaxMin ?? 45, newMaxPerDay: active.newMaxPerDay ?? 5, goalUsd: active.goalUsd } : cfg;
+    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, lockPct: active.lockPct ?? 50, partialAtPct: active.partialAtPct ?? 75, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, newCoinPct: active.newCoinPct ?? 3, newStopPct: active.newStopPct ?? 15, newTakePct: active.newTakePct ?? 30, newTrailPct: active.newTrailPct ?? 10, newMaxMin: active.newMaxMin ?? 45, newMaxPerDay: active.newMaxPerDay ?? 5, goalUsd: active.goalUsd } : cfg;
   // When the bot stops, keep the settings it was running with (even if this page was
   // refreshed or the bot was started elsewhere), ready for the next start.
   const lastRun = useRef<{ shown: typeof shown; active: BotConfig } | null>(null);
@@ -878,7 +881,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const start = async () => {
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct };
     try {
       await api.startBot(full);
       notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
@@ -906,7 +909,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
       <div className="label-row">
         <div className="label-sm">What should it trade?</div>
         <button className="chip" onClick={() => openRules()} aria-haspopup="dialog">
-          ⓘ How it trades
+          ⚙ Settings
         </button>
       </div>
       <div className="presets two" role="radiogroup" aria-label="What to trade">
@@ -995,7 +998,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         <div className="modal-backdrop" onClick={cancelRules}>
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="rules-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h2 id="rules-title">How the bot trades{isCustom ? " · Custom" : preset ? ` · ${PRESETS[preset].label}` : ""}</h2>
+              <h2 id="rules-title">Settings{isCustom ? " · Custom" : preset ? ` · ${PRESETS[preset].label}` : ""}</h2>
               <button className="chip" onClick={cancelRules} aria-label="Close">
                 ✕
               </button>
@@ -1007,6 +1010,8 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 <li>Sizes each trade so that hitting the AI's exit loses about <b>{shown.riskPerTradePct}%</b> of the account (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)}), never more than {fmtUsd(perTrade)} ({shown.positionPct}% of cash)</li>
                 <li>The AI writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
                 <li>Sells below the AI's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
+                <li>Profit lock: from then on it keeps at least <b>{shown.lockPct}%</b> of the best gain, so a run that fades still ends in profit</li>
+                <li>Takes half the profit <b>{shown.partialAtPct}%</b> of the way to the target, then lets the rest ride</li>
                 <li>At the AI's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
                 <li>Asks the AI again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
                 <li>No dip buys while a coin is falling (down more than <b>{shown.maxDrop1hPct}%</b> in an hour, or a 1-hour downtrend)</li>
@@ -1061,6 +1066,16 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                   Trailing stop (%)
                   <input type="number" value={shown.trailPct} onChange={set("trailPct")} disabled={running} />
                   <small>After the AI's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
+                </label>
+                <label>
+                  Profit lock (% of best gain kept)
+                  <input type="number" min={0} max={90} value={shown.lockPct} onChange={set("lockPct")} disabled={running} />
+                  <small>Once the trade is up the break-even amount, the stop follows the best price so it keeps at least this share of the gain. 0 = off.</small>
+                </label>
+                <label>
+                  Take half at (% of the way to target)
+                  <input type="number" min={0} max={100} value={shown.partialAtPct} onChange={set("partialAtPct")} disabled={running} />
+                  <small>Sells half when the price gets this far toward the target, since runs often stall just short of it. 0 = off.</small>
                 </label>
                 <label>
                   Skip dips if it fell more than (% in 1 hour)

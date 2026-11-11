@@ -28,14 +28,16 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 - **Settings** (wrench, top right): choose whether the bot stops by itself after one profitable trade (the default) or trades continuously, and see whether phone alerts are on.
 - **Accounts:** sign up with a unique username, first and last name, email and password; sign in with username or email. Passwords are hashed with scrypt; sessions are signed, HTTP-only cookies that last 30 days. The profile (click your initials) shows your details and lets you reset your password, which signs out your other devices. Accounts are stored in the same Upstash Redis database, so no extra setup is needed. The paper account and bot are still shared by everyone using the site.
 
-## New coins mode
+## New coins
 
-A fast, rule-based mode (no Claude calls) for young coins on Solana or Base:
+The 🚀 New coins tab lists pools from minutes to 3 days old, each with a rug-risk level (LOW / MEDIUM / HIGH / REJECTED) and the reasons. Solana uses RugCheck (mint/freeze authority, creator rug history, holder concentration, locked liquidity); Base uses honeypot.is (can you sell, buy/sell tax). Open a coin to see its chart, get the AI's plan and trade it like any other coin; skip Rejected and High-risk ones.
 
-- **Scanner** (the 🚀 New coins tab): pools from minutes to 3 days old, each given a rug-risk level (LOW / MEDIUM / HIGH / REJECTED) with reasons. Solana uses RugCheck (mint/freeze authority, creator rug history, holder concentration, locked liquidity); Base uses honeypot.is (can you sell, buy/sell tax).
-- **Entry rules:** only LOW or MEDIUM risk, at least 20 minutes old, $25K+ liquidity, 55%+ of last-hour trades are buys, price rising.
-- **Exits:** 3% of the account per coin, stop -15%, sell half at +30% then trail the rest 10%, sell within 45 minutes, max 5 buys a day, each coin once a day. All adjustable in "How it trades".
-- Thin-liquidity slippage is simulated on both the buy and the sell, and new-coin trades get their own scorecard in Trade history.
+## Taking profits
+
+- **Profit lock:** once a trade is up the break-even amount, the stop follows the best (closing) price so the trade keeps at least 50% of its best gain.
+- **Take half early:** the bot sells half once the price is 75% of the way to the AI's target (runs often stall just under resistance), then the rest rides with the profit lock and, past the target, a trailing stop.
+- **Reachable targets:** the AI is told to set targets just below resistance.
+- All adjustable in the bot panel's Settings (0 turns a rule off).
 
 ## Architecture
 
@@ -109,7 +111,7 @@ Get a message for every bot buy and sell, protected sells, the daily loss limit,
 - **ntfy** (easiest, no account): install the ntfy app, subscribe to a long random topic name (e.g. `nexus-7f3k2m9q`), and set `NTFY_TOPIC` to that name. Anyone who knows the topic can read it, so make it hard to guess.
 - **Telegram** (private): create a bot with @BotFather to get `TELEGRAM_BOT_TOKEN`, send your bot any message, then get your chat id from `https://api.telegram.org/bot<token>/getUpdates` and set `TELEGRAM_CHAT_ID`.
 
-The How it trades popup shows whether alerts are on.
+The Settings popup (wrench, top right) shows whether alerts are on.
 
 ## Data sources
 
