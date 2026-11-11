@@ -1,0 +1,116 @@
+// Coin lists for the left sidebar (Solana only, so every coin can be bought for real):
+//   crypto    – biggest Solana tokens by market cap (Jupiter, stablecoins left out)
+//   trending  – Jupiter's top trending (last hour)
+//   held      – most holders (Jupiter: top traded / organic / trending, sorted by holders)
+//   graduated – pump.fun coins that finished their bonding curve (PumpSwap pools, GeckoTerminal)
+//   bonding   – pump.fun coins still on their bonding curve (GeckoTerminal)
+//   community – what TRADING//RUST users bought most this week (our own records)
+import { cachedJson, fromDexScreener, fromGeckoPool, type PairInfo } from "./data.js";
+import { createStore } from "./store.js";
+
+export const LIST_KINDS = ["crypto", "trending", "held", "graduated", "bonding", "community"] as const;
+export type ListKind = (typeof LIST_KINDS)[number];
+export type ListCoin = {
+  mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; change24h: number;
+  holders?: number; volume24h?: number; liquidity?: number; verified?: boolean; buys?: number; buyers?: number;
+  pair?: PairInfo; // known pool (bonding / graduated / community lists)
+};
+
+const store = createStore();
+const STABLE = /^(USDC|USDT|USD1|PYUSD|USDS|USDE|FDUSD|DAI|USDG|EURC|USDH|UXD|USDY|SUSD|USX|USDC\.E|USDT\.E|AUSD|USDU)$/i;
+const jupHeaders = (): Record<string, string> => (process.env.JUPITER_API_KEY?.trim() ? { "x-api-key": process.env.JUPITER_API_KEY.trim() } : {});
+const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+async function jup(path: string): Promise<any[]> {
+  const d = await cachedJson<any[]>(`https://api.jup.ag/tokens/v2/${path}`, 90_000, { headers: jupHeaders() });
+  return Array.isArray(d) ? d : [];
+}
+const fromJup = (t: any): ListCoin => ({
+  mint: t.id, symbol: t.symbol ?? "?", name: t.name ?? "", icon: t.icon || undefined,
+  priceUsd: n(t.usdPrice), mcap: n(t.mcap ?? t.fdv), change24h: n(t.stats24h?.priceChange),
+  holders: t.holderCount ?? undefined, volume24h: n(t.stats24h?.buyVolume) + n(t.stats24h?.sellVolume),
+  liquidity: n(t.liquidity), verified: !!t.isVerified,
+});
+const notStable = (c: ListCoin) => !STABLE.test(c.symbol);
+
+// GeckoTerminal pools on one DEX (pump-fun = bonding curve, pumpswap = graduated), busiest first.
+async function geckoPools(dex: string): Promise<ListCoin[]> {
+  const d = await cachedJson<any>(`https://api.geckoterminal.com/api/v2/networks/solana/dexes/${dex}/pools?page=1&sort=h24_volume_usd_desc&include=base_token`, 90_000, { retries: 0 });
+  const images = new Map<string, string>();
+  for (const inc of d.included ?? []) if (inc.type === "token" && inc.attributes?.image_url && inc.attributes.image_url !== "missing.png") images.set(inc.id, inc.attributes.image_url);
+  const out: ListCoin[] = [];
+  const seen = new Set<string>();
+  for (const pool of d.data ?? []) {
+    const p = fromGeckoPool(pool);
+    if (!p || !p.tokenAddress || seen.has(p.tokenAddress)) continue;
+    if (!/ \/ SOL$/.test(String(pool.attributes?.name ?? ""))) continue; // coin / SOL pools only
+    seen.add(p.tokenAddress);
+    const icon = images.get(pool.relationships?.base_token?.data?.id ?? "");
+    out.push({ mint: p.tokenAddress, symbol: p.symbol, name: p.name, icon, priceUsd: p.priceUsd, mcap: p.marketCap, change24h: p.change.h24, volume24h: p.volume24h, liquidity: p.liquidityUsd, pair: { ...p, imageUrl: icon ?? p.imageUrl } });
+  }
+  return out;
+}
+
+// ---------- Community: what our users bought this week ----------
+const weekKey = (t = Date.now()) => `community:${Math.floor(t / (7 * 86_400_000))}`;
+type CommunityRow = { mint: string; symbol: string; pool: string; buys: number; users: string[] };
+
+export async function noteCommunityBuy(user: string, p: { chain: string; tokenAddress?: string; symbol: string; pool: string }) {
+  if (p.chain !== "solana" || !p.tokenAddress) return;
+  try {
+    const k = weekKey();
+    const map = (await store.kvGet<Record<string, CommunityRow>>(k)) ?? {};
+    const row = map[p.tokenAddress] ?? { mint: p.tokenAddress, symbol: p.symbol, pool: p.pool, buys: 0, users: [] };
+    row.buys += 1;
+    if (!row.users.includes(user) && row.users.length < 500) row.users.push(user);
+    map[p.tokenAddress] = row;
+    await store.kvSet(k, map, { ttlMs: 15 * 86_400_000 });
+  } catch (e) {
+    console.error("[community] write failed:", e);
+  }
+}
+
+async function community(): Promise<ListCoin[]> {
+  const map = { ...((await store.kvGet<Record<string, CommunityRow>>(weekKey(Date.now() - 7 * 86_400_000))) ?? {}) };
+  // This week first; last week fills in so the list isn't empty on Mondays.
+  for (const [mint, row] of Object.entries((await store.kvGet<Record<string, CommunityRow>>(weekKey())) ?? {})) {
+    const prev = map[mint];
+    map[mint] = prev ? { ...row, buys: row.buys + prev.buys, users: [...new Set([...row.users, ...prev.users])] } : row;
+  }
+  const rows = Object.values(map).sort((a, b) => b.users.length - a.users.length || b.buys - a.buys).slice(0, 30);
+  if (!rows.length) return [];
+  const pairs = await cachedJson<any[]>(`https://api.dexscreener.com/tokens/v1/solana/${rows.map((r) => r.mint).join(",")}`, 60_000).catch(() => []);
+  const best = new Map<string, PairInfo>();
+  for (const p of (pairs ?? []).map(fromDexScreener)) {
+    const cur = best.get(p.tokenAddress);
+    if (!cur || p.liquidityUsd > cur.liquidityUsd) best.set(p.tokenAddress, p);
+  }
+  return rows.flatMap((r) => {
+    const p = best.get(r.mint);
+    if (!p) return [];
+    return [{ mint: r.mint, symbol: p.symbol, name: p.name, icon: p.imageUrl, priceUsd: p.priceUsd, mcap: p.marketCap, change24h: p.change.h24, volume24h: p.volume24h, liquidity: p.liquidityUsd, buys: r.buys, buyers: r.users.length, pair: p }];
+  });
+}
+
+export async function coinList(kind: string): Promise<{ kind: ListKind; coins: ListCoin[] }> {
+  if (!(LIST_KINDS as readonly string[]).includes(kind)) throw new Error(`Unknown list "${kind}"`);
+  const k = kind as ListKind;
+  let coins: ListCoin[] = [];
+  if (k === "crypto") {
+    coins = (await jup("toporganicscore/24h?limit=100")).map(fromJup).filter((c) => notStable(c) && (c.liquidity ?? 0) > 100_000).sort((a, b) => b.mcap - a.mcap);
+  } else if (k === "trending") {
+    coins = (await jup("toptrending/1h?limit=100")).map(fromJup).filter(notStable);
+  } else if (k === "held") {
+    const lists = await Promise.all(["toporganicscore/24h?limit=100", "toptraded/24h?limit=100", "toptrending/24h?limit=100"].map((p) => jup(p).catch(() => [])));
+    const seen = new Map<string, ListCoin>();
+    for (const t of lists.flat()) if (t?.id && !seen.has(t.id)) seen.set(t.id, fromJup(t));
+    coins = [...seen.values()].filter((c) => notStable(c) && (c.holders ?? 0) > 0).sort((a, b) => (b.holders ?? 0) - (a.holders ?? 0));
+  } else if (k === "graduated") {
+    coins = await geckoPools("pumpswap");
+  } else if (k === "bonding") {
+    coins = await geckoPools("pump-fun");
+  } else {
+    coins = await community();
+  }
+  return { kind: k, coins: coins.slice(0, 50) };
+}

@@ -6,12 +6,12 @@ import { cachedJson } from "./data.js";
 const RPC = () => process.env.SOLANA_RPC_URL?.trim() || "https://api.mainnet-beta.solana.com";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-const WSOL = "So11111111111111111111111111111111111111112";
-const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+export const WSOL = "So11111111111111111111111111111111111111112";
+export const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
-const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+export const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-async function rpc<T>(method: string, params: unknown[]): Promise<T> {
+export async function rpc<T>(method: string, params: unknown[]): Promise<T> {
   const r = await fetch(RPC(), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -28,7 +28,7 @@ export type Holding = { mint: string; symbol: string; name: string; amount: numb
 export type WalletView = { address: string; holdings: Holding[]; totalUsd: number; updatedAt: number; rpc: "custom" | "public" };
 
 // Best (most liquid) DexScreener price per token mint, up to 30 mints per request.
-async function prices(mints: string[]) {
+export async function prices(mints: string[]) {
   const out = new Map<string, { priceUsd: number; symbol: string; name: string; imageUrl?: string; pool: string }>();
   for (let i = 0; i < mints.length; i += 30) {
     const chunk = mints.slice(i, i + 30);

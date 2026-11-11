@@ -49,7 +49,7 @@ const inflight = new Map<string, Promise<unknown>>();
 
 // GeckoTerminal's free tier allows ~30 calls/min, so space its calls out.
 // CoinMarketCap's keyless API refused after ~1 request/second in testing (recovers in ~16s).
-const GAP_MS: Record<string, number> = { "api.geckoterminal.com": 2200, "api.dexscreener.com": 250, "pro-api.coinmarketcap.com": 1100 };
+const GAP_MS: Record<string, number> = { "api.geckoterminal.com": 2200, "api.dexscreener.com": 250, "api.jup.ag": 2100, "pro-api.coinmarketcap.com": 1100 };
 const COOLDOWN_MS: Record<string, number> = { "pro-api.coinmarketcap.com": 15_000 };
 const nextSlot = new Map<string, number>();
 async function throttle(host: string) {
@@ -115,7 +115,7 @@ const rememberToken = (p: PairInfo) => {
   return p;
 };
 
-function fromDexScreener(p: any): PairInfo {
+export function fromDexScreener(p: any): PairInfo {
   return {
     chain: p.chainId,
     pool: p.pairAddress,
@@ -344,7 +344,7 @@ export async function getCandles(chain: string, pool: string, tf: Timeframe, lim
 const GT_TO_CHAIN: Record<string, string> = Object.fromEntries(Object.entries(GT_NETWORK).map(([c, n]) => [n, c]));
 export const SCAN_CHAINS = ["all", "solana", "base", "ethereum", "bsc"] as const;
 
-function fromGeckoPool(d: any): PairInfo | null {
+export function fromGeckoPool(d: any): PairInfo | null {
   const a = d.attributes;
   const net: string = d.relationships?.network?.data?.id ?? String(d.id ?? "").split("_")[0];
   const chain = GT_TO_CHAIN[net];

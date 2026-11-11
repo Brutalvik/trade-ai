@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
+import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
 import { WalletButton } from "./Wallet";
+import { CoinList } from "./CoinList";
 import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
-import { saveAnalysis, saveChart, saveScan, saveState, saveUi, savedAnalysis, savedChart, savedScan, savedState, savedUi, type SavedAnalysis } from "./persist";
+import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -71,7 +72,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<SavedAnalysis | null>(() => { const p = savedUi().pair; return (p && savedAnalysis(p.pool)) || null; });
   const gotAnalysis = useCallback((a: Analysis) => setAnalysis(saveAnalysis(a.pair.pool, a)), []);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
-  const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log">(() => { const t = savedUi().tab; return t && t !== "wallet" ? (t as "scanner" | "newcoins" | "positions" | "trades" | "log") : "scanner"; });
+  const [tab, setTab] = useState<"positions" | "trades" | "log">(() => { const t = savedUi().tab; return t === "trades" || t === "log" ? t : "positions"; });
   useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
   useEffect(() => { if (state) saveState(state); }, [state]);
   // Chart maximize: fills the window; Esc (or the button) brings it back.
@@ -206,6 +207,10 @@ export default function App() {
       )}
 
       <main className="layout">
+        <aside className="panel coin-side" aria-label="Coin lists">
+          <CoinList onSelect={selectPair} selectedMint={pair?.tokenAddress} notify={notify} />
+        </aside>
+
         <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`}>
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
           {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
@@ -229,27 +234,26 @@ export default function App() {
           </div>
         </section>
 
-        <aside className="side">
-          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running && state.bot.config ? (state.bot.config.allowRisky ? Math.min(state.bot.config.minConfidence, state.bot.config.riskyMinWin ?? 30) : state.bot.config.minConfidence) : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
+        <aside className="side right">
           {me?.tradeMode === "real" ? <RealModeNotice what="trade" /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-        </aside>
-
-        <aside className="side">
+          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running && state.bot.config ? (state.bot.config.allowRisky ? Math.min(state.bot.config.minConfidence, state.bot.config.riskyMinWin ?? 30) : state.bot.config.minConfidence) : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={!!state?.bot.running} /> : <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
-          <GoalLadder state={state} />
         </aside>
 
         <section className="panel bottom">
           <div className="tabs">
-            {(["scanner", "newcoins", "positions", "trades", "log"] as const).map((t) => (
+            {(["positions", "trades", "log"] as const).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {t === "scanner" ? "⚡ Opportunities" : t === "newcoins" ? "🚀 New coins" : t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
+                {t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
               </button>
             ))}
           </div>
-          {tab === "scanner" && <Scanner onSelect={selectPair} notify={notify} tf={tf} />}
-          {tab === "newcoins" && <NewCoins onSelect={selectPair} />}
-          {tab === "positions" && <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} />}
+          {tab === "positions" && (
+            <>
+              <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} />
+              <GoalLadder state={state} />
+            </>
+          )}
           {tab === "trades" && <Trades state={state} />}
           {tab === "log" && <BotLog state={state} />}
         </section>
@@ -1439,136 +1443,6 @@ const CHAIN_TABS: { id: ScanChain; label: string }[] = [
   { id: "bsc", label: "BSC" },
 ];
 
-function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; notify: (m: string, bad?: boolean) => void; tf: Timeframe }) {
-  const access = useAccess();
-  const [chain, setChain] = useState<ScanChain>(() => (savedUi().scanChain as ScanChain) ?? "all");
-  const [data, setData] = useState<ScanResult | null>(() => savedScan(savedUi().scanChain ?? "all") ?? null);
-  const [err, setErr] = useState("");
-  const [ai, setAi] = useState<Record<string, Analysis["consensus"] | "loading">>({});
-
-  const load = (c = chain) => {
-    saveUi({ scanChain: c });
-    setData(savedScan(c) ?? null); // last list for this chain shows instantly, then refreshes
-    setErr("");
-    const got = (r: ScanResult) => {
-      setData(r);
-      saveScan(c, r);
-    };
-    api.scan(c).then(got).catch(() => setTimeout(() => api.scan(c).then(got).catch((e) => setErr(e.message)), 8000));
-  };
-  useEffect(() => load(chain), [chain]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const askClaude = async (p: PairInfo) => {
-    setAi((m) => ({ ...m, [p.pool]: "loading" }));
-    try {
-      const r = await api.analyze(p.chain, p.pool, tf);
-      saveAnalysis(p.pool, r); // opening this coin later shows the same plan, no new call
-      setAi((m) => ({ ...m, [p.pool]: r.consensus }));
-    } catch (e: any) {
-      setAi((m) => {
-        const { [p.pool]: _, ...rest } = m;
-        return rest;
-      });
-      notify(e.message, true);
-    }
-  };
-
-  return (
-    <div className="table-wrap">
-      <div className="chain-tabs">
-        {CHAIN_TABS.map((t) => (
-          <button key={t.id} className={`chip ${chain === t.id ? "on" : ""}`} onClick={() => setChain(t.id)}>{t.label}</button>
-        ))}
-        <button className="chip" onClick={() => load()}>↻ Rescan</button>
-      </div>
-      <div className="scan-head muted small">
-        {data?.source === "boosted" ? (
-          <span className="warn">Trending data is busy, so this list shows tokens <b>promoted (paid) on DexScreener</b>. Be extra careful.</span>
-        ) : (
-          <span>Top trending coins with a quick plan from their live trading stats (free, no AI). Click <b>Ask AI</b> for a proper plan before buying.</span>
-        )}
-      </div>
-      {err && <p className="down small pad">{err}</p>}
-      {!data && !err && <p className="muted small pad">Scanning trending coins…</p>}
-      {data && !data.rows.length && <p className="muted small pad">No coins with enough liquidity right now. Try another chain.</p>}
-      {data && data.rows.length > 0 && (
-        <table className="scan">
-          <thead>
-            <tr>
-              <th className="col-coin">Coin</th>
-              <th className="num">Price</th>
-              <th className="num hide-sm">1h</th>
-              <th className="num hide-sm">24h</th>
-              <th className="col-signal">Signal</th>
-              <th className="num" title="Buy only at or below this price">Buy below</th>
-              <th className="num" title="Sell for profit at this price">Sell at</th>
-              <th className="num hide-sm" title="Get out if price falls below this">Exit if below</th>
-              <th className="hide-sm" title="Buy before this time, sell by this time">When</th>
-              <th className="col-action" />
-            </tr>
-          </thead>
-          <tbody>
-            {data.rows.map(({ pair, plan }) => {
-              const a = ai[pair.pool];
-              const go = plan?.verdict === "BUY ZONE";
-              return (
-                <tr key={pair.pool} onClick={() => onSelect(pair)}>
-                  <td>
-                    <b>{pair.symbol}</b>
-                    <div className="muted tiny">{pair.chain} · liq {fmtBig(pair.liquidityUsd)}</div>
-                  </td>
-                  <td className="mono num">{fmtPrice(pair.priceUsd)}</td>
-                  <td className={`num hide-sm ${pair.change.h1 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h1)}</td>
-                  <td className={`num hide-sm ${pair.change.h24 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h24)}</td>
-                  <td className="col-signal" title={plan?.why}>
-                    {a && a !== "loading" ? (
-                      <span className={`tag ${a.stance === "BUY_NOW" ? "buy" : a.stance === "AVOID" ? "sell" : "hold"}`}>AI: {STANCE_LABEL[a.stance ?? "AVOID"]} {a.confidence}%</span>
-                    ) : (
-                      <span className={`tag ${go ? "buy" : plan?.verdict === "AVOID" ? "sell" : "hold"}`}>{plan?.verdict ?? "DATA BUSY"}</span>
-                    )}
-                    <div className="muted tiny why">{a && a !== "loading" ? a.note : plan?.why}</div>
-                  </td>
-                  {a && a !== "loading" && a.orders?.length > 0 ? (
-                    <>
-                      <td className="mono num up">{a.orders[0].kind === "buy_breakout" ? "above " : ""}{fmtPrice(a.orders[0].triggerPrice)}</td>
-                      <td className="mono num up">{fmtPrice(a.orders[0].target)}<div className="muted tiny">then trails</div></td>
-                      <td className="mono num down hide-sm">{fmtPrice(a.orders[0].stopLoss)}</td>
-                      <td className="hide-sm small">plan valid until {fmtTime(a.expiresAt)}{a.orders.length > 1 ? <><br />+1 more order</> : null}</td>
-                    </>
-                  ) : go && plan && !(a && a !== "loading") ? (
-                    <>
-                      <td className="mono num">{fmtPrice(plan.buyBelow)}</td>
-                      <td className="mono num up">{fmtPrice(plan.sellAt)}<div className="muted tiny">+{plan.netGainPct.toFixed(1)}% after fees</div></td>
-                      <td className="mono num down hide-sm">{fmtPrice(plan.exitBelow)}</td>
-                      <td className="hide-sm small">buy by {fmtTime(plan.buyBy)}<br />sell by {fmtTime(plan.sellBy)}</td>
-                    </>
-                  ) : (
-                    <>
-                      <td className="num empty-cell" title={a && a !== "loading" ? "AI: no orders worth placing now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask AI." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}>–</td>
-                      <td className="num empty-cell">–</td>
-                      <td className="num empty-cell hide-sm">–</td>
-                      <td className="empty-cell hide-sm">{a && a !== "loading" ? "No orders now" : !plan ? "Data busy" : plan.verdict === "AVOID" ? "Don't buy" : "Wait"}</td>
-                    </>
-                  )}
-                  <td className="col-action" onClick={(e) => e.stopPropagation()}>
-                    {access.can("ai.analyze") ? (
-                      <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask AI"}</button>
-                    ) : (
-                      <LockChip label="Ask AI" />
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-      <p className="muted tiny pad">Quick plans are chart estimates, not predictions. Prices can move against any plan, especially on small coins.</p>
-    </div>
-  );
-}
-
-// Plain names for the dashed price lines on the chart (shown in the legend under it).
 const LINE_NAME: Record<string, string> = {
   BOUGHT: "Bought at",
   EXIT: "Stop-loss",
@@ -1591,66 +1465,6 @@ const LINE_HELP: Record<string, string> = {
   "LIMIT BUY": "Your limit buy: fills automatically if the price falls to this line.",
   "LIMIT SELL": "Your limit sell: fills automatically if the price rises to this line.",
 };
-
-const RISK_TONE: Record<string, string> = { LOW: "buy", MEDIUM: "hold", HIGH: "sell", REJECTED: "sell" };
-
-function NewCoins({ onSelect }: { onSelect: (p: PairInfo) => void }) {
-  const [chain, setChain] = useState<"solana" | "base">(() => (savedUi().newChain as "solana" | "base") ?? "solana");
-  const [list, setList] = useState<NewCoin[] | null>(null);
-  const [err, setErr] = useState("");
-  const [showRejected, setShowRejected] = useState(false);
-  const load = (c = chain) => {
-    saveUi({ newChain: c });
-    setList(null);
-    setErr("");
-    api.newcoins(c).then(setList).catch((e) => setErr(e.message));
-  };
-  useEffect(() => load(chain), [chain]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shown = (list ?? []).filter((c) => showRejected || c.risk !== "REJECTED");
-  const rejected = (list ?? []).filter((c) => c.risk === "REJECTED").length;
-  return (
-    <div className="table-wrap">
-      <div className="chain-tabs">
-        {(["solana", "base"] as const).map((c) => (
-          <button key={c} className={`chip ${chain === c ? "on" : ""}`} onClick={() => setChain(c)}>{c === "solana" ? "Solana" : "Base"}</button>
-        ))}
-        <button className="chip" onClick={() => load()}>↻ Rescan</button>
-        {rejected > 0 && <button className="chip" onClick={() => setShowRejected((v) => !v)}>{showRejected ? "Hide" : "Show"} {rejected} rejected</button>}
-      </div>
-      <div className="scan-head muted small">
-        Coins from minutes to 3 days old, checked for rug-pull signs ({chain === "solana" ? "RugCheck" : "honeypot.is"}). Open a coin to see its chart, get the AI's plan and trade it like any other coin; avoid Rejected and High-risk ones. Very high risk: most new coins fail.
-      </div>
-      {err && <p className="down small pad">{err}</p>}
-      {!list && !err && <p className="muted small pad">Scanning new coins and running safety checks…</p>}
-      {list && !shown.length && <p className="muted small pad">No new coins worth showing right now.</p>}
-      {shown.length > 0 && (
-        <table className="scan">
-          <thead>
-            <tr><th>Coin</th><th>Age</th><th>Liquidity</th><th className="hide-sm">Price</th><th>1h</th><th className="hide-sm">Buys</th><th>Risk</th><th>Why</th><th /></tr>
-          </thead>
-          <tbody>
-            {shown.map((c) => (
-              <tr key={c.pair.pool} onClick={() => onSelect(c.pair)} className={c.tradeable ? "tradeable" : ""}>
-                <td><b>{c.pair.symbol}</b><div className="muted tiny">{c.pair.dex}</div></td>
-                <td>{c.ageMin < 60 ? `${c.ageMin}m` : c.ageMin < 1440 ? `${Math.round(c.ageMin / 60)}h` : `${Math.round(c.ageMin / 1440)}d`}</td>
-                <td>{fmtBig(c.pair.liquidityUsd)}</td>
-                <td className="mono hide-sm">{fmtPrice(c.pair.priceUsd)}</td>
-                <td className={c.pair.change.h1 >= 0 ? "up" : "down"}>{fmtPct(c.pair.change.h1)}</td>
-                <td className="hide-sm">{c.buyShare === null ? "–" : `${Math.round(c.buyShare * 100)}%`}</td>
-                <td>
-                  <span className={`tag ${RISK_TONE[c.risk]}`}>{c.risk}</span>
-                  {c.tradeable && <div className="tiny up">fits entry rules</div>}
-                </td>
-                <td className="why small">{c.reasons.length ? c.reasons.slice(0, 3).join(" · ") : "No red flags found"}</td>
-                <td><button className="chip">Open →</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
-}
 
 function OpenOrders({ state, notify, refresh }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
   const orders = state?.orders ?? [];

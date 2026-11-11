@@ -11,6 +11,7 @@ import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type 
 import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
+import { noteCommunityBuy } from "./lists.js";
 
 export type Position = {
   id: string;
@@ -403,6 +404,13 @@ function rec(type: AuditType, summary: string, data?: Record<string, unknown>) {
   const key = a.key;
   a.pending = a.pending.then(() => audit(key, type, summary, data)).catch(() => {});
 }
+// Community list: count this account's buy of a Solana coin (queued like the audit writes).
+function noteCommunity(pair: PairInfo) {
+  const a = acct();
+  if (!a.key) return;
+  const key = a.key;
+  a.pending = a.pending.then(() => noteCommunityBuy(key, pair)).catch(() => {});
+}
 function recTrade(t: Trade) {
   const a = acct();
   if (!a.key) return;
@@ -489,6 +497,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, platformFeeUsd, reason, source };
   state.trades.unshift(t);
   recTrade(t);
+  noteCommunity(pair);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES; // keep the newest only
   recordEquity();
   save();

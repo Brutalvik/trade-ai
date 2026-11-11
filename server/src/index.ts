@@ -13,6 +13,8 @@ import * as auth from "./auth.js";
 import * as history from "./audit.js";
 import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
+import * as live from "./live.js";
+import { coinList } from "./lists.js";
 import { can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
@@ -77,6 +79,8 @@ app.get("/api/scan", wrap(async (req) => scanOpportunities(String(req.query.chai
 
 // New coins: young pools with a rug-risk score (Solana via RugCheck, Base via honeypot.is).
 app.get("/api/newcoins", wrap(async (req) => scanNewCoins(String(req.query.chain ?? "solana") as NewCoinChain)));
+// Left sidebar coin lists (Solana): crypto, trending, held, graduated, bonding, community.
+app.get("/api/lists/:kind", wrap(async (req) => coinList(String(req.params.kind))));
 
 // RBAC: a route needs a signed-in user, and optionally a permission from their plan / role.
 const NEEDS: Record<Permission, string> = {
@@ -107,6 +111,25 @@ app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
 // Permanent history: your activity (consents, bot, AI use, account) and every trade.
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
 // Your real Solana wallet (read-only): SOL and token balances with USD values.
+// Real trades from the user's own wallet (Jupiter): quote -> user signs in the browser -> execute.
+const realUser = (a: NonNullable<Awaited<ReturnType<typeof auth.requestAuth>>>) => ({ key: a.key, plan: a.plan, solanaAddress: a.user.solanaAddress, tradeMode: a.user.tradeMode });
+app.post("/api/real/quote", needs("trade.manual", async (req, res) => {
+  try {
+    res.json(await live.realQuote(realUser((await auth.requestAuth(req))!), req.body));
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message ?? String(e) });
+  }
+}));
+app.post("/api/real/execute", needs("trade.manual", async (req, res) => {
+  try {
+    res.json(await live.realExecute(realUser((await auth.requestAuth(req))!), req.body));
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message ?? String(e) });
+  }
+}));
+app.get("/api/real/trades", signedIn(async (req, res) => {
+  res.json(await live.realTrades((await auth.requestAuth(req))!.key, num(req.query.limit, 50)));
+}));
 app.get("/api/wallet", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;
   const address = a.user.solanaAddress;

@@ -594,3 +594,41 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .paper-stats small { display: block; font-size: 11px; letter-spacing: 0.5px; color: var(--muted); }
 .paper-stats b { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 15px; color: var(--text); }
 @media (max-width: 640px) { .paper-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ===== Three-column layout: coin lists | chart + positions | trade, AI, bot ===== */
+.layout { grid-template-columns: 300px minmax(0, 1fr) 360px; grid-template-areas: "list chart right" "list bottom right"; align-items: start; }
+.layout > .coin-side { grid-area: list; }
+.layout > .side.right { grid-area: right; }
+.layout > .panel.bottom { grid-area: bottom; }
+.coin-side { position: sticky; top: 76px; height: calc(100vh - 90px); max-height: 1100px; padding: 12px 10px; display: flex; flex-direction: column; }
+.coin-side-inner { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.coin-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px; }
+.coin-chips button { padding: 6px 11px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.coin-chips button:hover { color: var(--text); }
+.coin-chips button.on { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.28); color: var(--text); }
+.coin-chips button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.coin-hint { margin: 8px 4px 4px; }
+.coin-rows { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 0 2px; }
+.coin-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; padding: 9px 8px; border: 0; border-radius: 12px; background: none; color: var(--text); text-align: left; cursor: pointer; }
+.coin-row:hover { background: rgba(255, 255, 255, 0.045); }
+.coin-row.on { background: rgba(0, 229, 255, 0.09); box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.25); }
+.coin-row:disabled { opacity: 0.6; cursor: wait; }
+.coin-row img, .coin-dot { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; background: rgba(255, 255, 255, 0.06); }
+.coin-dot { display: grid; place-items: center; font-weight: 700; color: var(--muted); }
+.coin-id { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.coin-id b { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coin-id .muted, .coin-nums span { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11.5px; }
+.coin-nums { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; white-space: nowrap; }
+.coin-nums b { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; }
+.coin-nums small { font-size: 10.5px; }
+
+/* Tablet: chart + trade column, lists and positions below */
+@media (max-width: 1180px) {
+  .layout { grid-template-columns: minmax(0, 1fr) 340px; grid-template-areas: "chart right" "bottom right" "list list"; }
+  .coin-side { position: static; height: 560px; }
+}
+/* Phone: one column, trading right after the chart */
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; grid-template-areas: "chart" "right" "list" "bottom"; }
+  .coin-side { height: 520px; }
+}
