@@ -52,7 +52,10 @@ app.get(
     const r = await getCandlesWithSource(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m");
     res.setHeader("X-Candle-Source", r.source);
     if (r.note) res.setHeader("X-Candle-Note", r.note);
-    return r.candles;
+    // One candle per time, oldest first (sources can overlap when merged from a cache).
+    const byTime = new Map<number, (typeof r.candles)[number]>();
+    for (const c of r.candles) byTime.set(c.time, c);
+    return [...byTime.values()].sort((a, b) => a.time - b.time);
   }),
 );
 

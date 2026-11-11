@@ -4,6 +4,18 @@ import type { Candle, Trade } from "./api";
 
 export type ChartLine = { price: number; color: string; title: string };
 
+// The chart library throws (and blanks the page) on out-of-order or repeated times,
+// which can happen when candles from two sources or a cache get merged. Sort and keep
+// the latest candle for each time. O(n) when already ordered, which is the usual case.
+function orderedCandles(c: Candle[]): Candle[] {
+  let ok = true;
+  for (let i = 1; i < c.length && ok; i++) ok = c[i].time > c[i - 1].time;
+  if (ok) return c;
+  const byTime = new Map<number, Candle>();
+  for (const x of c) byTime.set(x.time, x);
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
 function emaLine(c: Candle[], period: number) {
   const k = 2 / (period + 1);
   let prev = c[0]?.close ?? 0;
@@ -55,6 +67,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
 
   useEffect(() => {
     if (!s.current || !candles.length) return;
+    candles = orderedCandles(candles);
     const prec = precisionFor(candles.at(-1)!.close);
     const pf = { type: "price" as const, precision: prec, minMove: Math.pow(10, -prec) };
     s.current.candle.applyOptions({ priceFormat: pf });
