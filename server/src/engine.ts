@@ -105,6 +105,21 @@ export type BotConfig = {
 // true = it keeps trading round after round until you stop it.
 export type Settings = { feePct: number; slippagePct: number; continuous?: boolean };
 
+// A limit order you set by hand: buy when the price falls to `price`, or sell (part of)
+// a manual position when it rises to `price`. Checked every 5 seconds, even with the bot off.
+export type LimitOrder = {
+  id: string;
+  side: "BUY" | "SELL";
+  chain: string;
+  pool: string;
+  symbol: string;
+  price: number;
+  usd?: number; // BUY: how much to spend
+  positionId?: string; // SELL: which position
+  fraction?: number; // SELL: share of it to sell (0.25 / 0.5 / 1)
+  createdAt: number;
+};
+
 type State = {
   mode: "paper";
   startCash: number;
@@ -114,6 +129,7 @@ type State = {
   trades: Trade[];
   equity: { t: number; v: number }[];
   settings: Settings;
+  orders: LimitOrder[];
   bot: {
     running: boolean;
     config: BotConfig | null;
@@ -157,6 +173,7 @@ function fresh(startCash = 10): State {
     trades: [],
     equity: [{ t: Date.now(), v: startCash }],
     settings: { feePct: 1.0, slippagePct: 0.5 },
+    orders: [],
     bot: { running: false, config: null, lastAnalysisAt: 0, lastTickAt: 0, armedSince: [], askNow: false, skipNoted: [], startedAt: null, stoppedAt: null, coinStats: {}, day: null, blocked: null, lastWatch: null, noted: {}, target: null, candidates: [], log: [] },
     lastSignal: null,
   };
@@ -171,6 +188,7 @@ function migrate(s: State): State {
   s.bot.armedSince ??= [];
   s.bot.askNow ??= false;
   s.bot.skipNoted ??= [];
+  s.orders ??= [];
   // Bots started before start/stop times were saved: recover them from the log.
   // (The defaults above already filled these with null, so check for null, not undefined.)
   s.bot.startedAt ??= s.bot.log.find((l) => l.msg.startsWith("Bot started"))?.t ?? null;
@@ -317,7 +335,10 @@ export function sell(positionId: string, price: number, fraction: number, reason
   state.cash += net;
   p.qty -= qty;
   p.costUsd -= costPart;
-  if (f >= 0.999 || p.qty * price < 0.01) state.positions = state.positions.filter((x) => x.id !== p.id);
+  if (f >= 0.999 || p.qty * price < 0.01) {
+    state.positions = state.positions.filter((x) => x.id !== p.id);
+    state.orders = (state.orders ?? []).filter((o) => o.positionId !== p.id); // its limit sells go with it
+  }
   else p.realizedUsd = (p.realizedUsd ?? 0) + (net - costPart);
   const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, reason, source: p.source };
   state.trades.unshift(t);
@@ -1020,7 +1041,8 @@ export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dash
 }
 
 // ---------- "Protect this trade" (manual positions) ----------
-const hasProtected = () => state.positions.some((p) => p.protectPct);
+// Anything to watch with the bot off: protected manual trades or open limit orders.
+const hasProtected = () => state.positions.some((p) => p.protectPct) || (state.orders?.length ?? 0) > 0;
 let guarding = false;
 
 export async function protectPosition(positionId: string, pct: number) {
@@ -1048,6 +1070,8 @@ export async function protectPosition(positionId: string, pct: number) {
 // Checks every protected manual position: raises its high, sells on a pullback.
 export async function guardProtected() {
   if (guarding || !hasProtected()) return;
+  await checkLimitOrders();
+  if (!state.positions.some((p) => p.protectPct)) return;
   guarding = true;
   let changed = false;
   try {
@@ -1074,6 +1098,95 @@ export async function guardProtected() {
     guarding = false;
     if (changed) save();
   }
+}
+
+// ---------- Limit orders (manual) ----------
+
+const MAX_ORDERS = 10;
+
+export function placeOrder(body: { side?: string; chain?: string; pool?: string; symbol?: string; price?: number; usd?: number; positionId?: string; fraction?: number }) {
+  const side = body.side === "SELL" ? "SELL" : body.side === "BUY" ? "BUY" : null;
+  const price = Number(body.price);
+  if (!side) throw new Error("Choose buy or sell");
+  if (!(price > 0)) throw new Error("Enter a price above 0");
+  if (state.orders.length >= MAX_ORDERS) throw new Error(`You can have up to ${MAX_ORDERS} open orders. Cancel one first.`);
+  let o: LimitOrder;
+  if (side === "BUY") {
+    const usd = Math.floor(Number(body.usd) * 100) / 100;
+    if (!(usd >= 1)) throw new Error("Enter at least $1 to buy");
+    if (usd > state.cash + 0.005) throw new Error(`Not enough cash (you have $${state.cash.toFixed(2)})`);
+    if (!body.chain || !body.pool) throw new Error("Pick a coin first");
+    o = { id: uid(), side, chain: body.chain, pool: body.pool, symbol: String(body.symbol ?? "?"), price, usd, createdAt: Date.now() };
+  } else {
+    const p = state.positions.find((x) => x.id === body.positionId);
+    if (!p) throw new Error("You don't hold this coin");
+    if (p.source !== "manual") throw new Error("The bot manages its own trades");
+    const fraction = Math.min(1, Math.max(0.01, Number(body.fraction ?? 1)));
+    o = { id: uid(), side, chain: p.chain, pool: p.pool, symbol: p.symbol, price, positionId: p.id, fraction, createdAt: Date.now() };
+  }
+  state.orders.push(o);
+  log(`Limit ${side === "BUY" ? `buy: $${o.usd!.toFixed(2)} of ${o.symbol} if it falls to ${fmt(price)}` : `sell: ${Math.round(o.fraction! * 100)}% of ${o.symbol} if it rises to ${fmt(price)}`}.`);
+  save();
+  return o;
+}
+
+export function cancelOrder(id: string) {
+  const o = state.orders.find((x) => x.id === id);
+  if (!o) throw new Error("Order not found (it may have just filled)");
+  state.orders = state.orders.filter((x) => x.id !== id);
+  log(`Cancelled limit ${o.side === "BUY" ? "buy" : "sell"} on ${o.symbol} at ${fmt(o.price)}.`);
+  save();
+  return { ok: true };
+}
+
+// Fill any limit order whose price was touched since it was placed (or since the last check).
+// Buys fill at the limit or lower, sells at the limit or higher, like real limit orders.
+async function checkLimitOrders() {
+  if (!state.orders.length) return;
+  const byPool = new Map<string, LimitOrder[]>();
+  for (const o of state.orders) byPool.set(`${o.chain}:${o.pool}`, [...(byPool.get(`${o.chain}:${o.pool}`) ?? []), o]);
+  for (const list of byPool.values()) {
+    const since = Math.max(Date.now() - 60_000, Math.min(...list.map((o) => o.createdAt)));
+    let q: Quote;
+    try {
+      q = await quote(list[0].chain, list[0].pool, since);
+    } catch {
+      continue; // price unavailable right now: try again next check
+    }
+    for (const o of list) {
+      if (!state.orders.some((x) => x.id === o.id)) continue;
+      if (o.side === "BUY" && q.low <= o.price) {
+        const usd = Math.floor(Math.min(o.usd ?? 0, state.cash) * 100) / 100;
+        state.orders = state.orders.filter((x) => x.id !== o.id);
+        if (usd < 1) {
+          log(`Limit buy on ${o.symbol} at ${fmt(o.price)} cancelled: not enough cash.`, "bad");
+          alert(`⚠️ Limit buy on ${o.symbol} cancelled: not enough cash.`);
+          continue;
+        }
+        const t = buy({ ...q.pair, priceUsd: Math.min(o.price, q.price) }, usd, "manual", `Limit buy at ${fmt(o.price)}`);
+        t.auto = true;
+        log(`LIMIT BUY ${o.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (your limit ${fmt(o.price)}).`, "good");
+        alert(`🟢 Limit buy filled: ${o.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)}. Account $${equity().toFixed(2)}.`);
+      } else if (o.side === "SELL") {
+        const p = state.positions.find((x) => x.id === o.positionId);
+        if (!p) {
+          state.orders = state.orders.filter((x) => x.id !== o.id);
+          log(`Limit sell on ${o.symbol} removed: the position is already closed.`);
+          continue;
+        }
+        if (q.high >= o.price) {
+          state.orders = state.orders.filter((x) => x.id !== o.id);
+          const t = sell(p.id, Math.max(o.price, q.price), o.fraction ?? 1, `Limit sell at ${fmt(o.price)}`);
+          t.auto = true;
+          log(`LIMIT SELL ${o.symbol} ${Math.round((o.fraction ?? 1) * 100)}% @ ${fmt(t.price)} (your limit ${fmt(o.price)}). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+          alert(`${t.pnlUsd! >= 0 ? "✅" : "🔻"} Limit sell filled: ${o.symbol} @ ${fmt(t.price)}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}. Account $${equity().toFixed(2)}.`);
+          // Other sell orders on the same position may no longer fit what's left: they stay, and
+          // sell their share of whatever remains.
+        }
+      }
+    }
+  }
+  save();
 }
 
 // Emergency stop: sell everything and switch off if equity falls below the limit.

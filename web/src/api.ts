@@ -54,6 +54,7 @@ export type AppState = {
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
   storage: Status["storage"];
+  orders?: LimitOrder[]; // open limit buys / sells
   signedOut?: boolean; // true = not signed in as the account owner: an empty $0 view
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean } | null;
 };
@@ -64,6 +65,7 @@ export type NewCoin = { pair: PairInfo; ageMin: number; risk: NewCoinRisk; reaso
 export type ScanResult = { source: "trending" | "boosted"; chain: ScanChain; rows: { pair: PairInfo; snap: Snapshot | null; plan: Plan | null }[] };
 // Older saved logs, trades and plans may still name the model; show "AI" instead.
 export const aiText = (s: string) => s.replace(/\bClaude plan: /g, "AI plan: ").replace(/\bClaude \([^)]*\)/g, "AI").replace(/\bClaude's\b/g, "the AI's").replace(/\bClaude\b/g, "AI");
+export type LimitOrder = { id: string; side: "BUY" | "SELL"; chain: string; pool: string; symbol: string; price: number; usd?: number; positionId?: string; fraction?: number; createdAt: number };
 export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
 
@@ -92,6 +94,8 @@ export const api = {
   sell: (chain: string, pool: string, positionId: string, fraction: number) => req("/trade", { side: "SELL", chain, pool, positionId, fraction }),
   settings: (s: { feePct?: number; slippagePct?: number; continuous?: boolean }) => req("/settings", s),
   me: () => req<{ user: User | null }>("/auth/me"),
+  placeOrder: (b: { side: "BUY" | "SELL"; chain?: string; pool?: string; symbol?: string; price: number; usd?: number; positionId?: string; fraction?: number }) => req<LimitOrder>("/orders", b),
+  cancelOrder: (id: string) => req("/orders/cancel", { id }),
   signIn: (b: { login: string; password: string }) => req<{ user: User }>("/auth/signin", b),
   signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),
   signOut: () => req("/auth/signout", {}),

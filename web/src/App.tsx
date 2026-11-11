@@ -93,7 +93,7 @@ export default function App() {
   // On Vercel nothing runs between requests, so while this page is open it nudges
   // the bot every 20 s (the server only does work when a step is actually due).
   const botRunning = state?.bot.running ?? false;
-  const anyProtected = state?.positions.some((p) => p.protectPct) ?? false;
+  const anyProtected = (state?.positions.some((p) => p.protectPct) || (state?.orders?.length ?? 0) > 0) ?? false; // protected trades or limit orders to watch
   useInterval(() => {
     if (status?.serverless && (botRunning || anyProtected)) api.heartbeat().catch(() => {});
   }, 20_000, [status?.serverless, botRunning, anyProtected]);
@@ -120,7 +120,11 @@ export default function App() {
   const results = shownPlan?.results;
   const botOnThisCoin = !!(state?.bot.running && state.bot.config?.pool === pair?.pool && state.bot.config?.pick === "this");
   // Chart lines: the bot's open trade on this coin, otherwise Claude's standing orders.
-  const lines = useMemo<ChartLine[]>(() => {
+  const orderLines = useMemo<ChartLine[]>(
+    () => (state?.orders ?? []).filter((x) => x.pool === pair?.pool).map((x) => ({ price: x.price, color: x.side === "BUY" ? "#7cf7ff" : "#ffb86b", title: x.side === "BUY" ? "LIMIT BUY" : "LIMIT SELL" })),
+    [state?.orders, pair?.pool],
+  );
+  const planLines = useMemo<ChartLine[]>(() => {
     const guarded = state?.positions.find((p) => p.pool === pair?.pool && p.source === "manual" && p.protectPct && p.peak);
     if (guarded)
       return [
@@ -141,6 +145,7 @@ export default function App() {
     out.push({ price: sig.orders[0].target, color: "#00f5a0", title: "TARGET" }, { price: sig.orders[0].stopLoss, color: "#ff3d71", title: "EXIT" });
     return out;
   }, [state?.positions, pair?.pool, sig]);
+  const lines = useMemo(() => [...planLines, ...orderLines], [planLines, orderLines]);
   const pairTrades = useMemo(() => (state?.trades ?? []).filter((t) => t.pool === pair?.pool), [state?.trades, pair?.pool]);
 
   return (
@@ -635,55 +640,122 @@ function ProtectControl({ pos, notify, refresh, compact = false }: { pos: Positi
 }
 
 function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
+  const [tab, setTab] = useState<"buy" | "sell">("buy");
+  const [kind, setKind] = useState<"market" | "limit">("market");
   const [usd, setUsd] = useState("5");
+  const [limitPrice, setLimitPrice] = useState("");
+  const [sellShare, setSellShare] = useState(1);
   const pos = state?.positions.find((p) => p.pool === pair?.pool && p.source === "manual");
-  const buy = async () => {
-    if (!pair) return;
-    try {
-      await api.buy(pair.chain, pair.pool, Number(usd));
-      notify(`Bought ${fmtUsd(Number(usd))} of ${pair.symbol} (paper)`);
-      refresh();
-    } catch (e: any) {
-      notify(e.message, true);
-    }
-  };
-  const sell = async (f: number) => {
-    if (!pair || !pos) return;
-    try {
-      await api.sell(pair.chain, pair.pool, pos.id, f);
-      notify(`Sold ${f * 100}% of ${pair.symbol} (paper)`);
-      refresh();
-    } catch (e: any) {
-      notify(e.message, true);
-    }
-  };
   const cash = state?.cash ?? 0;
+  const live = pair?.priceUsd ?? 0;
+  const orders = (state?.orders ?? []).filter((o) => o.pool === pair?.pool);
+  const otherOrders = (state?.orders?.length ?? 0) - orders.length;
+  // Suggest a limit price whenever the coin or tab changes: buys 3% below the live price,
+  // sells 5% above it (you can type any price).
+  useEffect(() => setLimitPrice(live ? String(Number((live * (tab === "buy" ? 0.97 : 1.05)).toPrecision(4))) : ""), [pair?.pool, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const run = async (fn: () => Promise<unknown>, ok: string) => {
+    try {
+      await fn();
+      notify(ok);
+      refresh();
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
+  const lp = Number(limitPrice);
+  const diffPct = live && lp ? ((lp - live) / live) * 100 : 0;
+  const buyNow = () => pair && run(() => api.buy(pair.chain, pair.pool, Number(usd)), `Bought ${fmtUsd(Number(usd))} of ${pair.symbol} (paper)`);
+  const sellNow = (f: number) => pair && pos && run(() => api.sell(pair.chain, pair.pool, pos.id, f), `Sold ${f * 100}% of ${pair.symbol} (paper)`);
+  const limitBuy = () => pair && run(() => api.placeOrder({ side: "BUY", chain: pair.chain, pool: pair.pool, symbol: pair.symbol, price: lp, usd: Number(usd) }), `Limit buy set: ${fmtUsd(Number(usd))} of ${pair.symbol} at ${fmtPrice(lp)}`);
+  const limitSell = () => pos && run(() => api.placeOrder({ side: "SELL", positionId: pos.id, price: lp, fraction: sellShare }), `Limit sell set: ${sellShare * 100}% of ${pos.symbol} at ${fmtPrice(lp)}`);
+  const cancel = (id: string) => run(() => api.cancelOrder(id), "Order cancelled");
+
+  const priceBox = (
+    <div className="limit-row">
+      <label className="limit-price">
+        <span>{tab === "buy" ? "Buy when price falls to" : "Sell when price rises to"}</span>
+        <div className="amount">
+          <span>$</span>
+          <input type="number" min="0" step="any" value={limitPrice} onChange={(e) => setLimitPrice(e.target.value)} aria-label="Limit price" />
+        </div>
+      </label>
+      {live > 0 && lp > 0 && (
+        <small className={`limit-hint ${(tab === "buy" ? diffPct >= 0 : diffPct <= 0) ? "warn" : "muted"}`}>
+          {tab === "buy"
+            ? diffPct >= 0 ? "At or above the live price: it will buy right away." : `${Math.abs(diffPct).toFixed(1)}% below the live price (${fmtPrice(live)}).`
+            : diffPct <= 0 ? "At or below the live price: it will sell right away." : `${diffPct.toFixed(1)}% above the live price (${fmtPrice(live)}).`}
+        </small>
+      )}
+    </div>
+  );
+
   return (
     <div className="panel">
       <div className="panel-title"><span>MANUAL TRADE</span><span className="muted small">cash {fmtUsd(cash)}</span></div>
-      <div className="amount">
-        <span>$</span>
-        <input type="number" min="1" step="1" value={usd} onChange={(e) => setUsd(e.target.value)} />
-        {[25, 50, 100].map((p) => (
-          <button key={p} className="chip" onClick={() => setUsd(((cash * p) / 100).toFixed(2))}>{p}%</button>
-        ))}
+      <div className="trade-tabs" role="tablist">
+        <button role="tab" aria-selected={tab === "buy"} className={`buy ${tab === "buy" ? "on" : ""}`} onClick={() => setTab("buy")}>Buy</button>
+        <button role="tab" aria-selected={tab === "sell"} className={`sell ${tab === "sell" ? "on" : ""}`} onClick={() => setTab("sell")}>Sell{pos ? "" : ""}</button>
       </div>
-      <div className="row">
-        <button className="btn buy" onClick={buy} disabled={!pair}>BUY {pair?.symbol}</button>
-        <button className="btn sell" onClick={() => sell(1)} disabled={!pos}>SELL ALL</button>
+      <div className="kind-toggle" role="radiogroup" aria-label="Order type">
+        <button role="radio" aria-checked={kind === "market"} className={kind === "market" ? "on" : ""} onClick={() => setKind("market")}>Now</button>
+        <button role="radio" aria-checked={kind === "limit"} className={kind === "limit" ? "on" : ""} onClick={() => setKind("limit")}>At a price (limit)</button>
       </div>
-      {pos ? (
+
+      {tab === "buy" ? (
+        <>
+          <div className="amount">
+            <span>$</span>
+            <input type="number" min="1" step="1" value={usd} onChange={(e) => setUsd(e.target.value)} aria-label="Amount in dollars" />
+            {[25, 50, 100].map((p) => (
+              <button key={p} className="chip" onClick={() => setUsd(((cash * p) / 100).toFixed(2))}>{p}%</button>
+            ))}
+          </div>
+          {kind === "limit" && priceBox}
+          {kind === "market" ? (
+            <button className="btn buy wide" onClick={buyNow} disabled={!pair}>BUY {pair?.symbol}</button>
+          ) : (
+            <button className="btn buy wide" onClick={limitBuy} disabled={!pair || !(lp > 0)}>SET LIMIT BUY</button>
+          )}
+        </>
+      ) : !pos ? (
+        <p className="muted small">You don't hold {pair?.symbol ?? "this coin"}. Buy it first, then you can sell it now or set a limit sell.</p>
+      ) : (
         <>
           <div className="pos-mini">
             <span>Holding {pos.qty.toPrecision(4)} {pos.symbol}</span>
             <span className={pos.lastPrice >= pos.entryPrice ? "up" : "down"}>{fmtPct(((pos.lastPrice - pos.entryPrice) / pos.entryPrice) * 100)}</span>
-            <button className="chip" onClick={() => sell(0.5)}>Sell 50%</button>
+            <span className="muted small">bought {fmtPrice(pos.entryPrice)}</span>
           </div>
+          <div className="share-chips" role="radiogroup" aria-label="How much to sell">
+            {[0.25, 0.5, 1].map((f) => (
+              <button key={f} role="radio" aria-checked={sellShare === f} className={`chip ${sellShare === f ? "on" : ""}`} onClick={() => setSellShare(f)}>{f === 1 ? "All" : `${f * 100}%`}</button>
+            ))}
+          </div>
+          {kind === "limit" && priceBox}
+          {kind === "market" ? (
+            <button className="btn sell wide" onClick={() => sellNow(sellShare)}>SELL {sellShare === 1 ? "ALL" : `${sellShare * 100}%`}</button>
+          ) : (
+            <button className="btn sell wide" onClick={limitSell} disabled={!(lp > 0)}>SET LIMIT SELL</button>
+          )}
           <ProtectControl pos={pos} notify={notify} refresh={refresh} />
         </>
-      ) : (
-        <p className="muted small">Fees {state?.settings.feePct}% + slippage {state?.settings.slippagePct}% per side are simulated.</p>
       )}
+
+      {orders.length > 0 && (
+        <div className="open-orders">
+          <div className="label-sm">Open orders on {pair?.symbol}</div>
+          {orders.map((o) => (
+            <div key={o.id} className="open-order">
+              <span className={`tag ${o.side === "BUY" ? "buy" : "sell"}`}>LIMIT {o.side}</span>
+              <span className="small">{o.side === "BUY" ? `${fmtUsd(o.usd ?? 0)} at ${fmtPrice(o.price)}` : `${Math.round((o.fraction ?? 1) * 100)}% at ${fmtPrice(o.price)}`}</span>
+              <button className="chip" onClick={() => cancel(o.id)}>Cancel</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {otherOrders > 0 && <p className="muted tiny">{otherOrders} open order{otherOrders === 1 ? "" : "s"} on other coins (see Positions).</p>}
+      <p className="muted tiny">{kind === "limit" ? "Limit orders are checked every 5 seconds, even with the bot off, and you get a notification when one fills." : `Fees ${state?.settings.feePct}% + slippage ${state?.settings.slippagePct}% per side are simulated.`}</p>
     </div>
   );
 }
@@ -1289,6 +1361,8 @@ const LINE_NAME: Record<string, string> = {
   "PROTECT STOP": "Protection stop",
   "BUY BELOW": "Buy if it dips to",
   "BUY ABOVE": "Buy if it breaks above",
+  "LIMIT BUY": "Your limit buy",
+  "LIMIT SELL": "Your limit sell",
 };
 const LINE_HELP: Record<string, string> = {
   BOUGHT: "The price the open position was bought at.",
@@ -1298,6 +1372,8 @@ const LINE_HELP: Record<string, string> = {
   "PROTECT STOP": "Your manual trade sells if the price falls back to this line.",
   "BUY BELOW": "The AI's standing order: the bot buys if the price dips to this line.",
   "BUY ABOVE": "The AI's standing order: the bot buys if the price breaks above this line.",
+  "LIMIT BUY": "Your limit buy: fills automatically if the price falls to this line.",
+  "LIMIT SELL": "Your limit sell: fills automatically if the price rises to this line.",
 };
 
 const RISK_TONE: Record<string, string> = { LOW: "buy", MEDIUM: "hold", HIGH: "sell", REJECTED: "sell" };
@@ -1360,9 +1436,45 @@ function NewCoins({ onSelect }: { onSelect: (p: PairInfo) => void }) {
   );
 }
 
-function Positions({ state, notify, refresh }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
-  if (!state?.positions.length) return <p className="muted small pad">No open positions.</p>;
+function OpenOrders({ state, notify, refresh }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
+  const orders = state?.orders ?? [];
+  if (!orders.length) return null;
+  const cancel = async (id: string) => {
+    try {
+      await api.cancelOrder(id);
+      notify("Order cancelled");
+      refresh();
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
   return (
+    <div className="table-wrap">
+      <div className="label-sm pad">Open limit orders</div>
+      <table className="scan">
+        <thead><tr><th>Token</th><th>Order</th><th className="num">Price</th><th className="num">Amount</th><th className="hide-sm">Placed</th><th className="col-action" /></tr></thead>
+        <tbody>
+          {orders.map((o) => (
+            <tr key={o.id}>
+              <td><b>{o.symbol}</b></td>
+              <td><span className={`tag ${o.side === "BUY" ? "buy" : "sell"}`}>LIMIT {o.side}</span></td>
+              <td className="num mono">{fmtPrice(o.price)}</td>
+              <td className="num">{o.side === "BUY" ? fmtUsd(o.usd ?? 0) : `${Math.round((o.fraction ?? 1) * 100)}%`}</td>
+              <td className="hide-sm muted">{new Date(o.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
+              <td className="col-action"><button className="chip" onClick={() => cancel(o.id)}>Cancel</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Positions({ state, notify, refresh }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
+  if (!state?.positions.length) return <><p className="muted small pad">No open positions.</p><OpenOrders state={state} notify={notify} refresh={refresh} /></>;
+  return (
+    <>
+    <OpenOrders state={state} notify={notify} refresh={refresh} />
     <div className="table-wrap">
       <table>
         <thead><tr><th>Token</th><th>By</th><th>Entry</th><th>Now</th><th>P&L</th><th className="hide-sm">TP / SL</th><th className="hide-sm">Sell by</th><th /></tr></thead>
@@ -1389,6 +1501,7 @@ function Positions({ state, notify, refresh }: { state: AppState | null; notify:
         </tbody>
       </table>
     </div>
+    </>
   );
 }
 

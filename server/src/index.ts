@@ -117,6 +117,9 @@ app.post("/api/reset", ownerOnly(wrap(async (req) => engine.reset(Number(req.bod
 app.post("/api/bot/start", ownerOnly(wrap(async (req) => engine.startBot(req.body))));
 app.post("/api/bot/stop", ownerOnly(wrap(async () => engine.stopBot())));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
+// Limit orders: { side: "BUY", chain, pool, symbol, price, usd } or { side: "SELL", positionId, price, fraction }.
+app.post("/api/orders", ownerOnly(wrap(async (req) => engine.placeOrder(req.body ?? {}))));
+app.post("/api/orders/cancel", ownerOnly(wrap(async (req) => engine.cancelOrder(String(req.body?.id ?? "")))));
 app.post("/api/protect", ownerOnly(wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0)))));
 
 // While the dashboard is open it pings this every ~20 s. It only runs a bot step

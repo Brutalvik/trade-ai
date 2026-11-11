@@ -32,6 +32,10 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 
 The 🚀 New coins tab lists pools from minutes to 3 days old, each with a rug-risk level (LOW / MEDIUM / HIGH / REJECTED) and the reasons. Solana uses RugCheck (mint/freeze authority, creator rug history, holder concentration, locked liquidity); Base uses honeypot.is (can you sell, buy/sell tax). Open a coin to see its chart, get the AI's plan and trade it like any other coin; skip Rejected and High-risk ones.
 
+## Limit orders
+
+The Manual trade panel has Buy and Sell tabs, each with Now or At a price (limit). A limit buy spends a set amount when the price falls to your price; a limit sell sells 25/50/100% of your position when the price rises to yours. Orders are checked every 5 seconds even with the bot off (the scheduler keeps watching), fill like real limit orders, and send an in-app notification (and a phone alert if set up). Open orders show on the chart, in the panel and in the Positions tab, where you can cancel them.
+
 ## Taking profits
 
 - **Profit lock:** once a trade is up the break-even amount, the stop follows the best (closing) price so the trade keeps at least 50% of its best gain.
