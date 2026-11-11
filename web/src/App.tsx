@@ -1708,7 +1708,7 @@ function RewardRuleInfo({ on, risky, onClose }: { on: boolean; risky: boolean; o
         <li>Risky mode: it also buys setups the AI flagged as failing the fee check, including ones where the loss is bigger than the gain.</li>
       </ul>
       <h3>Why it matters</h3>
-      <p>If losses are bigger than wins, you have to win most trades just to break even. Example: a setup that can gain 4.3% but lose 10.7% at a 35% win chance loses about <b>5.5% per trade</b> on average. In the SEPPUKU run, average wins were about $346 and average losses about $646.</p>
+      <p>If losses are bigger than wins, you have to win most trades just to break even. Example: a setup that can gain 4.3% but lose 10.7% at a 35% win chance loses about <b>5.5% per trade</b> on average. And if wins average $350 while losses average $650, you need to win about 65% of trades just to break even.</p>
       <h3>Good to know</h3>
       <ul className="small">
         <li>It takes effect within seconds, even while the bot is running. No restart needed.</li>
