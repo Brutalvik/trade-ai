@@ -366,3 +366,12 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .choice { flex-direction: row !important; text-align: left; }
 .choice input { width: 16px !important; height: 16px; flex: none; padding: 0; }
 .choice > span { flex: 1; min-width: 0; }
+
+/* Warning icon: Claude's percentages are predictions */
+.conf-line { display: inline-flex; align-items: center; gap: 4px; }
+.warn-btn { position: relative; display: inline-grid; place-items: center; vertical-align: middle; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--amber, #ffc857); cursor: pointer; }
+.warn-btn:hover { background: rgba(255, 200, 87, 0.12); }
+.warn-btn::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translate(-50%, 4px); padding: 3px 8px; border-radius: 6px; background: #0b1324; border: 1px solid rgba(255, 200, 87, 0.4); color: #fff3d6; font-size: 11px; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.12s, transform 0.12s; z-index: 30; }
+.warn-btn:hover::after, .warn-btn:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
+.pred-big { font-size: 15px; margin: 12px 0 4px !important; color: var(--text); }
+.pred-big b { color: var(--amber, #ffc857); }

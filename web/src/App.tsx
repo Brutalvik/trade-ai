@@ -365,7 +365,7 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
     <div className={`order ${below ? "dim" : ""}`}>
       <b>{describeOrder(o, waitForHold)}</b>
       <span className="tiny">
-        <b className={below ? "down" : "up"}>{o.winChancePct}% win chance</b> · expected {o.evPct >= 0 ? "+" : ""}
+        <b className={below ? "down" : "up"}>{o.winChancePct}% win chance</b> <PredictionInfo pct={o.winChancePct} /> · expected {o.evPct >= 0 ? "+" : ""}
         {o.evPct.toFixed(1)}% per trade after fees{below ? ` · below your ${minWin}% minimum, won't be used` : ""}
       </span>
       <span className="muted tiny">
@@ -379,6 +379,54 @@ const fmtAgo = (t: number) => {
   const m = Math.round((Date.now() - t) / 60_000);
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
 };
+
+// Warning icon next to Claude's percentages: they are predictions, not promises.
+function PredictionInfo({ pct }: { pct: number }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  const wins = Math.round(pct / 10);
+  return (
+    <>
+      <button className="warn-btn" onClick={(e) => { e.stopPropagation(); setOpen(true); }} aria-label="What this percentage means" data-tip="It's a prediction">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" fill="currentColor" fillOpacity="0.15" />
+          <line x1="12" y1="9" x2="12" y2="13" />
+          <line x1="12" y1="17" x2="12.01" y2="17" />
+        </svg>
+      </button>
+      {open && createPortal(
+        <div className="modal-backdrop" onClick={() => setOpen(false)}>
+          <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="pred-title" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2 id="pred-title">⚠ It's a prediction</h2>
+              <button className="chip" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+            </div>
+            <div className="modal-body">
+              <p className="pred-big"><b>{pct}%</b> means Claude expects this to work about <b>{wins} times out of 10</b>, and not about {10 - wins} times out of 10.</p>
+              <h3>A prediction, not a promise</h3>
+              <p>Claude reads the charts (5-second, 5-minute, hourly and daily candles) and estimates the chance the price reaches the target before it hits the exit. Any single trade either wins or loses: the percentage only shows up over many trades. Memecoins move fast, and Claude can be wrong.</p>
+              <h3>Why trade below 50%?</h3>
+              <p>Because a win is bigger than a loss. For example, at 45% with +12% on a win and −7.4% on a loss, the average is about +1.3% per trade after fees. The bot skips any order whose average comes out negative, and any order below your minimum win chance (Safe 55%, Balanced 45%, Aggressive 40%).</p>
+              <h3>Expect losing streaks</h3>
+              <p>At around 40%, three losses in a row happen about 1 time in 5. Keep the risk per trade at a level you're comfortable losing several times.</p>
+              <h3>Check if the predictions hold up</h3>
+              <p>After 20–30 bot trades, open <b>Trade history → Track record</b>: it compares Claude's predicted win chance with how often trades really won. If real results are clearly lower, raise the minimum win chance.</p>
+            </div>
+            <div className="modal-foot">
+              <button className="btn buy" onClick={() => setOpen(false)}>Got it</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; analyzedAt?: number; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
   const { pair, tf, sig, results, cost, onResult, price, botOnThisCoin, analyzedAt, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
@@ -497,7 +545,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           <div className={`verdict ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>
             <span>{STANCE_LABEL[sig.stance ?? "AVOID"]}</span>
             <div className="conf"><div style={{ width: `${sig.confidence}%` }} /></div>
-            <small>{sig.confidence}% confidence</small>
+            <small className="conf-line">{sig.confidence}% confidence <PredictionInfo pct={sig.confidence} /></small>
           </div>
           {sig.orders?.length > 0 && (
             <div className="orders">
