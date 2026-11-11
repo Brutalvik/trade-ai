@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 const LAST_UPDATED = "11 November 2026";
 // Where people send privacy requests and complaints (PIPEDA: a named, reachable contact).
 // Set this to the real mailbox before launch; until then the policy says it's being set up.
-const PRIVACY_EMAIL = "";
+const PRIVACY_EMAIL = "testing@tradeairust.com";
 
 // Footer: a short risk reminder on the left; version, User guide, Privacy Policy and Terms on the right.
 // The Privacy Policy also opens at #privacy (shareable link).
