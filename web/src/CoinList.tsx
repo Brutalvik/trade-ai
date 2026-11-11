@@ -53,16 +53,36 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
     }
   };
 
+  // Tabs sit in one scrolling line; the arrows move to the previous / next list.
+  const strip = useRef<HTMLDivElement>(null);
+  const idx = KINDS.findIndex((k) => k.id === kind);
+  const step = (d: number) => {
+    const next = KINDS[Math.max(0, Math.min(KINDS.length - 1, idx + d))];
+    if (next) setKind(next.id);
+  };
+  useEffect(() => {
+    strip.current?.querySelector<HTMLElement>(`[data-kind="${kind}"]`)?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }, [kind]);
+
   const coins = lists[kind];
   const meta = KINDS.find((k) => k.id === kind)!;
   return (
     <div className="coin-side-inner">
       <div className="coin-top">
-        <div className="coin-chips" role="tablist" aria-label="Coin lists">
+        <button className="coin-arrow" onClick={() => step(-1)} disabled={idx === 0} aria-label="Previous list" title="Previous list">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
+        </button>
+        <div className="coin-tabs" role="tablist" aria-label="Coin lists" ref={strip}>
           {KINDS.map((k) => (
-            <button key={k.id} role="tab" aria-selected={kind === k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)} title={k.hint}>{k.label}</button>
+            <button key={k.id} role="tab" aria-selected={kind === k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)} title={k.hint} data-kind={k.id}>
+              {kind === k.id && <span className="coin-tab-dot" />}
+              {k.label}
+            </button>
           ))}
         </div>
+        <button className="coin-arrow" onClick={() => step(1)} disabled={idx === KINDS.length - 1} aria-label="Next list" title="Next list">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+        </button>
         <button className="panel-toggle" onClick={onCollapse} data-tip="Collapse panel" aria-label="Collapse coin lists"><Chevrons dir="left" /></button>
       </div>
       <p className="muted tiny coin-hint">{meta.hint}</p>
