@@ -506,3 +506,6 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .activity-summary .link-btn { margin-left: 8px; }
 .activity-data { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.35); font-size: 11px; color: #c6d2f0; white-space: pre-wrap; word-break: break-word; }
 @media (max-width: 760px) { .activity-row { grid-template-columns: 1fr; gap: 4px; } }
+.tm-bar { height: 8px !important; }
+.tm-bar > div.warm { background: linear-gradient(90deg, #00e5ff, #ffc857); }
+.tm-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
