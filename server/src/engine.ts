@@ -5,6 +5,7 @@ import { analyze, type CheckedOrder, type Consensus, type Frame, type ModelResul
 import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
@@ -222,40 +223,124 @@ function migrate(s: State): State {
   return s;
 }
 
-let state: State = fresh();
-let loaded = false;
+// ---------- Accounts ----------
+// Every login has its own paper account (cash, positions, trades, bot, orders), saved under
+// its own key. Each request / bot step runs inside one account (AsyncLocalStorage), and
+// `state` below always means the current account's state, so the rest of the engine is unchanged.
+type Account = {
+  key: string | null; // username (lowercase); null = signed-out visitor (never saved)
+  state: State;
+  loaded: boolean;
+  pending: Promise<void>; // queued writes and alerts
+  dirty: boolean; // something worth saving happened (a trade, a log line, a moved stop)
+  busy: boolean; // a bot step is running: don't swap the state under it
+  guarding: boolean;
+  active?: boolean; // last value written to the active-accounts list
+};
+const NEW_ACCOUNT_CASH = 1000;
+const als = new AsyncLocalStorage<Account>();
+const accounts = new Map<string, Account>();
+const newAccount = (key: string | null): Account => ({ key, state: fresh(key ? NEW_ACCOUNT_CASH : 0), loaded: false, pending: Promise.resolve(), dirty: false, busy: false, guarding: false });
+const acct = (): Account => als.getStore() ?? (fallback ??= newAccount(null));
+let fallback: Account | null = null;
+
+// Run fn inside a user's account (null = a signed-out visitor: an empty, unsaved $0 account).
+export function withAccount<T>(key: string | null, fn: () => Promise<T>): Promise<T> {
+  const k = key?.toLowerCase() ?? null;
+  let a = k ? accounts.get(k) : undefined;
+  if (!a) {
+    a = newAccount(k);
+    if (k) accounts.set(k, a);
+  }
+  return als.run(a, fn);
+}
+export const currentAccountKey = () => acct().key;
+
+const state = new Proxy({} as State, {
+  get: (_t, k) => (acct().state as any)[k],
+  set: (_t, k, v) => {
+    (acct().state as any)[k] = v;
+    return true;
+  },
+  has: (_t, k) => k in acct().state,
+  ownKeys: () => Reflect.ownKeys(acct().state),
+  getOwnPropertyDescriptor: (_t, k) => Object.getOwnPropertyDescriptor(acct().state, k),
+});
+
+// Accounts that need watching even when nobody has the page open (bot on, protected trades,
+// limit orders). The scheduler wakes each of them.
+const ACTIVE_KEY = "active-accounts";
+const isActive = (st: State) => st.bot.running || st.positions.some((p) => p.protectPct) || (st.orders?.length ?? 0) > 0;
+async function markActive(a: Account) {
+  if (!a.key) return;
+  const now = isActive(a.state);
+  if (a.active === now) return;
+  const list = (await store.kvGet<string[]>(ACTIVE_KEY)) ?? [];
+  const next = now ? [...new Set([...list, a.key])] : list.filter((k) => k !== a.key);
+  if (next.length !== list.length || now !== list.includes(a.key)) await store.kvSet(ACTIVE_KEY, next);
+  a.active = now;
+}
+export const activeAccounts = async () => (await store.kvGet<string[]>(ACTIVE_KEY)) ?? [];
+
+// One-time move: the single shared account from before logins had their own goes to the
+// owner's login (OWNER_USERNAME, or the account that claimed it). A backup copy is kept.
+let migrated = false;
+export async function ensureMigrated() {
+  if (migrated) return;
+  if (await store.kvGet<boolean>("migrated-to-accounts")) return void (migrated = true);
+  const owner = process.env.OWNER_USERNAME?.trim().toLowerCase() || (await store.kvGet<string>("owner"));
+  const legacy = await store.load<State>();
+  if (!legacy) return void (await store.kvSet("migrated-to-accounts", true), (migrated = true));
+  if (!owner) return; // nobody has claimed it yet: try again later
+  if (!(await store.load<State>(owner))) await store.save(legacy, owner);
+  await store.kvSet("legacy-state-backup", legacy);
+  if (isActive(legacy)) {
+    const list = (await store.kvGet<string[]>(ACTIVE_KEY)) ?? [];
+    if (!list.includes(owner)) await store.kvSet(ACTIVE_KEY, [...list, owner]);
+  }
+  await store.kvSet("migrated-to-accounts", true);
+  migrated = true;
+  console.log(`[accounts] moved the shared paper account to ${owner}`);
+}
 
 // Load the latest saved state. With Redis this runs on every request, because
 // on Vercel each request may land on a different short-lived server.
 export async function sync() {
-  if (loaded && store.kind !== "redis") return;
+  const a = acct();
+  if (!a.key) return; // signed-out visitor: nothing to load
+  if (a.loaded && store.kind !== "redis") return;
   // Never swap the state out from under a running bot step. One server handles
   // several requests at once (e.g. dashboard refreshes while the bot waits for
   // Claude); replacing the object mid-step lost the step's updates, so the bot
   // forgot it had just asked Claude and asked again every 20 s.
-  if (busy) return;
-  const saved = await store.load<State>();
-  if (busy) return; // a step started while we were loading: keep its state
-  if (saved) state = migrate(saved);
-  loaded = true;
+  if (a.busy) return;
+  const saved = await store.load<State>(a.key);
+  if (a.busy) return; // a step started while we were loading: keep its state
+  if (saved) a.state = migrate(saved);
+  const first = !a.loaded;
+  a.loaded = true;
+  if (!saved && first) save(); // a brand-new account: keep its starting balance
+  if (a.active === undefined) a.active = (await activeAccounts()).includes(a.key);
 }
 
-let pending: Promise<void> = Promise.resolve();
-let dirty = false; // something worth saving happened (a trade, a log line, a moved stop)
 function save() {
-  dirty = false;
-  const copy = structuredClone(state);
-  pending = pending.then(() => store.save(copy)).catch((e) => console.error("[store] save failed:", e));
+  const a = acct();
+  a.dirty = false;
+  if (!a.key) return; // signed-out visitors' views are never saved
+  const copy = structuredClone(a.state);
+  a.pending = a.pending.then(() => store.save(copy, a.key!)).then(() => markActive(a)).catch((e) => console.error("[store] save failed:", e));
 }
 // Wait for writes to finish (must happen before a Vercel function returns).
 export async function flush() {
-  await pending;
+  await acct().pending;
 }
 
 // Phone alert (Telegram / ntfy, if configured). Queued with saves so flush() waits for it.
 function alert(text: string) {
   if (!alertChannel()) return;
-  pending = pending.then(() => sendAlert(text)).catch(() => {});
+  const a = acct();
+  if (!a.key) return;
+  a.pending = a.pending.then(() => sendAlert(text)).catch(() => {});
 }
 
 // Saved state stays small and constant-size: newest trades, log lines and equity points only.
@@ -264,7 +349,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 export const roundTripCostPct = () => 2 * (state.settings.feePct + state.settings.slippagePct);
 
 function log(msg: string, level: "info" | "good" | "bad" = "info") {
-  dirty = true;
+  acct().dirty = true;
   state.bot.log.unshift({ t: Date.now(), msg, level });
   state.bot.log = state.bot.log.slice(0, 200);
   console.log(`[bot] ${msg}`);
@@ -359,7 +444,7 @@ export function updateSettings(s: Partial<Settings>) {
 }
 
 export function reset(startCash: number) {
-  state = fresh(startCash);
+  acct().state = fresh(startCash);
   save();
 }
 
@@ -442,8 +527,6 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
 // long-lived timers, so /api/bot/heartbeat (from an open dashboard) and
 // /api/bot/tick (from a scheduler) call it instead.
 
-let timer: NodeJS.Timeout | null = null;
-let busy = false;
 
 const isAuto = (cfg: BotConfig) => cfg.pick === "auto";
 const isNew = (cfg: BotConfig) => cfg.pick === "newcoins";
@@ -486,19 +569,13 @@ export function stopBot(reason = "Stopped by user") {
   state.bot.stoppedAt = Date.now();
   state.bot.target = null;
   log(`Bot stopped: ${reason}`, "bad");
-  if (timer) clearInterval(timer);
-  timer = null;
   save();
 }
 
 function schedule() {
-  if (timer) clearInterval(timer);
-  const cfg = state.bot.config;
-  if (!state.bot.running || !cfg) return;
-  if (process.env.VERCEL) return; // driven by heartbeat / tick requests instead
-  // Every 5 s; tick(false) saves only when something happens (not on every check).
-  timer = setInterval(() => void tick(false), CHECK_MS);
-  void tick();
+  // Locally a single loop (bottom of this file) runs every active account every 5 s; on
+  // Vercel, heartbeat / tick requests do. Run the first step right away.
+  if (!process.env.VERCEL && state.bot.running && state.bot.config) void tick();
 }
 
 // Dashboard ping (every ~20 s while the page is open): watch for ~18 s.
@@ -521,7 +598,7 @@ function noteOnce(key: string, msg: string, level: "info" | "good" | "bad" = "in
 }
 
 function setBlocked(reason: string | null, key?: string) {
-  if (state.bot.blocked !== reason) dirty = true;
+  if (state.bot.blocked !== reason) acct().dirty = true;
   state.bot.blocked = reason;
   if (reason && key && noteOnce(key, `Not trading: ${reason}.`, "bad") && key.startsWith("daily:")) alert(`⛔ Daily loss limit: ${reason}.`);
 }
@@ -731,8 +808,8 @@ function noteKey(pos: Position, gainPct: number) {
 
 export async function tick(persist = true) {
   const cfg = state.bot.config;
-  if (!state.bot.running || !cfg || busy) return;
-  busy = true;
+  if (!state.bot.running || !cfg || acct().busy) return;
+  acct().busy = true;
   // Look at candles since the previous check (at most the last minute).
   const windowStart = Math.max(Date.now() - 60_000, (state.bot.lastTickAt || Date.now()) - CHECK_MS);
   state.bot.lastTickAt = Date.now();
@@ -772,7 +849,7 @@ export async function tick(persist = true) {
         if (!pos.stopLoss || lock > pos.stopLoss * 1.001) {
           pos.stopLoss = lock;
           pos.locked = lock > be;
-          dirty = true;
+          acct().dirty = true;
           if (pos.locked && noteKey(pos, bestGainPct)) // first lock, then every +5% of best gain
             log(`${pos.symbol} best gain +${bestGainPct.toFixed(1)}%: profit lock raised to ${fmt(lock)} (keeps at least ${lockPct}% of the gain).`, "good");
         }
@@ -814,7 +891,7 @@ export async function tick(persist = true) {
       if (pos.trailing && q.peakHigh > (pos.peak ?? 0)) {
         pos.peak = q.peakHigh;
         newHighThisCheck = true;
-        dirty = true; // the high matters for the trailing stop; keep it saved
+        acct().dirty = true; // the high matters for the trailing stop; keep it saved
       }
       const trailStop = pos.trailing && pos.peak ? pos.peak * (1 - trail / 100) : 0;
       // Stops sell like real stop orders: at the stop price if the price touched it,
@@ -991,8 +1068,8 @@ export async function tick(persist = true) {
   } catch (e: any) {
     log(`Tick error: ${e?.message ?? e}`, "bad");
   } finally {
-    busy = false;
-    if (persist || dirty) save();
+    acct().busy = false;
+    if (persist || acct().dirty) save();
   }
 }
 
@@ -1016,7 +1093,8 @@ function watching() {
 export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dashboard") {
   const botOn = () => state.bot.running && !!state.bot.config;
   if (!botOn() && !hasProtected()) return { ticks: 0, reason: "bot is off" };
-  if (!(await store.lock("watch", maxMs + 10_000))) return { ticks: 0, reason: "another window is already watching" };
+  const lockName = `watch:${acct().key ?? "-"}`;
+  if (!(await store.lock(lockName, maxMs + 10_000))) return { ticks: 0, reason: "another window is already watching" };
   // Record the wake-up (one small write per window) so the dashboard can show the bot is alive.
   state.bot.lastWatch = { at: Date.now(), by };
   save();
@@ -1037,14 +1115,31 @@ export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dash
     return { ticks, reason: botOn() || hasProtected() ? (watching() ? "window ended" : "nothing to watch") : "bot stopped" };
   } finally {
     await flush();
-    await store.unlock("watch");
+    await store.unlock(lockName);
   }
+}
+
+// The scheduler's wake-up: watch every account that has a bot running, protected trades or
+// limit orders, side by side.
+export async function watchAll(maxMs: number, by: "scheduler" | "dashboard" = "scheduler") {
+  await ensureMigrated();
+  const keys = await activeAccounts();
+  const results = await Promise.all(
+    keys.map((k) =>
+      withAccount(k, async () => {
+        await sync();
+        const r = await watch(maxMs, by);
+        await flush();
+        return { key: k, ...r };
+      }).catch((e) => ({ key: k, ticks: 0, reason: `error: ${e?.message ?? e}` })),
+    ),
+  );
+  return { accounts: keys.length, results };
 }
 
 // ---------- "Protect this trade" (manual positions) ----------
 // Anything to watch with the bot off: protected manual trades or open limit orders.
 const hasProtected = () => state.positions.some((p) => p.protectPct) || (state.orders?.length ?? 0) > 0;
-let guarding = false;
 
 export async function protectPosition(positionId: string, pct: number) {
   const p = state.positions.find((x) => x.id === positionId);
@@ -1070,10 +1165,10 @@ export async function protectPosition(positionId: string, pct: number) {
 
 // Checks every protected manual position: raises its high, sells on a pullback.
 export async function guardProtected() {
-  if (guarding || !hasProtected()) return;
+  if (acct().guarding || !hasProtected()) return;
   await checkLimitOrders();
   if (!state.positions.some((p) => p.protectPct)) return;
-  guarding = true;
+  acct().guarding = true;
   let changed = false;
   try {
     for (const p of state.positions.filter((x) => x.protectPct)) {
@@ -1096,7 +1191,7 @@ export async function guardProtected() {
   } catch (e: any) {
     log(`Protection check error: ${e?.message ?? e}`, "bad");
   } finally {
-    guarding = false;
+    acct().guarding = false;
     if (changed) save();
   }
 }
@@ -1211,10 +1306,28 @@ export async function refreshPositionPrices() {
   recordEquity();
 }
 
-// Local: load the saved state and resume a running bot after a restart.
-void sync().then(() => {
-  if (state.bot.running) schedule();
-});
-
-// Locally (not on Vercel) a timer guards protected manual positions every 5 s.
-if (!process.env.VERCEL) setInterval(() => void guardProtected(), CHECK_MS);
+// Locally (not on Vercel): every 5 s, run each active account's bot step, protected trades
+// and limit orders (resumes running bots after a restart).
+if (!process.env.VERCEL) {
+  let localBusy = false;
+  setInterval(async () => {
+    if (localBusy) return;
+    localBusy = true;
+    try {
+      await ensureMigrated();
+      const step = async () => {
+        await sync();
+        if (state.bot.running && state.bot.config) await tick(false);
+        await guardProtected();
+        await flush();
+      };
+      for (const k of await activeAccounts()) await withAccount(k, step);
+      // Scripts and tests that drive the engine without a login use the unnamed account.
+      if (fallback && isActive(fallback.state)) await als.run(fallback, step);
+    } catch (e) {
+      console.error("[local loop]", e);
+    } finally {
+      localBusy = false;
+    }
+  }, CHECK_MS);
+}

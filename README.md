@@ -26,7 +26,7 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 ## Settings and accounts
 
 - **Settings** (wrench, top right): choose whether the bot stops by itself after one profitable trade (the default) or trades continuously, and see whether phone alerts are on.
-- **Accounts:** sign up with a unique username, first and last name, email and password; sign in with username or email. Passwords are hashed with scrypt; sessions are signed, HTTP-only cookies that last 30 days. The profile (click your initials) shows your details and lets you reset your password, which signs out your other devices. Accounts are stored in the same Upstash Redis database, so no extra setup is needed. The paper account and bot are still shared by everyone using the site.
+- **Accounts:** sign up with a unique username, first and last name, email and password; sign in with username or email. Passwords are hashed with scrypt; sessions are signed, HTTP-only cookies that last 30 days. The profile (click your initials) shows your details and lets you reset your password, which signs out your other devices. Accounts are stored in the same Upstash Redis database, so no extra setup is needed. Every login has its own paper account (new accounts start with $1,000): cash, positions, trades, bot, settings and limit orders. Signed out, the page shows an empty $0 account. The scheduler wakes every account that has a bot running, protected trades or limit orders. The single shared account from before was moved to its owner's login (a backup copy is kept).
 
 ## New coins
 

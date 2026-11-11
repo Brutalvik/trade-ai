@@ -10,8 +10,9 @@ export type StoreKind = "redis" | "file" | "temp";
 
 export interface Store {
   kind: StoreKind;
-  load<T>(): Promise<T | null>;
-  save<T>(value: T): Promise<void>;
+  // key = account (username); none = the old single shared account.
+  load<T>(key?: string): Promise<T | null>;
+  save<T>(value: T, key?: string): Promise<void>;
   // Returns true if we got the lock (it expires by itself after ttlMs).
   lock(name: string, ttlMs: number): Promise<boolean>;
   unlock(name: string): Promise<void>;
@@ -64,6 +65,7 @@ function fileStore(): Store {
   // On Vercel only /tmp is writable, and it is wiped between instances ("temp").
   const dir = process.env.VERCEL ? "/tmp/trade-ai" : path.resolve("data");
   const file = path.join(dir, "state.json");
+  const fileFor = (key?: string) => (key ? path.join(dir, `state-${key.replace(/[^a-z0-9_]/gi, "_")}.json`) : file);
   const kvFile = path.join(dir, "kv.json");
   type Rec = { v: unknown; exp?: number };
   const readKv = (): Record<string, Rec> => {
@@ -79,16 +81,16 @@ function fileStore(): Store {
   };
   return {
     kind: process.env.VERCEL ? "temp" : "file",
-    async load<T>() {
+    async load<T>(key?: string) {
       try {
-        return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+        return JSON.parse(fs.readFileSync(fileFor(key), "utf8")) as T;
       } catch {
         return null;
       }
     },
-    async save<T>(value: T) {
+    async save<T>(value: T, key?: string) {
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(file, JSON.stringify(value, null, 2));
+      fs.writeFileSync(fileFor(key), JSON.stringify(value, null, 2));
     },
     async kvGet<T>(key: string) {
       const r = readKv()[key];
@@ -116,9 +118,9 @@ export function createStore(): Store {
   if (!redis) return fileStore();
   return {
     kind: "redis",
-    load: <T>() => redis.get<T>(KEY),
-    async save<T>(value: T) {
-      await redis.set(KEY, value);
+    load: <T>(key?: string) => redis.get<T>(key ? `${KEY}:u:${key}` : KEY),
+    async save<T>(value: T, key?: string) {
+      await redis.set(key ? `${KEY}:u:${key}` : KEY, value);
     },
     async lock(name: string, ttlMs: number) {
       return (await redis.set(`${KEY}:lock:${name}`, Date.now(), { nx: true, px: ttlMs })) === "OK";

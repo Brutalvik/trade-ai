@@ -104,18 +104,22 @@ async function ownerName(claimFor?: User | null) {
   return (await store.kvGet<string>("owner")) ?? null;
 }
 
-// True if this request comes from the signed-in owner of the paper account.
-export async function isOwner(req: Request) {
+// The signed-in user's account key (lowercase username), or null when signed out.
+// Every login has its own paper account; the first sign-in after accounts became
+// per-user also records who owned the old shared one (so it can move to them).
+export async function accountKey(req: Request): Promise<string | null> {
   const u = await sessionUser(req);
-  return !!u && (await ownerName(u)) === u.username.toLowerCase();
+  if (!u) return null;
+  await ownerName(u); // claims the old shared account once, if nobody has
+  return u.username.toLowerCase();
 }
 
 // ---------- Routes ----------
 
 export async function me(req: Request) {
   const u = await sessionUser(req);
-  const owner = u ? (await ownerName(u)) === u.username.toLowerCase() : false;
-  return { user: u ? { ...pub(u), owner } : null };
+  if (u) await ownerName(u);
+  return { user: u ? { ...pub(u), owner: true } : null };
 }
 
 export async function signUp(req: Request, res: Response) {
@@ -136,7 +140,7 @@ export async function signUp(req: Request, res: Response) {
     throw new Error("An account with that email already exists");
   }
   await setSession(res, user);
-  return { user: { ...pub(user), owner: (await ownerName(user)) === user.username.toLowerCase() } };
+  return { user: { ...pub(user), owner: true } };
 }
 
 export async function signIn(req: Request, res: Response) {
@@ -155,7 +159,8 @@ export async function signIn(req: Request, res: Response) {
   }
   await store.kvDel(failKey);
   await setSession(res, user);
-  return { user: { ...pub(user), owner: (await ownerName(user)) === user.username.toLowerCase() } };
+  await ownerName(user);
+  return { user: { ...pub(user), owner: true } };
 }
 
 export async function signOut(_req: Request, res: Response) {

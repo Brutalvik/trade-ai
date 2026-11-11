@@ -1,7 +1,7 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, type User } from "./api";
+import { api, fmtUsd, type AppState, type User } from "./api";
 
 // ---------- Shared modal ----------
 
@@ -115,7 +115,7 @@ function Avatar({ user, size }: { user: User; size: number }) {
   );
 }
 
-export function AccountButton({ notify, onChange }: { notify: (m: string, bad?: boolean) => void; onChange: () => void }) {
+export function AccountButton({ notify, onChange, state }: { notify: (m: string, bad?: boolean) => void; onChange: () => void; state: AppState | null }) {
   const [user, setUser] = useState<User | null | undefined>(undefined); // undefined = still checking
   const [open, setOpen] = useState<"auth" | "profile" | null>(null);
   useEffect(() => {
@@ -131,10 +131,11 @@ export function AccountButton({ notify, onChange }: { notify: (m: string, bad?: 
       ) : (
         <button className="btn ghost signin-btn" onClick={() => setOpen("auth")}>Sign in</button>
       )}
-      {open === "auth" && <AuthModal onClose={() => setOpen(null)} onDone={(u) => { setUser(u); setOpen(null); onChange(); notify(u.owner ? `Welcome, ${u.firstName}! Your paper account is loaded.` : `Welcome, ${u.firstName}!`); }} />}
+      {open === "auth" && <AuthModal onClose={() => setOpen(null)} onDone={(u) => { setUser(u); setOpen(null); onChange(); notify(`Welcome, ${u.firstName}! Your own paper account is loaded.`); }} />}
       {open === "profile" && user && (
         <ProfileModal
           user={user}
+          state={state}
           notify={notify}
           onClose={() => setOpen(null)}
           onSignedOut={() => { setUser(null); setOpen(null); onChange(); notify("Signed out. Your paper account is hidden until you sign in again."); }}
@@ -194,7 +195,14 @@ function AuthModal({ onClose, onDone }: { onClose: () => void; onDone: (u: User)
   );
 }
 
-function ProfileModal({ user, onClose, onSignedOut, notify }: { user: User; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void }) {
+function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void }) {
+  // This login's own paper account at a glance.
+  const acc = state && !state.signedOut ? state : null;
+  const eq = acc?.equityNow ?? 0;
+  const pnl = acc ? eq - acc.startCash : 0;
+  const pnlPct = acc && acc.startCash > 0 ? (pnl / acc.startCash) * 100 : 0;
+  const sells = acc?.trades.filter((t) => t.side === "SELL") ?? [];
+  const wins = sells.filter((t) => (t.pnlUsd ?? 0) > 0).length;
   const [resetting, setResetting] = useState(false);
   const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
   const [err, setErr] = useState("");
@@ -221,22 +229,34 @@ function ProfileModal({ user, onClose, onSignedOut, notify }: { user: User; onCl
   };
   return (
     <Modal title="Profile" onClose={onClose} narrow foot={<button className="btn ghost" onClick={signOut}>Sign out</button>}>
-      <div className="profile-top">
-        <Avatar user={user} size={76} />
-        <div>
+      <div className="profile-hero">
+        <Avatar user={user} size={72} />
+        <div className="profile-id">
           <div className="profile-name">{user.firstName} {user.lastName}</div>
           <div className="muted small">@{user.username}</div>
+          <span className="profile-chip">Paper account · member since {new Date(user.createdAt).toLocaleDateString([], { month: "short", year: "numeric" })}</span>
         </div>
       </div>
+
+      {acc && (
+        <div className="profile-stats">
+          <div><small>Equity</small><b>{fmtUsd(eq)}</b></div>
+          <div><small>Since start</small><b className={pnl >= 0 ? "up" : "down"}>{pnl >= 0 ? "+" : ""}{fmtUsd(pnl)}<em>{pnl >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%</em></b></div>
+          <div><small>Closed trades</small><b>{sells.length}<em>{sells.length ? `${Math.round((wins / sells.length) * 100)}% won` : "none yet"}</em></b></div>
+          <div><small>Bot</small><b className={acc.bot.running ? "up" : ""}>{acc.bot.running ? "Running" : "Off"}<em>{acc.positions.length} open · {acc.orders?.length ?? 0} orders</em></b></div>
+        </div>
+      )}
+
+      <div className="profile-section-title">Account details</div>
       <dl className="profile-fields">
-        <div><dt>Username</dt><dd>{user.username} <span className="lock" title="Can't be changed">🔒</span></dd></div>
+        <div><dt>Username</dt><dd>@{user.username} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Name</dt><dd>{user.firstName} {user.lastName} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Email</dt><dd>{user.email}</dd></div>
-        <div><dt>Member since</dt><dd>{new Date(user.createdAt).toLocaleDateString()}</dd></div>
-        <div><dt>Paper account</dt><dd>{user.owner ? "Yours" : "Not linked to this login"}</dd></div>
+        <div><dt>Started with</dt><dd>{acc ? fmtUsd(acc.startCash) : "–"}</dd></div>
       </dl>
+      <p className="muted tiny">Your paper account is yours alone: other logins have their own balance, trades and bot.</p>
       {!resetting ? (
-        <button className="btn ghost" onClick={() => setResetting(true)}>Reset password</button>
+        <button className="btn ghost" onClick={() => setResetting(true)}>🔑 Reset password</button>
       ) : (
         <form className="auth-form" onSubmit={changePw}>
           <label>Current password<input type="password" autoComplete="current-password" required autoFocus value={pw.current} onChange={(e) => setPw({ ...pw, current: e.target.value })} /></label>

@@ -17,17 +17,22 @@ app.use(express.json());
 
 // Every handler loads the saved state first and finishes saving before it replies
 // (on Vercel, each request may run on a different short-lived server).
+// Each request runs inside the signed-in user's own paper account (signed out: an empty one).
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
-  try {
-    await engine.sync();
-    const out = await fn(req, res);
-    await engine.flush();
-    res.json(out ?? { ok: true });
-  } catch (e: any) {
-    await engine.flush().catch(() => {});
-    if (res.statusCode < 400) res.status(400);
-    res.json({ error: e?.message ?? String(e) });
-  }
+  const key = await auth.accountKey(req).catch(() => null);
+  await engine.withAccount(key, async () => {
+    try {
+      await engine.ensureMigrated();
+      await engine.sync();
+      const out = await fn(req, res);
+      await engine.flush();
+      res.json(out ?? { ok: true });
+    } catch (e: any) {
+      await engine.flush().catch(() => {});
+      if (res.statusCode < 400) res.status(400);
+      res.json({ error: e?.message ?? String(e) });
+    }
+  });
 };
 
 app.get(
@@ -40,6 +45,7 @@ app.get(
     serverless: Boolean(process.env.VERCEL), // true = the dashboard must send heartbeats to keep the bot ticking
     commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").slice(0, 7), // deployed build, so open pages can offer a refresh
     alerts: alertChannel(), // "telegram" | "ntfy" | null
+    activeAccounts: (await engine.activeAccounts().catch(() => [])).length, // bots / orders the scheduler keeps watching
     // Only when storage isn't working: names (not values) of database settings the server can see.
     ...(engine.storeKind() === "temp" ? { storageEnvNames: storageEnvNames() } : {}),
   })),
@@ -66,21 +72,21 @@ app.get("/api/scan", wrap(async (req) => scanOpportunities(String(req.query.chai
 // New coins: young pools with a rug-risk score (Solana via RugCheck, Base via honeypot.is).
 app.get("/api/newcoins", wrap(async (req) => scanNewCoins(String(req.query.chain ?? "solana") as NewCoinChain)));
 
-// The paper account belongs to the signed-in owner: everyone else sees $0 and can't trade.
-const ownerOnly = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
-  if (!(await auth.isOwner(req).catch(() => false))) {
+// Trading needs a signed-in user (each has their own paper account); signed out you see $0.
+const signedIn = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
+  if (!(await auth.accountKey(req).catch(() => null))) {
     res.status(401).json({ error: "Sign in to use your paper account." });
     return;
   }
   return fn(req, res);
 };
 
-app.post("/api/analyze", ownerOnly(wrap(async (req) => engine.runAnalysis(req.body.chain, req.body.pool, req.body.tf ?? "5m"))));
+app.post("/api/analyze", signedIn(wrap(async (req) => engine.runAnalysis(req.body.chain, req.body.pool, req.body.tf ?? "5m"))));
 
 app.get(
   "/api/state",
   wrap(async (req) => {
-    if (!(await auth.isOwner(req).catch(() => false))) return engine.emptyView();
+    if (!engine.currentAccountKey()) return engine.emptyView();
     await engine.refreshPositionPrices();
     return engine.getState();
   }),
@@ -88,7 +94,7 @@ app.get(
 
 app.post(
   "/api/trade",
-  ownerOnly(wrap(async (req) => {
+  signedIn(wrap(async (req) => {
     const { side, chain, pool, usd, positionId, fraction } = req.body;
     const pair = await getPair(chain, pool);
     if (side === "BUY") return engine.buy(pair, Number(usd), "manual", "Manual buy");
@@ -96,7 +102,7 @@ app.post(
   })),
 );
 
-app.post("/api/settings", ownerOnly(wrap(async (req) => engine.updateSettings(req.body))));
+app.post("/api/settings", signedIn(wrap(async (req) => engine.updateSettings(req.body))));
 
 // Accounts (don't touch the trading state, so no sync/flush needed).
 const authRoute = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
@@ -113,19 +119,19 @@ app.post("/api/auth/signup", authRoute(auth.signUp));
 app.post("/api/auth/signin", authRoute(auth.signIn));
 app.post("/api/auth/signout", authRoute(auth.signOut));
 app.post("/api/auth/password", authRoute(auth.changePassword));
-app.post("/api/reset", ownerOnly(wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10)))));
-app.post("/api/bot/start", ownerOnly(wrap(async (req) => engine.startBot(req.body))));
-app.post("/api/bot/stop", ownerOnly(wrap(async () => engine.stopBot())));
+app.post("/api/reset", signedIn(wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10)))));
+app.post("/api/bot/start", signedIn(wrap(async (req) => engine.startBot(req.body))));
+app.post("/api/bot/stop", signedIn(wrap(async () => engine.stopBot())));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
 // Limit orders: { side: "BUY", chain, pool, symbol, price, usd } or { side: "SELL", positionId, price, fraction }.
-app.post("/api/orders", ownerOnly(wrap(async (req) => engine.placeOrder(req.body ?? {}))));
-app.post("/api/orders/cancel", ownerOnly(wrap(async (req) => engine.cancelOrder(String(req.body?.id ?? "")))));
-app.post("/api/protect", ownerOnly(wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0)))));
+app.post("/api/orders", signedIn(wrap(async (req) => engine.placeOrder(req.body ?? {}))));
+app.post("/api/orders/cancel", signedIn(wrap(async (req) => engine.cancelOrder(String(req.body?.id ?? "")))));
+app.post("/api/protect", signedIn(wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0)))));
 
 // While the dashboard is open it pings this every ~20 s. It only runs a bot step
 // if one is due, and Claude is only asked on the bot's own schedule, so extra
 // pings cost nothing.
-app.post("/api/bot/heartbeat", wrap(async () => ({ ...(await engine.heartbeat()), running: engine.getState().bot.running })));
+app.post("/api/bot/heartbeat", wrap(async () => (engine.currentAccountKey() ? { ...(await engine.heartbeat()), running: engine.getState().bot.running } : { ticks: 0, reason: "signed out", running: false })));
 
 // One bot step. Locally a timer calls this; on Vercel (no long-lived process)
 // a scheduler must hit it. Protected by CRON_SECRET when that is set.
@@ -140,9 +146,9 @@ app.get(
     // A scheduler calls this about once a minute. Reply immediately (cron-job.org's free plan
     // waits at most 30 s) and keep watching every 5 s for ~55 s in the background; Vercel's
     // waitUntil keeps the function alive until that finishes.
-    const work = engine.watch(55_000, "scheduler").catch((e) => console.error("[tick] watch failed:", e));
+    const work = engine.watchAll(55_000, "scheduler").catch((e) => console.error("[tick] watch failed:", e));
     waitUntil(work);
-    return { ok: true, started: true, running: engine.getState().bot.running };
+    return { ok: true, started: true, accounts: (await engine.activeAccounts()).length };
   }),
 );
 

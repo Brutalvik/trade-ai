@@ -294,7 +294,7 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
           <b>{fmtUsd(eq)}</b>
           <small className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</small>
         </div>
-        <AccountButton notify={notify} onChange={refresh} />
+        <AccountButton notify={notify} onChange={refresh} state={state} />
       </div>
     </header>
   );
