@@ -32,11 +32,11 @@ function TermsModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="terms-title" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h2 id="terms-title">Terms &amp; Conditions</h2>
-          <button className="chip" onClick={onClose} aria-label="Close">
+          <button className="modal-close" onClick={onClose} aria-label="Close" title="Close">
             ✕
           </button>
         </div>

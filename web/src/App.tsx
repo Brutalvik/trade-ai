@@ -414,11 +414,11 @@ function PredictionInfo({ pct }: { pct: number }) {
         </svg>
       </button>
       {open && createPortal(
-        <div className="modal-backdrop" onClick={() => setOpen(false)}>
+        <div className="modal-backdrop">
           <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="pred-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h2 id="pred-title">⚠ It's a prediction</h2>
-              <button className="chip" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+              <button className="modal-close" onClick={() => setOpen(false)} aria-label="Close" title="Close">✕</button>
             </div>
             <div className="modal-body">
               <p className="pred-big"><b>{pct}%</b> means the AI expects this to work about <b>{wins} times out of 10</b>, and not about {10 - wins} times out of 10.</p>
@@ -528,11 +528,11 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         </span>
       </div>
       {infoOpen && sig && createPortal(
-        <div className="modal-backdrop" onClick={() => setInfoOpen(false)}>
+        <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="why-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h2 id="why-title">Why the AI says {STANCE_LABEL[sig.stance ?? "AVOID"]}</h2>
-              <button className="chip" onClick={() => setInfoOpen(false)} aria-label="Close">✕</button>
+              <button className="modal-close" onClick={() => setInfoOpen(false)} aria-label="Close" title="Close">✕</button>
             </div>
             <div className="modal-body why-body">
               <div className="why-kind">
@@ -1093,11 +1093,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
 
       {rulesOpen && createPortal(
-        <div className="modal-backdrop" onClick={cancelRules}>
+        <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="rules-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h2 id="rules-title">Settings{isCustom ? " · Custom" : preset ? ` · ${PRESETS[preset].label}` : ""}</h2>
-              <button className="chip" onClick={cancelRules} aria-label="Close">
+              <button className="modal-close" onClick={cancelRules} aria-label="Close" title="Close">
                 ✕
               </button>
             </div>
