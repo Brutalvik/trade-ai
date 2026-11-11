@@ -317,6 +317,44 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
 function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
   const { pair, tf, sig, results, cost, onResult, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [glow, setGlow] = useState(false);
+
+  // Claude's explanation for the current plan (shown in the (i) popup).
+  const okResult = results?.find((x) => x.ok);
+  const explain = (() => {
+    const why = okResult && okResult.ok ? okResult.signal.reasoning : "";
+    const risk = okResult && okResult.ok ? okResult.signal.riskLevel : "";
+    const kind = !sig || sig.stance !== "AVOID"
+      ? null
+      : sig.note.startsWith("No order passed")
+        ? { label: "No profit after fees", tone: "hold", text: `Claude found trades, but none make money after the ~${cost.toFixed(1)}% fees and slippage per trade.` }
+        : risk === "EXTREME" || risk === "HIGH"
+          ? { label: "Too risky right now", tone: "sell", text: "" }
+          : { label: "No clear edge", tone: "hold", text: `The coin may be fine, but its moves are too small or unclear to beat the ~${cost.toFixed(1)}% cost of a trade.` };
+    return { why, risk, kind };
+  })();
+
+  // A new plan makes the (i) glow until it's opened, or for 60 seconds.
+  const planKey = sig ? `${sig.expiresAt}:${sig.stance}:${sig.confidence}` : "";
+  useEffect(() => {
+    if (!planKey || localStorage.getItem("nexus-seen-plan") === planKey) return setGlow(false);
+    setGlow(true);
+    const id = setTimeout(() => setGlow(false), 60_000);
+    return () => clearTimeout(id);
+  }, [planKey]);
+  const openInfo = () => {
+    setInfoOpen(true);
+    setGlow(false);
+    if (planKey) localStorage.setItem("nexus-seen-plan", planKey);
+  };
+  useEffect(() => {
+    if (!infoOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setInfoOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [infoOpen]);
+
   const run = async () => {
     if (!pair) return;
     setLoading(true);
@@ -332,8 +370,36 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
     <div className="panel">
       <div className="panel-title">
         <span>AI SIGNAL</span>
-        <button className="btn ghost" onClick={run} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : "Analyze"}</button>
+        <span className="title-actions">
+          {sig && (explain.why || sig.note) && (
+            <button className={`info-btn ${glow ? "glow" : ""}`} onClick={openInfo} aria-label="Why Claude decided this" title="Why Claude decided this">
+              i
+            </button>
+          )}
+          <button className="btn ghost" onClick={run} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : "Analyze"}</button>
+        </span>
       </div>
+      {infoOpen && sig && createPortal(
+        <div className="modal-backdrop" onClick={() => setInfoOpen(false)}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="why-title" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2 id="why-title">Why Claude says {STANCE_LABEL[sig.stance ?? "AVOID"]}</h2>
+              <button className="chip" onClick={() => setInfoOpen(false)} aria-label="Close">✕</button>
+            </div>
+            <div className="modal-body why-body">
+              <div className="why-kind">
+                <span className={`tag ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>{STANCE_LABEL[sig.stance ?? "AVOID"]} · {sig.confidence}%</span>
+                {explain.kind && <span className={`tag ${explain.kind.tone}`}>{explain.kind.label}</span>}
+                {explain.risk && <span className="muted tiny">Risk: {explain.risk}</span>}
+              </div>
+              {explain.kind?.text && <p>{explain.kind.text}</p>}
+              {explain.why && <p><b>Claude:</b> {explain.why}</p>}
+              {sig.note && <p className="muted">{sig.note}</p>}
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
       {!hasAI && <p className="muted small">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> to enable Claude analysis.</p>}
       {sig ? (
         <>
@@ -353,33 +419,12 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               </div>
             </div>
           )}
-          {(() => {
-            // Show Claude's reason right away, and for AVOID say which kind it is.
-            const r = results?.find((x) => x.ok);
-            const why = r && r.ok ? r.signal.reasoning : "";
-            const risk = r && r.ok ? r.signal.riskLevel : "";
-            const kind =
-              sig.stance !== "AVOID"
-                ? null
-                : sig.note.startsWith("No order passed")
-                  ? { label: "No profit after fees", tone: "hold", text: "Claude found trades, but none make money after the ~" + cost.toFixed(1) + "% fees and slippage per trade." }
-                  : risk === "EXTREME" || risk === "HIGH"
-                    ? { label: "Too risky right now", tone: "sell", text: "" }
-                    : { label: "No clear edge", tone: "hold", text: "The coin may be fine, but its moves are too small or unclear to beat the ~" + cost.toFixed(1) + "% cost of a trade." };
-            return (
-              <div className="why-box">
-                {kind && (
-                  <div className="why-kind">
-                    <span className={`tag ${kind.tone}`}>{kind.label}</span>
-                    {risk && <span className="muted tiny">Risk: {risk}</span>}
-                  </div>
-                )}
-                {kind?.text && <p className="small">{kind.text}</p>}
-                {why && <p className="small"><b>Claude:</b> {why}</p>}
-                {!kind && <p className="note">{sig.note}</p>}
-              </div>
-            );
-          })()}
+          {explain.kind && (
+            <div className="why-kind">
+              <span className={`tag ${explain.kind.tone}`}>{explain.kind.label}</span>
+              {explain.risk && <span className="muted tiny">Risk: {explain.risk}</span>}
+            </div>
+          )}
           <div className="models">
             {results?.map((r) => (
               <details key={r.model} className="model">
