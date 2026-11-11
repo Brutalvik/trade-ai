@@ -1896,7 +1896,8 @@ const CHART_MIN = 260;
 const CHART_MAX = 900;
 function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h: number) => void; onDone: (h: number) => void }) {
   const drag = useRef<{ y: number; h: number; last: number } | null>(null);
-  const clamp = (h: number) => Math.max(CHART_MIN, Math.min(CHART_MAX, Math.round(h)));
+  // Never taller than the window allows: leave room for the header, the chart toolbars and some of Positions.
+  const clamp = (h: number) => Math.max(CHART_MIN, Math.min(CHART_MAX, window.innerHeight - 330, Math.round(h)));
   return (
     <div
       className="row-resizer"
@@ -1941,12 +1942,10 @@ function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h
 // Placeholder while a coin's candles load: a glowing price line draws itself across a faint
 // grid, a pulsing dot rides its tip, and the coin's icon and name sit above it.
 const LOAD_PATH = "M0,167 C40,154 60,184 95,146 S150,96 185,121 S240,175 280,129 S340,58 380,83 S440,142 480,104 S540,54 600,66";
-function ChartLoading({ symbol, icon }: { symbol: string; icon?: string }) {
+function ChartLoading({ symbol }: { symbol: string; icon?: string }) {
   return (
     <div className="chart-loading2" role="status" aria-label={`Loading the ${symbol} chart`}>
       <div className="cl-head">
-        {icon ? <img src={icon} alt="" /> : <span className="cl-dot-icon">{symbol.slice(0, 1)}</span>}
-        <span className="cl-name">{symbol}</span>
         <span className="cl-status">Loading chart</span>
       </div>
       <svg className="cl-svg" viewBox="0 0 600 240" preserveAspectRatio="xMidYMid meet" aria-hidden="true">

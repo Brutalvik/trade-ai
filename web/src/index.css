@@ -995,3 +995,13 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .cl-line { animation: none; stroke-dashoffset: 0; } .cl-area { animation: none; opacity: 1; } .cl-status, .cl-head img, .cl-dot-icon { animation: none; } .cl-tip { display: none; } }
 .cl-svg { height: auto; max-height: 72%; min-height: 0; aspect-ratio: 600 / 240; }
 .cl-tip { animation: cl-tip 2.4s linear infinite; } @keyframes cl-tip { 0%, 75% { opacity: 1; } 95%, 100% { opacity: 0; } }
+
+/* Chart loader stays inside its box (legend sits below it), same height as the loaded chart */
+.layout .chart-panel:not(.maximized) .chart.empty { height: calc(var(--chart-h, 420px) + 72px); }
+.chart.empty { overflow: hidden; }
+.chart.empty > .chart-loading2 { align-self: stretch; justify-self: stretch; min-height: 0; overflow: hidden; }
+.chart-loading2 .cl-svg { flex: 1 1 0; min-height: 0; max-height: none; height: auto; width: 100%; aspect-ratio: auto; overflow: hidden; }
+/* Chart card is exactly as tall as its content, so dragging the handle moves Positions with it (no blank gap) */
+.layout > .chart-panel:not(.maximized) { min-height: 0; }
+/* the tip dot moves at a steady speed, so the line draws at the same steady speed (dot stays on the tip) */
+.cl-line { animation-timing-function: linear; }
