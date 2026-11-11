@@ -30,7 +30,7 @@ export default function App() {
     const ui = savedUi();
     return ui.pair ? (savedChart(ui.pair.pool, ui.tf ?? "5m")?.candles ?? []) : [];
   });
-  const [source, setSource] = useState<{ source: string; note: string } | null>(() => {
+  const [, setSource] = useState<{ source: string; note: string } | null>(() => {
     const ui = savedUi();
     const c = ui.pair ? savedChart(ui.pair.pool, ui.tf ?? "5m") : undefined;
     return c ? { source: c.source, note: "" } : null;
@@ -139,13 +139,6 @@ export default function App() {
             <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
             <span><i style={{ background: "#b45cff" }} />EMA 21</span>
             {lines.length > 0 && <span className="muted">Dashed lines: Claude's orders and exits</span>}
-            {source && (
-              <span className={`source ${source.source === "CoinMarketCap" ? "" : "fallback"}`} title={source.note}>
-                {isSeconds(tf) && source.source === "CoinMarketCap" && <span className="live-dot" />}
-                Data: {source.source}
-                {source.source !== "CoinMarketCap" && source.note ? ` · ${source.note}` : ""}
-              </span>
-            )}
           </div>
         </section>
 
