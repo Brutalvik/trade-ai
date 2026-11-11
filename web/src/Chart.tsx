@@ -1,4 +1,4 @@
-import { CandlestickSeries, ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries, LineStyle, type IChartApi, type IPriceLine, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
+import { CandlestickSeries, ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries, LineStyle, type AutoscaleInfo, type IChartApi, type IPriceLine, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 import type { Candle, Trade } from "./api";
 
@@ -14,6 +14,25 @@ function orderedCandles(c: Candle[]): Candle[] {
   const byTime = new Map<number, Candle>();
   for (const x of c) byTime.set(x.time, x);
   return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
+// Price range for the visible candles that ignores freak ticks: anything far outside the
+// spread of closing prices (Tukey fences on log prices) doesn't stretch the scale. Real
+// big moves still fit, because the closes move with them.
+function robustRange(c: Candle[], from: number, to: number): { minValue: number; maxValue: number } | null {
+  const v = c.slice(from, to + 1);
+  if (v.length < 5) return null;
+  const logs = v.map((x) => Math.log(x.close)).sort((a, b) => a - b);
+  const q = (p: number) => logs[Math.min(logs.length - 1, Math.floor(p * (logs.length - 1)))];
+  const iqr = Math.max(q(0.75) - q(0.25), 0.02);
+  const hiFence = Math.exp(q(0.75) + 3 * iqr), loFence = Math.exp(q(0.25) - 3 * iqr);
+  let lo = Infinity, hi = -Infinity;
+  for (const x of v) {
+    lo = Math.min(lo, Math.max(x.low, loFence));
+    hi = Math.max(hi, Math.min(x.high, hiFence));
+  }
+  const last = v.at(-1)!.close;
+  return { minValue: Math.min(lo, last), maxValue: Math.max(hi, last) };
 }
 
 function emaLine(c: Candle[], period: number) {
@@ -36,6 +55,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
   const s = useRef<{ candle: ISeriesApi<"Candlestick">; vol: ISeriesApi<"Histogram">; e9: ISeriesApi<"Line">; e21: ISeriesApi<"Line">; markers: ISeriesMarkersPluginApi<Time> } | null>(null);
   const lines = useRef<IPriceLine[]>([]);
   const fitted = useRef("");
+  const data = useRef<Candle[]>([]); // the candles on screen, for the price-scale fit
 
   useEffect(() => {
     if (!el.current) return;
@@ -47,11 +67,20 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
       timeScale: { borderColor: "rgba(80,120,255,0.15)", timeVisible: true, secondsVisible: false },
       crosshair: { vertLine: { color: "rgba(0,240,255,0.4)", labelBackgroundColor: "#0b3a4a" }, horzLine: { color: "rgba(0,240,255,0.4)", labelBackgroundColor: "#0b3a4a" } },
     });
-    const candle = c.addSeries(CandlestickSeries, { upColor: "#00f5a0", downColor: "#ff3d71", borderVisible: false, wickUpColor: "#00f5a0", wickDownColor: "#ff3d71" });
+    const candle = c.addSeries(CandlestickSeries, {
+      upColor: "#00f5a0", downColor: "#ff3d71", borderVisible: false, wickUpColor: "#00f5a0", wickDownColor: "#ff3d71",
+      // Fit the price scale to the real trading range, so one bad tick doesn't flatten everything.
+      autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
+        const r = original();
+        const range = c.timeScale().getVisibleLogicalRange();
+        const fit = range ? robustRange(data.current, Math.max(0, Math.floor(range.from)), Math.ceil(range.to)) : null;
+        return fit && r ? { ...r, priceRange: fit } : r;
+      },
+    });
     const vol = c.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
     c.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    const e9 = c.addSeries(LineSeries, { color: "#00e5ff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-    const e21 = c.addSeries(LineSeries, { color: "#b45cff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    const e9 = c.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: "#00e5ff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    const e21 = c.addSeries(LineSeries, { autoscaleInfoProvider: () => null, color: "#b45cff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
     s.current = { candle, vol, e9, e21, markers: createSeriesMarkers(candle, []) };
     chart.current = c;
     return () => {
@@ -68,6 +97,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
   useEffect(() => {
     if (!s.current || !candles.length) return;
     candles = orderedCandles(candles);
+    data.current = candles;
     const prec = precisionFor(candles.at(-1)!.close);
     const pf = { type: "price" as const, precision: prec, minMove: Math.pow(10, -prec) };
     s.current.candle.applyOptions({ priceFormat: pf });
