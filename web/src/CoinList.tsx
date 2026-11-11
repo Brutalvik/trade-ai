@@ -11,6 +11,14 @@ const KINDS: { id: ListKind; label: string; hint: string }[] = [
   { id: "community", label: "Community", hint: "What TRADING//RUST traders bought most this week" },
 ];
 const LS = "nexus-list-kind";
+// Price like fomo: tiny prices get a subscript zero count, e.g. $0.0₅1679 = $0.000001679.
+function Price({ p }: { p: number }) {
+  if (!(p > 0)) return <>$0</>;
+  if (p >= 0.001) return <>{fmtPrice(p)}</>;
+  const zeros = -Math.floor(Math.log10(p)) - 1; // zeros right after "0."
+  const digits = Math.round(p * 10 ** (zeros + 4)).toString().slice(0, 4);
+  return <>$0.0<sub className="price-zeros">{zeros}</sub>{digits}</>;
+}
 const fmtCount = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n));
 
 export function CoinList({ onSelect, selectedMint, notify }: { onSelect: (p: PairInfo) => void; selectedMint?: string; notify: (m: string, bad?: boolean) => void }) {
@@ -63,10 +71,10 @@ export function CoinList({ onSelect, selectedMint, notify }: { onSelect: (p: Pai
             {c.icon ? <img src={c.icon} alt="" loading="lazy" /> : <span className="coin-dot">{c.symbol.slice(0, 1)}</span>}
             <span className="coin-id">
               <b>{c.symbol}</b>
-              <span className="muted">{kind === "crypto" ? `#${i + 1} · ` : ""}{fmtPrice(c.priceUsd)}</span>
+              <span className="muted">{kind === "crypto" ? `#${i + 1} · ` : ""}{fmtBig(c.mcap)} MC</span>
             </span>
             <span className="coin-nums">
-              <b>{fmtBig(c.mcap)} <small className="muted">MC</small></b>
+              <b><Price p={c.priceUsd} /></b>
               {kind === "held" && c.holders ? (
                 <span className="muted">{fmtCount(c.holders)} holders</span>
               ) : kind === "community" && c.buyers ? (

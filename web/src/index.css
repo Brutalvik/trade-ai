@@ -653,3 +653,4 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .real-done a { color: var(--cyan); }
 .token-link { color: var(--text); text-decoration: none; padding: 0; }
 .token-link:hover b { color: var(--cyan); text-decoration: underline; text-underline-offset: 3px; }
+.price-zeros { font-size: 0.72em; vertical-align: -0.25em; margin: 0 1px; }
