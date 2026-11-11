@@ -218,11 +218,6 @@ export default function App() {
       <TopBar status={status} state={state} onSelect={selectPair} notify={notify} refresh={() => { void api.state().then(setState); void loadMe(); }} />
       <BotTradeNotifications state={state} onOpen={openPool} />
       <UpdateBanner serverCommit={status?.commit} />
-      {state?.signedOut && (
-        <div className="banner signed-out">
-          <b>You're signed out.</b> Your paper account, trades and bot are hidden. Sign in (top right) to see them and trade.
-        </div>
-      )}
       {status?.storage === "temp" && (
         <div className="banner">
           <b>The bot can't stay on yet.</b> This server has nowhere permanent to save the bot and your paper account, so they reset. Add the free Upstash Redis database in Vercel (Storage tab), then redeploy. Steps are in the README.
@@ -379,12 +374,12 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
         )}
       </div>
       <div className="stats">
-        <SettingsButton alerts={status?.alerts ?? null} continuous={!!state?.settings.continuous} onSaved={refresh} notify={notify} />
+        {me && <SettingsButton alerts={status?.alerts ?? null} continuous={!!state?.settings.continuous} onSaved={refresh} notify={notify} />}
         <SoundToggle />
-        <WalletButton notify={notify} state={state} />
-        <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="AI key">AI</span>
-        {status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
-        {real ? (
+        {me && <WalletButton notify={notify} state={state} />}
+        {me && <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="AI key">AI</span>}
+        {me && status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
+        {!me ? null : real ? (
           <div className="equity">
             <small>WALLET</small>
             <b>{walletUsd === null ? "…" : fmtUsd(walletUsd)}</b>
