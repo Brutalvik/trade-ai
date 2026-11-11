@@ -853,3 +853,8 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .coin-arrow:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .coin-arrow:disabled { opacity: 0.3; cursor: default; }
 .coin-top .panel-toggle { width: 30px; height: 30px; margin-left: 2px; }
+/* Keep the selected tab's underline inside the scrolling strip (it was clipped) */
+.coin-top { padding-bottom: 0; align-items: stretch; }
+.coin-tabs { align-items: stretch; }
+.coin-tabs button { margin-bottom: 0; padding: 8px 10px 7px; }
+.coin-top .coin-arrow, .coin-top .panel-toggle { align-self: center; }
