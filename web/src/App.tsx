@@ -273,7 +273,7 @@ export default function App() {
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
-            <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)}>
+            <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} onOpen={openPool}>
               {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
             </BotTabs>
           )}
@@ -1866,7 +1866,7 @@ function BotLog({ state }: { state: AppState | null }) {
 }
 
 // Tabs above Auto-pilot: Bot 1, Bot 2, Bot 3 as the plan allows; each trades its own coin.
-function BotTabs({ state, limit, children }: { state: AppState | null; limit: number; children: (botId: string) => ReactNode }) {
+function BotTabs({ state, limit, onOpen, children }: { state: AppState | null; limit: number; onOpen: (chain: string, pool: string) => void; children: (botId: string) => ReactNode }) {
   const saved = allBots(state).map((b) => b.id);
   const ids = [...new Set([...["1", "2", "3"].slice(0, Math.max(1, Math.min(3, limit))), ...saved])].sort();
   const [sel, setSel] = useState(() => localStorage.getItem("nexus-bot-tab") ?? "1");
@@ -1881,7 +1881,14 @@ function BotTabs({ state, limit, children }: { state: AppState | null; limit: nu
           const b = allBots(state).find((x) => x.id === id)?.bot;
           const label = b?.running ? (b.config?.pick === "auto" ? (b.target?.symbol ?? "Auto") : b.config?.symbol) : null;
           return (
-            <button key={id} role="tab" aria-selected={current === id} className={current === id ? "on" : ""} onClick={() => setSel(id)} title={b?.running ? `Bot ${id} is running` : `Bot ${id} is off`}>
+            <button key={id} role="tab" aria-selected={current === id} className={current === id ? "on" : ""} onClick={() => {
+              setSel(id);
+              // Show this bot's coin in the chart: the coin it holds, else the one it trades / targets.
+              const held = state?.positions.find((p) => p.source === "bot" && (p.botId ?? "1") === id);
+              const chain = held?.chain ?? (b?.running ? (b.config?.pick === "auto" ? b.target?.chain : b.config?.chain) : undefined);
+              const pool = held?.pool ?? (b?.running ? (b.config?.pick === "auto" ? b.target?.pool : b.config?.pool) : undefined);
+              if (chain && pool) onOpen(chain, pool);
+            }} title={b?.running ? `Bot ${id} is running: click to show its coin` : `Bot ${id} is off`}>
               <span className={`dot ${b?.running ? "live" : ""}`} />
               <span className="bot-tab-label">Bot {id}{label ? <span className="muted"> · {label}</span> : null}</span>
             </button>
