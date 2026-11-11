@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import type { Request, Response } from "express";
 import { createStore } from "./store.js";
 import { audit } from "./audit.js";
+import { resolvePrivyLogin } from "./privy.js";
 import { month, permissionsFor, PLANS, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 
 const store = createStore();
@@ -24,9 +25,11 @@ type User = {
   createdAt: number;
   avatarUrl?: string | null; // profile picture (coming later)
   plan?: PlanId; // what they pay for (default free)
+  privyId?: string; // Privy user (DID) when they sign in with Privy
+  solanaAddress?: string; // their Privy embedded Solana wallet
   role?: Role; // user | admin
 };
-export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role };
+export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role; solanaAddress: string | null; hasPassword: boolean };
 
 const COOKIE = "nexus_session";
 const SESSION_DAYS = 30;
@@ -35,7 +38,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const userKey = (u: string) => `user:${u.toLowerCase()}`;
 const emailKey = (e: string) => `email:${e.toLowerCase()}`;
-const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user" });
+const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash });
 
 let secret: Buffer | null = null;
 async function key() {
@@ -226,7 +229,7 @@ export async function signIn(req: Request, res: Response) {
   const user = name ? await store.kvGet<User>(userKey(name)) : null;
   // Hash even when the user doesn't exist, so timing doesn't reveal which usernames exist.
   const hash = await hashPassword(password, user ? Buffer.from(user.salt, "hex") : crypto.randomBytes(16));
-  if (!user || !crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(user.hash, "hex"))) {
+  if (!user || !user.hash || !crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(user.hash, "hex"))) {
     await store.kvSet(failKey, fails + 1, { ttlMs: 15 * 60_000 });
     throw new Error("Wrong username/email or password");
   }
@@ -234,6 +237,58 @@ export async function signIn(req: Request, res: Response) {
   await setSession(res, user);
   await audit(user.username, "account.signin", "Signed in", { ip: clientIp(req) });
   await ownerName(user);
+  return { user: { ...pub(user), owner: true } };
+}
+
+// ---------- Sign in with Privy (email code or Google); our copy of every user stays here ----------
+const privyKey = (did: string) => `privy:${did}`;
+
+// Step 1: verify the Privy login and sign in the matching user (by Privy ID, or by email for
+// accounts made before Privy). A brand-new person gets { needsProfile } to pick a username.
+export async function privyLogin(req: Request, res: Response) {
+  const p = await resolvePrivyLogin(String(req.body?.accessToken ?? ""));
+  let name = await store.kvGet<string>(privyKey(p.did));
+  if (!name && p.email) {
+    name = await store.kvGet<string>(emailKey(p.email)); // an existing account with this email: link it
+    if (name) await store.kvSet(privyKey(p.did), name.toLowerCase());
+  }
+  const user = name ? await store.kvGet<User>(userKey(name)) : null;
+  if (!user) {
+    const [first, ...rest] = (p.name ?? "").trim().split(/\s+/);
+    return { needsProfile: true, email: p.email ?? null, firstName: first || "", lastName: rest.join(" ") };
+  }
+  const updated: User = { ...user, privyId: p.did, solanaAddress: p.solanaAddress ?? user.solanaAddress };
+  if (updated.privyId !== user.privyId || updated.solanaAddress !== user.solanaAddress) await store.kvSet(userKey(user.username), updated);
+  await addToIndex(user.username);
+  await setSession(res, updated);
+  await audit(user.username, "account.signin", "Signed in with Privy", { ip: clientIp(req), method: p.method, wallet: updated.solanaAddress ?? null });
+  return { user: { ...pub(updated), owner: true } };
+}
+
+// Step 2 (first time only): create our own user record for a new Privy login.
+export async function privyCompleteProfile(req: Request, res: Response) {
+  const p = await resolvePrivyLogin(String(req.body?.accessToken ?? ""));
+  if (await store.kvGet<string>(privyKey(p.did))) return privyLogin(req, res); // already set up
+  if (!p.email) throw new Error("Your Privy login has no email address; sign in with email or Google");
+  const username = String(req.body?.username ?? "").trim();
+  const firstName = String(req.body?.firstName ?? "").trim();
+  const lastName = String(req.body?.lastName ?? "").trim();
+  if (!USERNAME_RE.test(username)) throw new Error("Username: 3-20 letters, numbers or _");
+  if (!firstName || !lastName || firstName.length > 40 || lastName.length > 40) throw new Error("Enter your first and last name");
+  const user: User = {
+    username, firstName, lastName, email: p.email, salt: "", hash: "", passVer: 1, createdAt: Date.now(), avatarUrl: null,
+    privyId: p.did, solanaAddress: p.solanaAddress,
+  };
+  if (!(await store.kvSet(userKey(username), user, { nx: true }))) throw new Error("That username is taken");
+  if (!(await store.kvSet(emailKey(p.email), username.toLowerCase(), { nx: true }))) {
+    await store.kvDel(userKey(username));
+    throw new Error("An account with that email already exists. Sign in again to link it.");
+  }
+  await store.kvSet(privyKey(p.did), username.toLowerCase());
+  await addToIndex(username);
+  await audit(username, "account.signup", "Account created (Privy)", { email: p.email, method: p.method, wallet: p.solanaAddress ?? null });
+  await setSession(res, user);
+  await audit(username, "account.signin", "Signed in with Privy", { ip: clientIp(req), method: p.method });
   return { user: { ...pub(user), owner: true } };
 }
 

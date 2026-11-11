@@ -4,6 +4,7 @@
 //    their embedded Solana wallet, so they never sign in twice.
 // The signing key is made once and kept in the store (no extra setting needed).
 import crypto from "node:crypto";
+import { PrivyClient } from "@privy-io/node";
 import { createStore } from "./store.js";
 
 const store = createStore();
@@ -50,4 +51,46 @@ export async function tokenFor(username: string) {
   const key = crypto.createPrivateKey({ key: k.privateJwk, format: "jwk" });
   const sig = crypto.sign("sha256", Buffer.from(input), { key, dsaEncoding: "ieee-p1363" });
   return { token: `${input}.${b64url(sig)}`, expiresAt: (now + 600) * 1000 };
+}
+
+// ---------- Privy as the login ----------
+export type PrivyLogin = { did: string; email?: string; name?: string | null; solanaAddress?: string; method: "email" | "google" | "other" };
+
+let client: PrivyClient | null = null;
+function privyClient() {
+  const appId = privyAppId();
+  const appSecret = process.env.PRIVY_APP_SECRET?.trim();
+  if (!appId || !appSecret) throw new Error("Sign-in isn't set up yet (Privy keys missing)");
+  return (client ??= new PrivyClient({ appId, appSecret }));
+}
+
+// Verify a Privy access token (from the page) and look up who it is. Throws if invalid.
+async function privyLoginFromToken(accessToken: string): Promise<PrivyLogin> {
+  if (!accessToken) throw new Error("Missing Privy login");
+  const c = privyClient();
+  let claims;
+  try {
+    claims = await c.utils().auth().verifyAccessToken(accessToken);
+  } catch {
+    throw new Error("Your sign-in expired. Please sign in again.");
+  }
+  const user = await c.users()._get(claims.user_id);
+  const accounts = (user.linked_accounts ?? []) as any[];
+  const emailAcc = accounts.find((a) => a.type === "email");
+  const google = accounts.find((a) => a.type === "google_oauth");
+  const wallet = accounts.find((a) => a.chain_type === "solana" && (a.connector_type === "embedded" || a.wallet_client_type === "privy"));
+  return {
+    did: claims.user_id,
+    email: (emailAcc?.address ?? google?.email)?.toLowerCase(),
+    name: google?.name ?? null,
+    solanaAddress: wallet?.address,
+    method: emailAcc ? "email" : google ? "google" : "other",
+  };
+}
+
+// Swappable for tests (no network); the app always uses the real check.
+let resolver = privyLoginFromToken;
+export const resolvePrivyLogin = (token: string) => resolver(token);
+export function __setPrivyResolverForTests(fn: (token: string) => Promise<PrivyLogin>) {
+  resolver = fn;
 }

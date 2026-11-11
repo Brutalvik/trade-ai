@@ -1,5 +1,7 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
-import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { usePrivy } from "@privy-io/react-auth";
+import { useWallets } from "@privy-io/react-auth/solana";
 import { createPortal } from "react-dom";
 import { api, fmtPrice, fmtUsd, type AdminUser, type AppState, type AuditEntry, type Trade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 
@@ -115,7 +117,132 @@ function Avatar({ user, size }: { user: User; size: number }) {
   );
 }
 
-export function AccountButton({ notify, onChange, state }: { notify: (m: string, bad?: boolean) => void; onChange: () => void; state: AppState | null }) {
+// True when the page runs inside Privy's provider (sign-in and wallets through Privy).
+export const PrivyEnabled = createContext(false);
+
+type Props = { notify: (m: string, bad?: boolean) => void; onChange: () => void; state: AppState | null };
+export function AccountButton(props: Props) {
+  return useContext(PrivyEnabled) ? <PrivyAccountButton {...props} /> : <PasswordAccountButton {...props} />;
+}
+
+// Sign in with Privy (email code or Google). The server verifies it and keeps its own copy of
+// the user (linked by email for existing accounts); new people pick a username once.
+function PrivyAccountButton({ notify, onChange, state }: Props) {
+  const { ready, authenticated, login, logout, getAccessToken } = usePrivy();
+  const { wallets } = useWallets();
+  const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [open, setOpen] = useState(false);
+  const [setup, setSetup] = useState<{ email: string | null; firstName: string; lastName: string } | null>(null);
+  const linking = useRef(false);
+  useEffect(() => {
+    api.me().then((r) => setUser(r.user)).catch(() => setUser(null));
+  }, []);
+  const link = async () => {
+    if (linking.current) return;
+    linking.current = true;
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      const r = await api.privyLogin(token);
+      if (r.needsProfile) setSetup({ email: r.email ?? null, firstName: r.firstName ?? "", lastName: r.lastName ?? "" });
+      else if (r.user) {
+        setUser(r.user);
+        onChange();
+        notify(`Welcome, ${r.user.firstName}! Your paper account and wallet are ready.`);
+      }
+    } catch (e: any) {
+      notify(e.message, true);
+    } finally {
+      linking.current = false;
+    }
+  };
+  // Signed in to Privy but not to the app yet: link the two.
+  useEffect(() => {
+    if (ready && authenticated && user === null && !setup) void link();
+  }, [ready, authenticated, user, setup]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The wallet is created just after the first sign-in: tell the server its address once it exists.
+  const wallet = wallets[0]?.address;
+  useEffect(() => {
+    if (user && wallet && !user.solanaAddress && authenticated) void link();
+  }, [user?.username, wallet, authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
+  const signOut = async () => {
+    await api.signOut().catch(() => {});
+    await logout().catch(() => {});
+    setUser(null);
+    setOpen(false);
+    onChange();
+    notify("Signed out. Your paper account is hidden until you sign in again.");
+  };
+  if (user === undefined) return <span className="avatar-slot" />;
+  return (
+    <>
+      {user ? (
+        <button className="avatar-btn" onClick={() => setOpen(true)} data-tip="Profile" aria-label={`Profile: ${user.firstName} ${user.lastName}`}>
+          <Avatar user={user} size={34} />
+        </button>
+      ) : (
+        <button className="btn ghost signin-btn" onClick={() => (authenticated ? void link() : login())} disabled={!ready}>Sign in</button>
+      )}
+      {setup && (
+        <SetupProfileModal
+          initial={setup}
+          onClose={() => { setSetup(null); void logout(); }}
+          onDone={(u) => { setSetup(null); setUser(u); onChange(); notify(`Welcome, ${u.firstName}! Your paper account and wallet are ready.`); }}
+          getToken={getAccessToken}
+        />
+      )}
+      {open && user && (
+        <ProfileModal
+          user={{ ...user, solanaAddress: user.solanaAddress ?? wallet ?? null }}
+          state={state}
+          notify={notify}
+          onClose={() => setOpen(false)}
+          onSignedOut={() => void signOut()}
+          signOutOverride={signOut}
+        />
+      )}
+    </>
+  );
+}
+
+// First Privy sign-in: pick a username (and confirm the name) for the app's own account.
+function SetupProfileModal({ initial, onClose, onDone, getToken }: { initial: { email: string | null; firstName: string; lastName: string }; onClose: () => void; onDone: (u: User) => void; getToken: () => Promise<string | null> }) {
+  const [f, setF] = useState({ username: "", firstName: initial.firstName, lastName: initial.lastName });
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setErr("");
+    setBusy(true);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Your sign-in expired. Please sign in again.");
+      const r = await api.privyComplete({ accessToken: token, ...f });
+      onDone(r.user);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const field = (k: keyof typeof f) => ({ value: f[k], onChange: (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value }) });
+  return (
+    <Modal title="Set up your account" onClose={onClose} narrow>
+      <form className="auth-form" onSubmit={submit}>
+        <p className="muted small">Welcome! {initial.email ? <>Signed in as <b>{initial.email}</b>. </> : ""}Pick a username for your account. Your Solana wallet is created automatically.</p>
+        <div className="grid2">
+          <label>First name<input autoComplete="given-name" required maxLength={40} {...field("firstName")} /></label>
+          <label>Last name<input autoComplete="family-name" required maxLength={40} {...field("lastName")} /></label>
+        </div>
+        <label>Username<input autoFocus autoComplete="username" required pattern="[A-Za-z0-9_]{3,20}" title="3-20 letters, numbers or _" {...field("username")} /><small>3-20 letters, numbers or _. It can't be changed later.</small></label>
+        {err && <p className="down small" role="alert">{err}</p>}
+        <button className="btn buy wide" disabled={busy}>{busy ? "Please wait…" : "Create my account"}</button>
+      </form>
+    </Modal>
+  );
+}
+
+function PasswordAccountButton({ notify, onChange, state }: Props) {
   const [user, setUser] = useState<User | null | undefined>(undefined); // undefined = still checking
   const [open, setOpen] = useState<"auth" | "profile" | null>(null);
   useEffect(() => {
@@ -195,7 +322,7 @@ function AuthModal({ onClose, onDone }: { onClose: () => void; onDone: (u: User)
   );
 }
 
-function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void }) {
+function ProfileModal({ user, state, onClose, onSignedOut, notify, signOutOverride }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void; signOutOverride?: () => Promise<void> }) {
   const access = useAccess();
   const [activityOpen, setActivityOpen] = useState(false);
   // This login's own paper account at a glance.
@@ -226,8 +353,18 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: Use
     }
   };
   const signOut = async () => {
+    if (signOutOverride) return void (await signOutOverride());
     await api.signOut().catch(() => {});
     onSignedOut();
+  };
+  const copyWallet = async () => {
+    if (!user.solanaAddress) return;
+    try {
+      await navigator.clipboard.writeText(user.solanaAddress);
+      notify("Wallet address copied");
+    } catch {
+      notify(user.solanaAddress);
+    }
   };
   return (
     <Modal title="Profile" onClose={onClose} narrow foot={<button className="btn ghost" onClick={signOut}>Sign out</button>}>
@@ -261,10 +398,11 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify }: { user: Use
         <div><dt>Username</dt><dd>@{user.username} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Name</dt><dd>{user.firstName} {user.lastName} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Email</dt><dd>{user.email}</dd></div>
+        <div><dt>Wallet (Solana)</dt><dd>{user.solanaAddress ? <button className="link-btn mono" onClick={() => void copyWallet()} title="Copy the full address">{user.solanaAddress.slice(0, 6)}…{user.solanaAddress.slice(-4)} ⧉</button> : "Not created yet"}</dd></div>
         <div><dt>Started with</dt><dd>{acc ? fmtUsd(acc.startCash) : "–"}</dd></div>
       </dl>
       <p className="muted tiny">Your paper account is yours alone: other logins have their own balance, trades and bot.</p>
-      {!resetting ? (
+      {user.hasPassword === false ? null : !resetting ? (
         <button className="btn ghost" onClick={() => setResetting(true)}>🔑 Reset password</button>
       ) : (
         <form className="auth-form" onSubmit={changePw}>

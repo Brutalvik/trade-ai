@@ -71,7 +71,7 @@ export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.
 export type Usage = { month: string; used: number; limit: number; topup?: number }; // limit -1 = unlimited; topup = extra tokens that don't expire
 export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number }[]; yearlyMonthsPaid: number };
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; permissions: Permission[] }; // freeTrades -1 = unlimited
-export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; usage?: Usage };
+export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean };
 export type AdminUser = User & { usage: Usage };
 export type AuditEntry = { t: number; type: string; by?: string; summary: string; data?: Record<string, unknown> };
 export type Page<T> = { total: number; items: T[] };
@@ -108,6 +108,8 @@ export const api = {
   signIn: (b: { login: string; password: string }) => req<{ user: User }>("/auth/signin", b),
   signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),
   signOut: () => req("/auth/signout", {}),
+  privyLogin: (accessToken: string) => req<{ user?: User; needsProfile?: boolean; email?: string | null; firstName?: string; lastName?: string }>("/auth/privy-login", { accessToken }),
+  privyComplete: (b: { accessToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/privy-complete", b),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   plans: () => req<PlanInfo[]>("/plans"),
   activity: (before = 0) => req<Page<AuditEntry>>(`/activity?before=${before}&limit=50`),

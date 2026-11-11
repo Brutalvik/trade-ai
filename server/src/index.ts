@@ -184,6 +184,9 @@ app.get("/api/auth/privy-token", authRoute(async (req, res) => {
 app.post("/api/auth/signup", authRoute(auth.signUp));
 app.post("/api/auth/signin", authRoute(auth.signIn));
 app.post("/api/auth/signout", authRoute(auth.signOut));
+// Sign in with Privy (email code or Google): verify, then link or create our own user record.
+app.post("/api/auth/privy-login", authRoute(auth.privyLogin));
+app.post("/api/auth/privy-complete", authRoute(auth.privyCompleteProfile));
 app.post("/api/auth/password", authRoute(auth.changePassword));
 app.post("/api/reset", signedIn(wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10)))));
 app.post(
