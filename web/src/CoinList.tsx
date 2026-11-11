@@ -1,6 +1,7 @@
 // Left sidebar: Solana coin lists (Crypto, Trending, Most held, Graduated, Bonding, Community).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, fmtBig, fmtPrice, type ListCoin, type ListKind, type PairInfo } from "./api";
+import { api, fmtBig, fmtPrice, prefetchChart, type ListCoin, type ListKind, type PairInfo } from "./api";
+import { savedUi } from "./persist";
 
 const KINDS: { id: ListKind; label: string; hint: string }[] = [
   { id: "crypto", label: "Crypto", hint: "All coins ranked by market cap (charts come from each coin's busiest on-chain market)" },
@@ -27,6 +28,7 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
   const [lists, setLists] = useState<Partial<Record<ListKind, ListCoin[]>>>({});
   const [err, setErr] = useState("");
   const [opening, setOpening] = useState<string | null>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
 
   const load = useCallback((k: ListKind) => {
     setErr("");
@@ -104,7 +106,14 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
         {!coins && !err && <p className="muted small pad">Loading…</p>}
         {coins && !coins.length && <p className="muted small pad">{kind === "community" ? "No buys from TRADING//RUST traders yet this week." : "Nothing here right now."}</p>}
         {coins?.map((c, i) => (
-          <button key={c.mint} className={`coin-row ${selectedMint === c.mint ? "on" : ""}`} onClick={() => void open(c)} disabled={opening === c.mint}>
+          <button key={c.mint} className={`coin-row ${selectedMint === c.mint ? "on" : ""}`} onClick={() => void open(c)} disabled={opening === c.mint}
+            onMouseEnter={() => {
+              // Preload this coin's chart while the pointer rests on it, so a click shows it at once.
+              if (!c.pair) return;
+              const p = c.pair;
+              hoverTimer.current = window.setTimeout(() => void prefetchChart(p.chain, p.pool, savedUi().tf ?? "5m"), 150);
+            }}
+            onMouseLeave={() => window.clearTimeout(hoverTimer.current)}>
             {c.icon ? <img src={c.icon} alt="" loading="lazy" /> : <span className="coin-dot">{c.symbol.slice(0, 1)}</span>}
             <span className="coin-id">
               <b>{c.symbol}</b>

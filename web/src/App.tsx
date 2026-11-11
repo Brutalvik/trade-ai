@@ -131,11 +131,16 @@ export default function App() {
     api.search(DEFAULT_PAIR.query).then((r) => { const p = r.find((x) => x.chain === "solana") ?? r[0]; if (p) setPair(p); }).catch((e) => notify(e.message, true));
   }, [notify]);
 
+  // Which coin / timeframe is on screen now, so a slow answer for a coin you've left is ignored.
+  const showing = useRef("");
+  showing.current = `${pair?.pool}:${tf}`;
   useInterval(() => {
     if (!pair) return;
+    const want = `${pair.pool}:${tf}`;
     api
       .candles(pair.chain, pair.pool, tf)
       .then((r) => {
+        if (showing.current !== want) return; // you've moved on: don't show this coin's candles
         setCandles(r.candles);
         setSource({ source: r.source, note: r.note });
         saveChart(pair.pool, tf, r.candles, r.source);
@@ -250,7 +255,7 @@ export default function App() {
         <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`} style={{ "--chart-h": `${chartH}px` } as CSSProperties}>
           {!chartMax && <RowResizer height={chartH} onChange={setChartH} onDone={(h) => localStorage.setItem("nexus-chart-h", String(h))} />}
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
-          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? <ChartLoading symbol={pair.symbol} /> : "Search a ticker to begin"}</div>}
+          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? <ChartLoading symbol={pair.symbol} icon={pair.imageUrl} /> : "Search a ticker to begin"}</div>}
           <div className="legend">
             <button className="chart-size-btn" onClick={() => setChartMax((v) => !v)} aria-pressed={chartMax} title={chartMax ? "Minimize (Esc)" : "Fill the window"} aria-label={chartMax ? "Minimize chart" : "Maximize chart"}>
               {chartMax ? (
@@ -1074,6 +1079,8 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   const [waitForHold, setWaitForHold] = useState(savedBot.waitForHold ?? false);
   const [rewardRule, setRewardRule] = useState(savedBot.rewardRule ?? true); // 1.5x reward rule (off = old rules)
   const [ruleInfoOpen, setRuleInfoOpen] = useState(false);
+  const [strongMode, setStrongMode] = useState(savedBot.strongMode ?? true); // Strong mode (stricter entries)
+  const [strongInfoOpen, setStrongInfoOpen] = useState(false);
   const [takeProfitUsd, setTakeProfitUsd] = useState<number>(savedBot.takeProfitUsd ?? 0);
   // Safety settings the user switched off (each one confirmed with "I understand" and logged).
   const [offKnobs, setOffKnobs] = useState<string[]>(savedBot.disabled ?? []);
@@ -1133,7 +1140,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   };
   // "Custom" shows the input boxes; picking a preset goes back to the summary view.
   const [custom, setCustom] = useState(savedBot.custom ?? false);
-  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd, disabled: offKnobs } }), [cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd, offKnobs]);
+  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, strongMode, takeProfitUsd, disabled: offKnobs } }), [cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, strongMode, takeProfitUsd, offKnobs]);
   const pick = (p: PresetKey) => {
     setCustom(false);
     setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
@@ -1157,6 +1164,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
       if (a.autoChain) setAutoChain(a.autoChain);
       setWaitForHold(!!a.waitForHold);
       setRewardRule(a.rewardRule !== false);
+      setStrongMode(a.strongMode !== false);
       setTakeProfitUsd(a.takeProfitUsd ?? 0);
       setOffKnobs(a.disabled ?? []);
     }
@@ -1218,7 +1226,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
     setRiskOpen(false);
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, takeProfitUsd, disabled: offKnobs, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, strongMode, takeProfitUsd, disabled: offKnobs, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
     try {
       await api.startBot(full, botId);
       notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})${allowRisky ? " · risky mode" : ""}`);
@@ -1521,6 +1529,37 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
         </div>,
         document.body,
       )}
+      {(() => {
+        const on = running ? active?.strongMode !== false : strongMode;
+        const flip = async (next: boolean) => {
+          setStrongMode(next);
+          if (running) {
+            try {
+              await api.botStrongMode(next, botId);
+              await refresh();
+              notify(next ? "Strong mode on" : "Strong mode off", !next);
+            } catch (e: any) {
+              notify(e.message, true);
+            }
+          }
+        };
+        return (
+          <div className={`rule-switch strong ${on ? "is-on" : ""}`}>
+            <span>
+              <span className="rule-title">
+                <b>Strong mode</b>
+                <button type="button" className="info-btn small" onClick={() => setStrongInfoOpen(true)} aria-label="What Strong mode does" title="What Strong mode does">i</button>
+              </span>
+              <span className="muted tiny">{on ? "On: honest odds, no falling knives, waits for a bounce, pauses after 3 losses." : "Off: entries follow your other settings only."}</span>
+            </span>
+            <button type="button" role="switch" aria-checked={on} aria-label="Strong mode" className={`mini-switch ${on ? "on" : ""}`}
+              onClick={() => (on ? setOffAsk({ key: "strongMode", label: "Strong mode", then: () => void flip(false) }) : void flip(true))}>
+              <span />
+            </button>
+          </div>
+        );
+      })()}
+      {strongInfoOpen && <StrongModeInfo on={running ? active?.strongMode !== false : strongMode} onClose={() => setStrongInfoOpen(false)} />}
       <div className="rule-switch">
         <span>
           <span className="rule-title">
@@ -1787,6 +1826,7 @@ function TrackRecord({ state }: { state: AppState | null }) {
 
 // What turning each safety setting off means (shown in the "I understand" popup and saved with it).
 const OFF_WARN: Record<string, string> = {
+  strongMode: "The bot goes back to buying on your other settings only: it can buy dips while a coin is falling, trust the AI's win chances as given, buy before a bounce, and keep trading after a losing streak.",
   riskPerTradePct: "Every trade will use the full 'Money per trade' amount, whatever the distance to the exit. One losing trade can cost much more of your account.",
   minConfidence: "The bot will use orders with any win chance, including ones the AI expects to fail most of the time.",
   maxDrawdownPct: "Nothing will stop the bots if the account keeps falling. They can lose most of the account.",
@@ -1800,6 +1840,25 @@ const OFF_WARN: Record<string, string> = {
   rewardRule: "The bot may buy setups where the possible loss is bigger than the possible gain after fees.",
 };
 const OFF_LABEL: Record<string, string> = { riskPerTradePct: "Risk per trade", minConfidence: "Minimum win chance", maxDrawdownPct: "Emergency stop", breakEvenAtPct: "Profit guard", trailPct: "Trailing stop", lockPct: "Profit lock", partialAtPct: "Take half", maxDrop1hPct: "Skip dips while falling", cooldownMin: "Cool-down after a loss", dailyLossPct: "Daily loss limit" };
+
+// What Strong mode does.
+function StrongModeInfo({ on, onClose }: { on: boolean; onClose: () => void }) {
+  return (
+    <Modal title="Strong mode" onClose={onClose} narrow>
+      <p className="rule-now">Right now: <b className={on ? "up" : "amber"}>{on ? "ON" : "OFF"}</b></p>
+      <p>Extra checks on every buy, on top of all your other settings. It only makes the bot pickier about <b>when to buy</b>; how it sells doesn't change.</p>
+      <ul className="small">
+        <li><b>Honest odds.</b> The AI's win chance is scaled by how often your bots' trades really closed in profit (after 8+ trades). A trade must still make money on average with the scaled odds.</li>
+        <li><b>No falling knives.</b> No dip buys while the 1-hour trend is down or the coin dropped hard in the last hour, even in risky mode.</li>
+        <li><b>Wait for the bounce.</b> When a dip price is reached, the bot waits until the price bounces off its low before buying, and won't chase far above the dip price.</li>
+        <li><b>Breakouts must hold.</b> The price has to be above the breakout level now, not just spike there once.</li>
+        <li><b>Losing-streak pause.</b> After 3 losing trades in a row across your bots, no new buys for 60 minutes.</li>
+        <li><b>Respect "Avoid".</b> When the AI says stay out, or an order fails the fee check, it isn't traded, even in risky mode.</li>
+      </ul>
+      <p className="muted small">It means fewer trades. It can't guarantee profit: a coin can still fall right after a good-looking entry. Turning it off asks you to confirm, and that choice is saved in your activity history.</p>
+    </Modal>
+  );
+}
 
 // What the "Gain must be 1.5x the risk" switch does, with a worked example.
 function RewardRuleInfo({ on, risky, onClose }: { on: boolean; risky: boolean; onClose: () => void }) {
@@ -1879,18 +1938,41 @@ function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h
   );
 }
 
-// Placeholder while a coin's candles load: faint candles rising and falling in a wave.
-const LOAD_BARS = Array.from({ length: 28 }, (_, i) => ({ up: (i * 7) % 5 !== 0, base: 30 + ((i * 37) % 45) }));
-function ChartLoading({ symbol }: { symbol: string }) {
+// Placeholder while a coin's candles load: a glowing price line draws itself across a faint
+// grid, a pulsing dot rides its tip, and the coin's icon and name sit above it.
+const LOAD_PATH = "M0,167 C40,154 60,184 95,146 S150,96 185,121 S240,175 280,129 S340,58 380,83 S440,142 480,104 S540,54 600,66";
+function ChartLoading({ symbol, icon }: { symbol: string; icon?: string }) {
   return (
-    <div className="chart-loading" role="status" aria-label={`Loading the ${symbol} chart`}>
-      <div className="chart-loading-bars" aria-hidden="true">
-        {LOAD_BARS.map((b, i) => (
-          <span key={i} className={b.up ? "up" : "down"} style={{ height: `${b.base}%`, animationDelay: `${(i * 0.07).toFixed(2)}s` }} />
-        ))}
-        <span className="chart-loading-sweep" />
+    <div className="chart-loading2" role="status" aria-label={`Loading the ${symbol} chart`}>
+      <div className="cl-head">
+        {icon ? <img src={icon} alt="" /> : <span className="cl-dot-icon">{symbol.slice(0, 1)}</span>}
+        <span className="cl-name">{symbol}</span>
+        <span className="cl-status">Loading chart</span>
       </div>
-      <div className="chart-loading-label">Loading {symbol}</div>
+      <svg className="cl-svg" viewBox="0 0 600 240" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <defs>
+          <linearGradient id="clStroke" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor="#00e5ff" stopOpacity="0.15" />
+            <stop offset="60%" stopColor="#00e5ff" />
+            <stop offset="100%" stopColor="#b45cff" />
+          </linearGradient>
+          <linearGradient id="clFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#00e5ff" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="#00e5ff" stopOpacity="0" />
+          </linearGradient>
+          <filter id="clGlow" x="-10%" y="-50%" width="120%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        {[48, 96, 144, 192].map((y) => <line key={y} x1="0" x2="600" y1={y} y2={y} className="cl-grid" />)}
+        {[100, 200, 300, 400, 500].map((x) => <line key={x} x1={x} x2={x} y1="0" y2="240" className="cl-grid" />)}
+        <path d={`${LOAD_PATH} L600,240 L0,240 Z`} fill="url(#clFill)" className="cl-area" />
+        <path d={LOAD_PATH} pathLength={1} fill="none" stroke="url(#clStroke)" strokeWidth="3" strokeLinecap="round" filter="url(#clGlow)" className="cl-line" />
+        <circle r="5" className="cl-tip">
+          <animateMotion dur="2.4s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;0.75;1" calcMode="linear" path={LOAD_PATH} />
+        </circle>
+      </svg>
     </div>
   );
 }

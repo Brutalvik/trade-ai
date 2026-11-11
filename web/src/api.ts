@@ -22,7 +22,7 @@ export type ModelResult = { model: string; ok: true; signal: Signal; ms: number 
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
 export type Position = { id: string; botId?: string; imageUrl?: string; adopted?: boolean; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
 export type Trade = { id: string; botId?: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
-export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins"; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
+export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins"; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
 export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
 export type AppState = {
   mode: "paper";
@@ -113,6 +113,21 @@ async function req<T>(path: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+// Load a coin's chart into the browser cache ahead of a click (hovering a coin row).
+const prefetched = new Map<string, number>();
+export async function prefetchChart(chain: string, pool: string, tf: Timeframe) {
+  const key = `${chain}:${pool}:${tf}`;
+  if (Date.now() - (prefetched.get(key) ?? 0) < 20_000) return;
+  prefetched.set(key, Date.now());
+  try {
+    const r = await api.candles(chain, pool, tf);
+    const { saveChart } = await import("./persist");
+    saveChart(pool, tf, r.candles, r.source);
+  } catch {
+    prefetched.delete(key);
+  }
+}
+
 export const api = {
   status: () => req<Status>("/status"),
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
@@ -139,6 +154,7 @@ export const api = {
   cancelOrder: (id: string) => req("/orders/cancel", { id }),
   overrideDailyLimit: () => req("/bot/override-daily", {}),
   consentOff: (b: { setting: string; label: string; warning: string; botId?: string }) => req<{ ok: boolean }>("/consent/setting-off", b),
+  botStrongMode: (on: boolean, botId = "1") => req<{ ok: boolean; strongMode: boolean }>("/bot/strong-mode", { on, botId }),
   botRewardRule: (on: boolean, botId = "1") => req<{ ok: boolean; rewardRule: boolean }>("/bot/reward-rule", { on, botId }),
   signIn: (b: { login: string; password: string }) => req<{ user: User }>("/auth/signin", b),
   signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),

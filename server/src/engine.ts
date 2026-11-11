@@ -104,6 +104,7 @@ export type BotConfig = {
   waitForHold?: boolean;
   rewardRule?: boolean;
   takeProfitUsd?: number;
+  strongMode?: boolean; // extra entry filters on top of everything else (default on)
   disabled?: string[]; // settings the user switched off (each with a recorded "I understand") // sell the whole position once it is up this many dollars after fees (0 / missing = off) // only buy when the gain after fees is >= 1.5x the loss (default on; off = the old rules)
   // Safety rules (defaults apply when missing, including bots started before they existed).
   cooldownMin?: number; // after a losing trade, don't re-buy that coin for this long (default 30)
@@ -173,6 +174,7 @@ type State = {
     blocked: string | null; // why the bot isn't trading right now (shown in the panel)
     lastWatch: { at: number; by: "scheduler" | "dashboard" | "local" } | null; // last wake-up, to show the bot is alive
     noted: Record<string, number>; // one-time log messages already written
+    bounceLow?: Record<string, number>; // Strong mode: lowest price since a dip order was touched (per plan + order)
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -770,7 +772,7 @@ function startBotHere(cfg: BotConfig) {
   }
   rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
     symbol: cfg.symbol, pool: cfg.pool, pick: cfg.pick ?? "this", positionPct: cfg.positionPct, riskPerTradePct: cfg.riskPerTradePct, minConfidence: cfg.minConfidence,
-    dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky, settingsOff: cfg.disabled ?? [], rewardRule: cfg.rewardRule !== false,
+    dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky, settingsOff: cfg.disabled ?? [], rewardRule: cfg.rewardRule !== false, strongMode: cfg.strongMode !== false,
   });
   if (cfg.allowRisky)
     rec("consent.risky_mode", `Accepted "I understand, trade anyway" for ${cfg.symbol}`, {
@@ -895,6 +897,30 @@ function coinBlock(cfg: BotConfig, pool: string, symbol: string): string | null 
 export const GUARD_EXTRA_PCT = 1.5;
 export const GUARD_PROFIT_PCT = 0.5;
 export const protectAt = (cfg: Pick<BotConfig, "breakEvenAtPct">, cost: number) => Math.max(cost + 1, Math.min(cfg.breakEvenAtPct, cost + GUARD_EXTRA_PCT));
+// ---------- Strong mode ----------
+// Extra filters on entries (never on exits): honest odds from your own results, no dip buys in a
+// down-trend, wait for a bounce off the low, breakouts must hold, a pause after a losing streak,
+// and AVOID / fee-failing setups are skipped even in risky mode. On unless the user turns it off.
+export const strongOn = (cfg: BotConfig) => cfg.strongMode !== false && !isOff(cfg, "strongMode");
+export const STREAK_LOSSES = 3;
+export const STREAK_PAUSE_MIN = 60;
+// How much to trust the AI's win chances: your bots' real win rate vs what the AI predicted
+// (last 30 scored trades; needs 8+). Never above 1, never below 0.5.
+export function oddsFactor(trades: Trade[]) {
+  const scored = trades.filter((t) => t.source === "bot" && t.side === "SELL" && typeof t.predictedWinPct === "number").slice(0, 30);
+  if (scored.length < 8) return 1;
+  const pred = scored.reduce((s, t) => s + (t.predictedWinPct ?? 0), 0) / scored.length;
+  const won = (scored.filter((t) => (t.pnlUsd ?? 0) > 0).length / scored.length) * 100;
+  if (!(pred > 0)) return 1;
+  return Math.max(0.5, Math.min(1, won / pred));
+}
+// Losing streak across all the account's bots: the last N bot sells were all losses.
+export function streakPauseUntil(trades: Trade[]): number | null {
+  const sells = trades.filter((t) => t.source === "bot" && t.side === "SELL").slice(0, STREAK_LOSSES);
+  if (sells.length < STREAK_LOSSES || sells.some((t) => (t.pnlUsd ?? 0) >= 0)) return null;
+  const until = sells[0].time + STREAK_PAUSE_MIN * 60_000;
+  return Date.now() < until ? until : null;
+}
 export const MIN_REWARD_RISK = 1.5; // gain after fees must be at least this many times the loss
 export const RISKY_MAX_POSITION_PCT = 25; // risky mode: at most this % of the account per trade
 // Trailing stop sized to how much the coin normally swings: 3x its average 5-minute range,
@@ -1329,17 +1355,25 @@ async function tickBot(persist: boolean) {
     // The AI advised staying out: its risky setup is only traded if the user accepted the risk.
     if (c.stance === "AVOID" && !cfg.allowRisky)
       return noteOnce(`avoid:${sig.at}`, `The AI advises staying out of ${t3.symbol}, so its risky setup isn't traded. Start the bot and choose "I understand, trade anyway" to trade it.`), undefined;
+    const strong = strongOn(cfg);
+    if (strong) {
+      const pausedTill = streakPauseUntil(state.trades);
+      if (pausedTill) return noteOnce(`streak:${pausedTill}`, `Strong mode: ${STREAK_LOSSES} losing trades in a row, so no new buys until ${clock(pausedTill)}. Open trades are still managed.`, "bad"), undefined;
+      if (c.stance === "AVOID")
+        return noteOnce(`savoid:${sig.at}`, `Strong mode: the AI advises staying out of ${t3.symbol}, so its setups aren't traded (even in risky mode).`), undefined;
+    }
+    const factor = strong ? oddsFactor(state.trades) : 1;
     for (let i = 0; i < c.orders.length; i++) {
       const o = c.orders[i];
-      // Setups that fail the fee/risk check are shown as warnings; traded only in risky mode.
-      if (o.warning && !cfg.allowRisky) continue;
+      // Setups that fail the fee/risk check are shown as warnings; traded only in risky mode (never in Strong mode).
+      if (o.warning && (!cfg.allowRisky || strong)) continue;
       const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;
       // Orders below the user's minimum win chance are never used, but say so when their trigger is hit.
       // Trend filter: a crash is not a dip.
       if (o.kind !== "buy_breakout") {
         const drop = pair.change.h1;
         const maxDrop = cfg.maxDrop1hPct ?? 10;
-        if (!cfg.allowRisky && !isOff(cfg, "maxDrop1hPct") && (sig.trendDown || drop <= -maxDrop)) {
+        if ((strong || (!cfg.allowRisky && !isOff(cfg, "maxDrop1hPct"))) && (sig.trendDown || drop <= -maxDrop)) {
           if (triggerMet(o, q))
             noteOnce(`trend:${sig.at}:${i}`, `${t3.symbol} reached the ${label}, but it's falling (${sig.trendDown ? "1-hour trend is down" : `${drop.toFixed(1)}% in the last hour`}), so dip orders are paused. A crash is not a dip.`);
           continue;
@@ -1352,6 +1386,16 @@ async function tickBot(persist: boolean) {
           noteOnce(`rr:${sig.at}:${i}`, `${t3.symbol} reached the ${label}, but after fees it could gain ${o.netRewardPct.toFixed(1)}% vs lose ${o.netRiskPct.toFixed(1)}%: less than ${MIN_REWARD_RISK}x the risk. Not buying.`);
         continue;
       }
+      // Strong mode: scale the AI's win chance by your real results; the trade must still pay on average.
+      if (strong && factor < 1) {
+        const p = (o.winChancePct * factor) / 100;
+        const ev = p * o.netRewardPct - (1 - p) * o.netRiskPct;
+        if (o.winChancePct * factor < minWin(cfg) || ev <= 0) {
+          if (triggerMet(o, q))
+            noteOnce(`odds:${sig.at}:${i}`, `${t3.symbol} reached the ${label}. The AI says ${o.winChancePct}% win chance, but your bots have won about ${Math.round(factor * 100)}% as often as the AI predicts, so it's really about ${Math.round(o.winChancePct * factor)}%${ev <= 0 ? ", which loses money on average" : `, below your ${minWin(cfg)}% minimum`}. Not buying.`);
+          continue;
+        }
+      }
       if (o.winChancePct < minWin(cfg)) {
         if (triggerMet(o, q) && !state.bot.skipNoted[i]) {
           state.bot.skipNoted[i] = true;
@@ -1363,6 +1407,34 @@ async function tickBot(persist: boolean) {
         if (state.bot.armedSince[i]) log(`${t3.symbol} ${label} didn't hold (now ${fmt(pair.priceUsd)}); still waiting.`);
         state.bot.armedSince[i] = null;
         continue;
+      }
+      // Strong mode entries: a dip must bounce off its low first; a breakout must still be above
+      // its level now (not just a wick). Buys at the live price, never far above the trigger.
+      let entryPrice: number | null = null;
+      if (strong) {
+        if (o.kind === "buy_breakout") {
+          if (q.price < o.triggerPrice) {
+            noteOnce(`hold:${sig.at}:${i}`, `${t3.symbol} spiked above ${fmt(o.triggerPrice)} but fell back below it. Strong mode waits for the breakout to hold.`);
+            continue;
+          }
+        } else {
+          const key = `${sig.at}:${i}`;
+          const lows = (state.bot.bounceLow ??= {});
+          lows[key] = Math.min(lows[key] ?? Infinity, q.low, q.price);
+          const bounce = Math.max(0.6, (sig.atrPct ?? 1) * 0.5) / 100;
+          const need = lows[key] * (1 + bounce);
+          if (q.price < need) {
+            noteOnce(`bounce:${sig.at}:${i}`, `${t3.symbol} reached the ${label}. Strong mode waits for it to bounce to ${fmt(need)} before buying (not catching a falling knife).`);
+            acct().dirty = true;
+            continue;
+          }
+          if (q.price > o.triggerPrice * (1 + bounce + 0.01)) {
+            noteOnce(`chase:${sig.at}:${i}`, `${t3.symbol} bounced too far above the ${label} (now ${fmt(q.price)}). Strong mode doesn't chase; waiting for a new plan.`);
+            continue;
+          }
+          if (q.price <= o.stopLoss * 1.01) continue; // too close to the exit to be worth it
+          entryPrice = q.price;
+        }
       }
       // By default buy the instant the trigger is hit; optionally wait for it to hold.
       const holdSec = cfg.waitForHold ? o.confirmSeconds : 0;
@@ -1387,7 +1459,7 @@ async function tickBot(persist: boolean) {
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
       // Fill like a real order at the trigger price (or better/worse, see buyFillPrice).
-      const t = buy({ ...pair, priceUsd: buyFillPrice(o, q) }, usd, "bot", `AI plan: ${label}`, {
+      const t = buy({ ...pair, priceUsd: entryPrice ?? buyFillPrice(o, q) }, usd, "bot", `AI plan: ${label}${entryPrice ? " (after a bounce)" : ""}`, {
         stopLoss: o.stopLoss,
         target: o.target,
         takeProfit: o.target,
@@ -1646,6 +1718,17 @@ export function setRewardRule(on: boolean, botId?: string): { ok: boolean; rewar
     log(on ? "Reward rule on: the bot only buys when the gain after fees is at least 1.5x the possible loss." : "Reward rule off: back to the old rules. Setups whose gain is smaller than the risk can be bought (in risky mode, even ones that fail the fee check).", on ? "good" : "bad");
   save();
   return { ok: true, rewardRule: on };
+}
+
+// Turn Strong mode on or off for the running bot (and remember it for the next start).
+export function setStrongMode(on: boolean, botId?: string): { ok: boolean; strongMode: boolean } {
+  if (botId && botId !== currentBotId()) return withBot(botId, () => setStrongMode(on));
+  const cfg = state.bot.config;
+  if (cfg) cfg.strongMode = on;
+  rec("bot.setting", on ? "Turned Strong mode on" : "Turned Strong mode off", { strongMode: on, running: state.bot.running });
+  if (state.bot.running) log(on ? "Strong mode on: stricter entries (honest odds, trend check, bounce, losing-streak pause)." : "Strong mode off: entries follow your other settings only.", on ? "good" : "bad");
+  save();
+  return { ok: true, strongMode: on };
 }
 
 export function overrideDailyLimit() {

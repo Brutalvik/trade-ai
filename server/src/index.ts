@@ -24,6 +24,19 @@ app.use(express.json());
 // Every handler loads the saved state first and finishes saving before it replies
 // (on Vercel, each request may run on a different short-lived server).
 // Each request runs inside the signed-in user's own paper account (signed out: an empty one).
+// Public market data (charts, coin info, coin lists): the same for everyone, so no account is
+// loaded, and Vercel's edge caches it for a few seconds (then serves it stale while refreshing).
+const publicData = (seconds: (req: Request) => number, fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
+  try {
+    const out = await fn(req, res);
+    const s = seconds(req);
+    res.setHeader("Cache-Control", `public, max-age=0, s-maxage=${s}, stale-while-revalidate=${Math.max(60, s * 12)}`);
+    res.json(out);
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message ?? String(e) });
+  }
+};
+
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
   const a = await auth.requestAuth(req).catch(() => null);
   await engine.withAccount(a?.key ?? null, async () => {
@@ -59,11 +72,11 @@ app.get(
   })),
 );
 app.get("/api/search", wrap(async (req) => searchPairs(String(req.query.q ?? ""))));
-app.get("/api/pair/:chain/:pool", wrap(async (req) => getPair(String(req.params.chain), String(req.params.pool))));
+app.get("/api/pair/:chain/:pool", publicData(() => 5, async (req) => getPair(String(req.params.chain), String(req.params.pool))));
 // Returns the candle array; the X-Candle-Source header says where it came from.
 app.get(
   "/api/candles/:chain/:pool",
-  wrap(async (req, res) => {
+  publicData((req) => (["1s", "5s"].includes(String(req.query.tf)) ? 2 : String(req.query.tf) === "1m" ? 5 : 10), async (req, res) => {
     const r = await getCandlesWithSource(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m");
     res.setHeader("X-Candle-Source", r.source);
     if (r.note) res.setHeader("X-Candle-Note", r.note);
@@ -80,7 +93,7 @@ app.get("/api/scan", wrap(async (req) => scanOpportunities(String(req.query.chai
 // New coins: young pools with a rug-risk score (Solana via RugCheck, Base via honeypot.is).
 app.get("/api/newcoins", wrap(async (req) => scanNewCoins(String(req.query.chain ?? "solana") as NewCoinChain)));
 // Left sidebar coin lists (Solana): crypto, trending, held, graduated, bonding, community.
-app.get("/api/lists/:kind", wrap(async (req) => coinList(String(req.params.kind))));
+app.get("/api/lists/:kind", publicData(() => 30, async (req) => coinList(String(req.params.kind))));
 
 // RBAC: a route needs a signed-in user, and optionally a permission from their plan / role.
 const NEEDS: Record<Permission, string> = {
@@ -261,6 +274,7 @@ app.post("/api/consent/setting-off", signedIn(async (req, res) => {
   res.json({ ok: true });
 }));
 app.post("/api/bot/override-daily", needs("bot.run", wrap(async () => engine.overrideDailyLimit())));
+app.post("/api/bot/strong-mode", needs("bot.run", wrap(async (req) => engine.setStrongMode(req.body?.on !== false, String(req.body?.botId ?? "1")))));
 app.post("/api/bot/reward-rule", needs("bot.run", wrap(async (req) => engine.setRewardRule(req.body?.on !== false, String(req.body?.botId ?? "1")))));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
 // Limit orders: { side: "BUY", chain, pool, symbol, price, usd } or { side: "SELL", positionId, price, fraction }.
