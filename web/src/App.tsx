@@ -4,7 +4,7 @@ import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, 
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
-import { WalletTab } from "./Wallet";
+import { WalletButton } from "./Wallet";
 import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
@@ -50,8 +50,8 @@ export default function App() {
     return () => clearInterval(id);
   }, [loadMe]);
   const access = useMemo<Access & { plans: PlanInfo[] }>(
-    () => ({ me, plans, can: (perm) => (me ? (me.permissions ?? []).includes(perm) : true), openPlans: () => setPlansOpen(true), openAdmin: () => setAdminOpen(true) }),
-    [me, plans],
+    () => ({ me, plans, can: (perm) => (me ? (me.permissions ?? []).includes(perm) : true), openPlans: () => setPlansOpen(true), openAdmin: () => setAdminOpen(true), reloadMe: () => void loadMe() }),
+    [me, plans, loadMe],
   );
   // Restore the last session instantly (coin, timeframe, tab, last-seen data); live data replaces it moments later.
   const [pair, setPair] = useState<PairInfo | null>(() => savedUi().pair ?? null);
@@ -71,7 +71,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<SavedAnalysis | null>(() => { const p = savedUi().pair; return (p && savedAnalysis(p.pool)) || null; });
   const gotAnalysis = useCallback((a: Analysis) => setAnalysis(saveAnalysis(a.pair.pool, a)), []);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
-  const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log" | "wallet">(() => (savedUi().tab as "scanner" | "newcoins" | "positions" | "trades" | "log" | "wallet") ?? "scanner");
+  const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log">(() => { const t = savedUi().tab; return t && t !== "wallet" ? (t as "scanner" | "newcoins" | "positions" | "trades" | "log") : "scanner"; });
   useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
   useEffect(() => { if (state) saveState(state); }, [state]);
   // Chart maximize: fills the window; Esc (or the button) brings it back.
@@ -231,25 +231,24 @@ export default function App() {
 
         <aside className="side">
           <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running && state.bot.config ? (state.bot.config.allowRisky ? Math.min(state.bot.config.minConfidence, state.bot.config.riskyMinWin ?? 30) : state.bot.config.minConfidence) : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
-          <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />
+          {me?.tradeMode === "real" ? <RealModeNotice what="trade" /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
         </aside>
 
         <aside className="side">
-          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />
+          {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={!!state?.bot.running} /> : <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
           <GoalLadder state={state} />
         </aside>
 
         <section className="panel bottom">
           <div className="tabs">
-            {(["scanner", "newcoins", "positions", "trades", "log", "wallet"] as const).map((t) => (
+            {(["scanner", "newcoins", "positions", "trades", "log"] as const).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {t === "wallet" ? "💼 Wallet" : t === "scanner" ? "⚡ Opportunities" : t === "newcoins" ? "🚀 New coins" : t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
+                {t === "scanner" ? "⚡ Opportunities" : t === "newcoins" ? "🚀 New coins" : t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
               </button>
             ))}
           </div>
           {tab === "scanner" && <Scanner onSelect={selectPair} notify={notify} tf={tf} />}
           {tab === "newcoins" && <NewCoins onSelect={selectPair} />}
-          {tab === "wallet" && <WalletTab notify={notify} />}
           {tab === "positions" && <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {tab === "trades" && <Trades state={state} />}
           {tab === "log" && <BotLog state={state} />}
@@ -266,7 +265,7 @@ export default function App() {
   );
 }
 
-// Speaker button before the PAPER MODE chip: mutes/unmutes the bot's trade sounds.
+// Speaker button before the wallet button: mutes/unmutes the bot's trade sounds.
 function SoundToggle() {
   const [muted, setMutedState] = useState(isMuted());
   useEffect(() => unlockAudioOnFirstGesture(), []);
@@ -304,6 +303,17 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
     return () => clearTimeout(id);
   }, [q]);
 
+  const { me } = useAccess();
+  const real = me?.tradeMode === "real";
+  // Real mode: the header shows your own wallet's value instead of the paper equity.
+  const [walletUsd, setWalletUsd] = useState<number | null>(null);
+  useEffect(() => {
+    if (!real) return setWalletUsd(null);
+    const load = () => api.wallet().then((w) => setWalletUsd(w.totalUsd)).catch(() => {});
+    load();
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, [real, me?.username]);
   const eq = state?.equityNow ?? 0;
   const pnl = state ? eq - state.startCash : 0;
   return (
@@ -331,14 +341,22 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
       <div className="stats">
         <SettingsButton alerts={status?.alerts ?? null} continuous={!!state?.settings.continuous} onSaved={refresh} notify={notify} />
         <SoundToggle />
-        <span className="badge paper">PAPER MODE</span>
+        <WalletButton notify={notify} />
         <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="AI key">AI</span>
         {status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
-        <div className="equity">
-          <small>EQUITY</small>
-          <b>{fmtUsd(eq)}</b>
-          <small className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</small>
-        </div>
+        {real ? (
+          <div className="equity">
+            <small>WALLET</small>
+            <b>{walletUsd === null ? "…" : fmtUsd(walletUsd)}</b>
+            <small className="up">REAL</small>
+          </div>
+        ) : (
+          <div className="equity">
+            <small>EQUITY</small>
+            <b>{fmtUsd(eq)}</b>
+            <small className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</small>
+          </div>
+        )}
         <AccountButton notify={notify} onChange={refresh} state={state} />
       </div>
     </header>
@@ -1788,5 +1806,18 @@ function BotLog({ state }: { state: AppState | null }) {
         <div key={i} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {aiText(l.msg)}</div>
       ))}
     </div>
+  );
+}
+
+// Real mode: trading and the bot with your own wallet aren't switched on yet, so nothing
+// pretends to trade real money. The paper bot (if on) keeps running in the background.
+function RealModeNotice({ what, botRunning }: { what: "trade" | "bot"; botRunning?: boolean }) {
+  return (
+    <section className="panel real-notice">
+      <h3>{what === "trade" ? "Trade · Real mode" : "Auto-pilot · Real mode"}</h3>
+      <p>{what === "trade" ? "Buying and selling with your own wallet is switched on in the next update." : "The bot trading your own wallet is switched on in a later update, with limits you set."}</p>
+      {what === "bot" && botRunning && <p className="muted small">Your paper bot is still running on the paper account.</p>}
+      <p className="muted small">To trade now, switch back to <b>Paper</b> in your profile (top right).</p>
+    </section>
   );
 }

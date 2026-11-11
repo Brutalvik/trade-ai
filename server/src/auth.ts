@@ -28,8 +28,10 @@ type User = {
   privyId?: string; // Privy user (DID) when they sign in with Privy
   solanaAddress?: string; // their Privy embedded Solana wallet
   role?: Role; // user | admin
+  tradeMode?: TradeMode; // paper (default) or real (their own wallet)
 };
-export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role; solanaAddress: string | null; hasPassword: boolean };
+export type TradeMode = "paper" | "real";
+export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role; solanaAddress: string | null; hasPassword: boolean; tradeMode: TradeMode };
 
 const COOKIE = "nexus_session";
 const SESSION_DAYS = 30;
@@ -38,7 +40,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const userKey = (u: string) => `user:${u.toLowerCase()}`;
 const emailKey = (e: string) => `email:${e.toLowerCase()}`;
-const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash && !u.privyId });
+const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash && !u.privyId, tradeMode: u.tradeMode === "real" ? "real" : "paper" });
 
 let secret: Buffer | null = null;
 async function key() {
@@ -297,6 +299,24 @@ export async function signOut(req: Request, res: Response) {
   if (u) await audit(u.username, "account.signout", "Signed out");
   clearSession(res);
   return { ok: true };
+}
+
+// Paper or Real: which money the app shows and trades. Real needs the user's own wallet.
+export async function setTradeMode(req: Request, res: Response) {
+  const user = await sessionUser(req);
+  if (!user) {
+    res.status(401);
+    throw new Error("Sign in first");
+  }
+  const mode = req.body?.mode;
+  if (mode !== "paper" && mode !== "real") throw new Error("Pick Paper or Real");
+  if (mode === "real" && !user.solanaAddress) throw new Error("Your wallet isn't ready yet. Sign out and back in, then try again.");
+  const from = user.tradeMode === "real" ? "real" : "paper";
+  if (from === mode) return { user: { ...pub(user), owner: true } };
+  const updated: User = { ...user, tradeMode: mode };
+  await store.kvSet(userKey(user.username), updated);
+  await audit(user.username, "account.mode", mode === "real" ? "Switched to Real (own wallet)" : "Switched to Paper", { from, to: mode });
+  return { user: { ...pub(updated), owner: true } };
 }
 
 // Reset password while signed in: needs the current one. Other sessions are signed out.

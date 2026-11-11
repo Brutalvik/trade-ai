@@ -7,7 +7,7 @@ import { api, fmtPrice, fmtUsd, type AdminUser, type AppState, type AuditEntry, 
 
 // ---------- Shared modal ----------
 
-function Modal({ title, onClose, children, foot, narrow, wide }: { title: string; onClose: () => void; children: ReactNode; foot?: ReactNode; narrow?: boolean; wide?: boolean }) {
+export function Modal({ title, onClose, children, foot, narrow, wide }: { title: string; onClose: () => void; children: ReactNode; foot?: ReactNode; narrow?: boolean; wide?: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -386,6 +386,7 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify, signOutOverri
         </div>
       )}
 
+      <TradeModeSwitch user={user} notify={notify} />
       <TokenMeter usage={access.me?.usage} />
       <div className="profile-actions">
         <button className="btn ghost" onClick={access.openPlans}>See plans</button>
@@ -422,11 +423,69 @@ function ProfileModal({ user, state, onClose, onSignedOut, notify, signOutOverri
 }
 
 
+// Paper or Real: which money the app shows and trades. Going Real asks for a clear "I understand".
+function TradeModeSwitch({ user, notify }: { user: User; notify: (m: string, bad?: boolean) => void }) {
+  const access = useAccess();
+  const [mode, setMode] = useState<"paper" | "real">((access.me?.tradeMode ?? user.tradeMode) === "real" ? "real" : "paper");
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const save = async (next: "paper" | "real") => {
+    setBusy(true);
+    try {
+      await api.setTradeMode(next);
+      setMode(next);
+      setConfirming(false);
+      access.reloadMe?.();
+      notify(next === "real" ? "Real mode on: the app now shows your own wallet" : "Paper mode on: trades use your paper account");
+    } catch (e: any) {
+      notify(e.message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const real = mode === "real";
+  return (
+    <div className="mode-switch-row">
+      <div>
+        <div className="mode-switch-title">Trading mode: {real ? <b className="up">Real</b> : <b className="amber">Paper</b>}</div>
+        <div className="muted tiny">{real ? "Uses the money in your own wallet." : "Practice money only. Nothing real is bought or sold."}</div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={real}
+        aria-label="Real transactions"
+        className={`mode-switch ${real ? "on" : ""}`}
+        disabled={busy}
+        onClick={() => (real ? void save("paper") : setConfirming(true))}
+      >
+        <span className="mode-switch-label">Paper</span>
+        <span className="mode-switch-label">Real</span>
+        <span className="mode-switch-knob" />
+      </button>
+      {confirming && (
+        <Modal title="Switch to Real?" onClose={() => setConfirming(false)} narrow foot={<>
+          <button className="btn ghost" onClick={() => setConfirming(false)}>Stay on Paper</button>
+          <button className="btn sell" disabled={busy} onClick={() => void save("real")}>{busy ? "Switching…" : "I understand"}</button>
+        </>}>
+          <p>Real mode uses the money in <b>your own wallet</b>{user.solanaAddress ? <> (<span className="mono">{user.solanaAddress.slice(0, 4)}…{user.solanaAddress.slice(-4)}</span>)</> : null}, not practice money.</p>
+          <ul className="small deposit-notes">
+            <li>Crypto prices move fast. You can lose some or all of what you trade.</li>
+            <li>The AI's plans are estimates, not promises, and not financial advice.</li>
+            <li>Network fees and slippage apply to every real trade.</li>
+            <li>Your paper account and its bot stay as they are; switch back any time.</li>
+          </ul>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // ---------- Plans & access (RBAC) ----------
 const PLAN_NAMES: Record<string, string> = { free: "Free", member: "Member", starter: "AI Starter", pro: "AI Pro", max: "AI Max" };
 const planName = (id?: string) => PLAN_NAMES[id ?? "free"] ?? "Free";
 // The signed-in user's plan, role and permissions, shared across the page.
-export type Access = { me: User | null; can: (p: Permission) => boolean; openPlans: () => void; openAdmin: () => void };
+export type Access = { me: User | null; can: (p: Permission) => boolean; openPlans: () => void; openAdmin: () => void; reloadMe?: () => void };
 export const AccessCtx = createContext<Access>({ me: null, can: () => true, openPlans: () => {}, openAdmin: () => {} });
 export const useAccess = () => useContext(AccessCtx);
 

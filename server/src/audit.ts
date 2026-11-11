@@ -21,6 +21,7 @@ export type AuditType =
   | "account.signin"
   | "account.signout"
   | "account.password"
+  | "account.mode"
   | "account.reset" // paper account reset
   | "admin.plan" // an admin changed plan / role
   | "admin.topup"; // an admin added AI tokens

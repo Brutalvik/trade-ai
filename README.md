@@ -17,7 +17,7 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
   - **Claude is asked when something happens**: after each trade, when the plan expires, or when the price leaves the plan's range, plus a slow backup timer. Never more than once every 2 minutes.
   - **Safety rules:** no dip buys while a coin is falling (down more than ~10% in an hour, or a 1-hour downtrend: a crash is not a dip); a cool-down after a losing trade before re-buying that coin, and the coin is skipped for the day after 2 losses in a row; a daily loss limit that stops new trades until midnight UTC. Claude is told about recent losses on the coin.
   - **Claude's track record** (Trade history tab): its average predicted win chance vs how often trades really reached the target.
-  - **Sounds:** soft chimes for a bot buy, a profitable sell, and a losing sell; mute with the speaker button by PAPER MODE.
+  - **Sounds:** soft chimes for a bot buy, a profitable sell, and a losing sell; mute with the speaker button next to the wallet button.
   - **Emergency stop:** sells everything and switches off if the account falls past your limit.
 - **Opportunities**: trending coins on all chains (or Solana / Base / Ethereum / BSC), each with a quick plan: buy below, sell at, exit if below, and buy-by / sell-by times (free, from the chart). "Ask Claude" gives a proper plan for any coin
 - **Growth ladder**: progress from $10 toward $15 / $20 / $100 / $1,000

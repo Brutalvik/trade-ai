@@ -530,7 +530,7 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .rules-table td { white-space: normal; }
 @media (max-width: 860px) { .rules-body { grid-template-columns: 1fr; } .rules-toc { position: static; flex-direction: row; flex-wrap: wrap; } }
 
-/* Wallet tab */
+/* Wallet modal */
 .wallet-tab { padding: 4px 4px 8px; }
 .wallet-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .wallet-total { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 28px; font-weight: 700; color: var(--text); }
@@ -541,3 +541,52 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .deposit-qr { width: 220px; height: 220px; border-radius: 12px; background: #fff; padding: 6px; }
 .deposit-address { word-break: break-all; padding: 8px 10px; border-radius: 10px; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border); font-size: 12.5px; color: var(--text); }
 .deposit-notes { text-align: left; color: #c6d2f0; padding-left: 18px; }
+
+/* Wallet button (header) + Paper/Real switch */
+.amber { color: var(--amber); }
+.label-sm { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.wallet-btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border-radius: 10px; cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--amber); border: 1px solid rgba(255, 200, 87, 0.4); background: rgba(255, 200, 87, 0.08); }
+.wallet-btn:hover { background: rgba(255, 200, 87, 0.16); }
+.wallet-btn.real { color: var(--green, #00f5a0); border-color: rgba(0, 245, 160, 0.45); background: rgba(0, 245, 160, 0.08); }
+.wallet-btn.real:hover { background: rgba(0, 245, 160, 0.16); }
+.wallet-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.modal-backdrop.on-top { z-index: 110; }
+.mode-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; margin: 0 0 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0, 0, 0, 0.25); }
+.mode-switch-title { color: var(--text); font-size: 13px; }
+.mode-switch { position: relative; flex: none; display: grid; grid-template-columns: 1fr 1fr; width: 132px; height: 34px; padding: 0; border-radius: 999px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.05); cursor: pointer; }
+.mode-switch-label { position: relative; z-index: 1; display: grid; place-items: center; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; color: var(--muted); transition: color 0.2s; }
+.mode-switch:not(.on) .mode-switch-label:first-child, .mode-switch.on .mode-switch-label:nth-child(2) { color: #04101c; }
+.mode-switch-knob { position: absolute; top: 3px; left: 3px; width: calc(50% - 3px); height: calc(100% - 6px); border-radius: 999px; background: var(--amber); transition: transform 0.2s, background 0.2s; }
+.mode-switch.on .mode-switch-knob { transform: translateX(100%); background: var(--green, #00f5a0); }
+.mode-switch:disabled { opacity: 0.6; cursor: wait; }
+.mode-switch:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.real-notice h3 { margin: 0 0 8px; font-family: Orbitron, sans-serif; font-size: 13px; letter-spacing: 1.5px; color: var(--cyan); }
+.real-notice p { margin: 0 0 8px; font-size: 13px; color: #c6d2f0; }
+@media (max-width: 640px) {
+  .wallet-table .col-price { display: none; }
+  .wallet-total { font-size: 24px; }
+  .wallet-actions { width: 100%; }
+  .wallet-actions .btn { flex: 1; }
+  .modal.wide { max-height: 92vh; }
+  .wallet-btn span { display: none; }
+}
+/* Keep modals inside the screen even when their content is wide (tables). */
+.modal-backdrop { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+.modal { min-width: 0; }
+.wallet-tab .table-wrap { overflow-x: auto; }
+@media (max-width: 640px) {
+  .modal-backdrop { padding: 8px; }
+  .modal-body { padding: 4px 12px 14px; }
+  .wallet-table th, .wallet-table td { padding-left: 6px; padding-right: 6px; font-size: 12px; }
+  .wallet-table .token-cell img { width: 18px; height: 18px; }
+}
+@media (max-width: 640px) {
+  .wallet-table { width: 100%; }
+  .wallet-table td, .wallet-table th { white-space: normal; }
+  .wallet-table td.num { white-space: nowrap; }
+}
+.amount-under { display: none; }
+@media (max-width: 640px) {
+  .wallet-table .col-amount { display: none; }
+  .wallet-table .amount-under { display: block; }
+}

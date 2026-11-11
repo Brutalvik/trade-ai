@@ -201,6 +201,7 @@ app.post("/api/auth/signout", authRoute(auth.signOut));
 app.post("/api/auth/privy-login", authRoute(auth.privyLogin));
 app.post("/api/auth/privy-complete", authRoute(auth.privyCompleteProfile));
 app.post("/api/auth/password", authRoute(auth.changePassword));
+app.post("/api/auth/trade-mode", authRoute(auth.setTradeMode));
 app.post("/api/reset", signedIn(wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10)))));
 app.post(
   "/api/bot/start",
