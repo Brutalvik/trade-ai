@@ -18,6 +18,7 @@ type Preset = {
   dailyLossPct: number;
   maxDrop1hPct: number;
   maxDrawdownPct: number;
+  riskyMinWin: number;
 };
 
 const SECTIONS = [
@@ -123,7 +124,7 @@ export function RulesPage({ presets, plans, onClose }: { presets: Record<string,
               <li><b>Fee and risk check:</b> with the round-trip cost (fees + slippage, both sides) added, the gain to the target must be at least as big as the loss to the exit, and the order must make money on average:
                 <div className="rules-formula">win chance × gain after costs − (1 − win chance) × loss after costs &gt; 0</div>
                 An order that fails is kept as a <b className="down">risky setup</b> (red warning). The bot uses it only in risky mode.</li>
-              <li><b>Minimum win chance</b> <i>(your setting)</i>: orders below it are never used, in any mode. The card says "below your minimum, won't be used".</li>
+              <li><b>Minimum win chance</b> <i>(your setting)</i>: orders below it aren't used. The card says "below your minimum, won't be used". In risky mode a separate, lower <b>risky-mode minimum</b> <i>(your setting, default 30%)</i> applies instead.</li>
             </ul>
           </section>
 
@@ -189,8 +190,8 @@ export function RulesPage({ presets, plans, onClose }: { presets: Record<string,
             <h2>9. Risky mode</h2>
             <p>When you start the bot on a coin the AI rates High/Extreme risk, advises avoiding, that is falling, or with thin liquidity (under $50K), a popup lists the reasons. <b>"I understand, trade anyway"</b> starts risky mode (AI Pro and up):</p>
             <ul>
-              <li><b>Changes:</b> buys dips even while the coin is falling; uses Avoid plans and setups that fail the fee/risk check; no cool-down or two-loss skip on the coin.</li>
-              <li><b>Still applies:</b> the AI's exit, profit lock, take-half, trailing stop, your minimum win chance, the daily loss limit and the emergency stop.</li>
+              <li><b>Changes:</b> buys dips even while the coin is falling; uses Avoid plans and setups that fail the fee/risk check; uses orders down to your <b>risky-mode minimum win chance</b> (default 30%) instead of the normal minimum; no cool-down or two-loss skip on the coin.</li>
+              <li><b>Still applies:</b> the AI's exit, profit lock, take-half, trailing stop, the risky-mode minimum, the daily loss limit and the emergency stop.</li>
               <li>Your acceptance, with the warnings shown, is kept in your activity history.</li>
             </ul>
           </section>
@@ -260,6 +261,7 @@ export function RulesPage({ presets, plans, onClose }: { presets: Record<string,
                   {row("Money per trade (% of account)", (p) => `${p.positionPct}%`)}
                   {row("Risk per trade (% of account)", (p) => (p.riskPerTradePct > 0 ? `${p.riskPerTradePct}%` : "off (full amount)"))}
                   {row("Minimum win chance", (p) => `${p.minConfidence}%`)}
+                  {row("Minimum win chance in risky mode", (p) => `${p.riskyMinWin}%`)}
                   {row("Backup AI re-check", (p) => `every ${p.analyzeMin} min`)}
                   {row("Break-even once up", (p) => `${p.breakEvenAtPct}%`)}
                   {row("Profit lock (best gain kept)", (p) => `${p.lockPct}%`)}

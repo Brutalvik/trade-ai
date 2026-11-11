@@ -104,7 +104,8 @@ export type BotConfig = {
   // downtrend) and skip the per-coin cool-down / 2-losses-a-day skip. The daily loss limit,
   // emergency stop, minimum win chance and fee check still apply.
   allowRisky?: boolean;
-  riskReasons?: string[]; // the warnings the user saw when accepting risky mode (kept in the audit log)
+  riskReasons?: string[];
+  riskyMinWin?: number; // minimum win chance in risky mode (default 30; normal mode uses minConfidence) // the warnings the user saw when accepting risky mode (kept in the audit log)
   // Risk-based sizing: size each trade so hitting its exit loses about this % of the account
   // (default 1.5). positionPct is then only the maximum share of cash per trade.
   riskPerTradePct?: number;
@@ -593,7 +594,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     lock: cfg?.lockPct ?? 50,
     half: cfg?.partialAtPct ?? 75,
     trail: cfg?.trailPct ?? 3,
-    minWin: cfg?.minConfidence ?? 45,
+    minWin: cfg ? minWin(cfg) : 45,
   };
   const context = [
     recent.length
@@ -625,6 +626,8 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
 
 
 const isAuto = (cfg: BotConfig) => cfg.pick === "auto";
+// The minimum win chance in force: lower in risky mode (the user accepted the risk).
+const minWin = (cfg: BotConfig) => (cfg.allowRisky ? Math.min(cfg.minConfidence, cfg.riskyMinWin ?? 30) : cfg.minConfidence);
 const isNew = (cfg: BotConfig) => cfg.pick === "newcoins";
 // Extra slippage on thin liquidity: buying size S from a pool with liquidity L moves the
 // price roughly 2*S/L (each side of the pool holds about half). Clamped to 0.2-10%.
@@ -757,7 +760,7 @@ async function autoPick(cfg: BotConfig) {
   }
   log(`Asking the AI for plans on ${inZone.map((r) => r.pair.symbol).join(", ")}...`);
   let best: { pair: PairInfo; result: Awaited<ReturnType<typeof runAnalysis>> } | null = null;
-  const usableOrders = (c: Consensus) => c.orders.filter((o) => o.winChancePct >= cfg.minConfidence);
+  const usableOrders = (c: Consensus) => c.orders.filter((o) => o.winChancePct >= minWin(cfg));
   const rank = (c: Consensus) => (c.stance === "BUY_NOW" ? 1000 : 0) + Math.max(...usableOrders(c).map((o) => o.evPct));
   for (const row of inZone) {
     // One at a time, so CoinMarketCap's small allowance isn't used up in a burst.
@@ -1141,10 +1144,10 @@ export async function tick(persist = true) {
           continue;
         }
       }
-      if (o.winChancePct < cfg.minConfidence) {
+      if (o.winChancePct < minWin(cfg)) {
         if (triggerMet(o, q) && !state.bot.skipNoted[i]) {
           state.bot.skipNoted[i] = true;
-          log(`${t3.symbol} reached the ${label} (touched ${fmt(o.kind === "buy_breakout" ? q.high : q.low)}), but the AI gives it only a ${o.winChancePct}% win chance, below your ${cfg.minConfidence}% minimum. Not buying.`);
+          log(`${t3.symbol} reached the ${label} (touched ${fmt(o.kind === "buy_breakout" ? q.high : q.low)}), but the AI gives it only a ${o.winChancePct}% win chance, below your ${minWin(cfg)}% minimum${cfg.allowRisky ? " for risky mode" : ""}. Not buying.`);
         }
         continue;
       }
@@ -1209,7 +1212,7 @@ function watching() {
   const sig = state.lastSignal;
   const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
   // Only orders with at least the user's minimum win chance count.
-  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.some((o) => o.winChancePct >= cfg.minConfidence) && Date.now() < sig.consensus.expiresAt);
+  return Boolean(tgtPool && sig && sig.pool === tgtPool && sig.consensus.orders.some((o) => o.winChancePct >= minWin(cfg)) && Date.now() < sig.consensus.expiresAt);
 }
 
 // Serverless: run bot steps every 5 seconds for up to maxMs (one scheduler call or
