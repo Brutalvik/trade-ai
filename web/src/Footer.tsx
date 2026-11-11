@@ -45,7 +45,7 @@ function TermsModal({ onClose }: { onClose: () => void }) {
           <p className="muted small">Last updated {LAST_UPDATED}</p>
 
           <h3>1. What this app is</h3>
-          <p>NEXUS//TRADE is an experimental tool that shows crypto market data, asks an AI model for trading plans, and runs a bot that follows those plans. By using it you agree to these terms.</p>
+          <p>TRADING//RUST is an experimental tool that shows crypto market data, asks an AI model for trading plans, and runs a bot that follows those plans. By using it you agree to these terms.</p>
 
           <h3>2. Paper trading only</h3>
           <p>All trades in this app are simulated ("paper trading"). No real money or crypto is bought, sold or held. Simulated fees and slippage are estimates; real results would differ.</p>

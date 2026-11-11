@@ -320,7 +320,7 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
     <header className="topbar">
       <div className="brand">
         <span className="logo">◢◤</span>
-        <span>NEXUS<b>//</b>TRADE</span>
+        <span>TRADING<b>//</b>RUST</span>
       </div>
       <div className="search">
         <input placeholder="Search ticker, name or token address..." value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)} />
@@ -341,7 +341,7 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
       <div className="stats">
         <SettingsButton alerts={status?.alerts ?? null} continuous={!!state?.settings.continuous} onSaved={refresh} notify={notify} />
         <SoundToggle />
-        <WalletButton notify={notify} />
+        <WalletButton notify={notify} state={state} />
         <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="AI key">AI</span>
         {status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
         {real ? (

@@ -18,7 +18,7 @@ function render(appId: string | null) {
           appId={appId}
           config={{
             loginMethods: ['email', 'google'],
-            appearance: { theme: 'dark', accentColor: '#00e5ff', landingHeader: 'Sign in to NEXUS//TRADE', loginMessage: 'Your own paper account and Solana wallet' },
+            appearance: { theme: 'dark', accentColor: '#00e5ff', landingHeader: 'Sign in to TRADING//RUST', loginMessage: 'Your own paper account and Solana wallet' },
             embeddedWallets: { solana: { createOnLogin: 'users-without-wallets' } },
           }}
         >
