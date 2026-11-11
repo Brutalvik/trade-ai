@@ -1245,9 +1245,12 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
 
       <div className="label-row">
         <div className="label-sm">What should it trade?</div>
-        <button className="chip" onClick={() => openRules()} aria-haspopup="dialog">
-          ⚙ Settings
-        </button>
+        {/* Settings can't change while this bot runs: the button is disabled, with a tooltip saying why. */}
+        <span className={`settings-btn-wrap ${running ? "locked" : ""}`} data-tip={running ? "Bot is running · stop it to change its settings" : undefined}>
+          <button className="chip" onClick={() => openRules()} aria-haspopup="dialog" disabled={running} aria-label={running ? "Settings (disabled while the bot is running)" : "Settings"}>
+            ⚙ Settings
+          </button>
+        </span>
       </div>
       <div className="presets two" role="radiogroup" aria-label="What to trade">
         <button role="radio" aria-checked={shownMode === "this"} className={`preset balanced ${shownMode === "this" ? "on" : ""}`} onClick={() => setMode("this")} disabled={running}>

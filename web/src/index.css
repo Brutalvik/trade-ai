@@ -952,3 +952,9 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .settings-body .grid2.knobs .knob-switch input { width: 13px !important; height: 13px; margin: 0; }
 .settings-body .grid2.knobs .knob-switch:has(input:disabled) { opacity: 0.7; cursor: default; }
 .settings-body .grid2.knobs .knob-switch { flex-direction: row !important; white-space: nowrap; }
+
+/* Bot panel: Settings disabled while the bot runs, with a tooltip */
+.settings-btn-wrap { position: relative; display: inline-flex; }
+.settings-btn-wrap.locked .chip { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+.settings-btn-wrap.locked { cursor: not-allowed; }
+.settings-btn-wrap[data-tip]:hover::after { left: auto; right: 0; top: calc(100% + 6px); transform: none; }
