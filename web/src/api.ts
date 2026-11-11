@@ -75,8 +75,8 @@ export type User = { username: string; firstName: string; lastName: string; emai
 export type AdminUser = User & { usage: Usage };
 export type RealQuote = { requestId: string; transaction: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
 export type RealTrade = { t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: "SOL" | "USDC"; status: "Success" | "Failed"; signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; feeBps: number; error?: string };
-export type ListKind = "crypto" | "trending" | "held" | "graduated" | "bonding" | "community";
-export type ListCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; change24h: number; holders?: number; volume24h?: number; liquidity?: number; verified?: boolean; buys?: number; buyers?: number; pair?: PairInfo };
+export type ListKind = "crypto" | "top" | "trending" | "held" | "graduated" | "bonding" | "community";
+export type ListCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; change24h: number; holders?: number; volume24h?: number; liquidity?: number; verified?: boolean; buys?: number; buyers?: number; pair?: PairInfo; score?: number | null; verdict?: "BUY ZONE" | "WAIT" | "AVOID"; why?: string };
 export type Holding = { mint: string; symbol: string; name: string; amount: number; priceUsd: number | null; valueUsd: number | null; imageUrl?: string; pool?: string };
 export type WalletView = { address: string | null; holdings: Holding[]; totalUsd: number; updatedAt: number; rpc?: "custom" | "public" };
 export type AuditEntry = { t: number; type: string; by?: string; summary: string; data?: Record<string, unknown> };
@@ -95,7 +95,7 @@ export const api = {
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
   realQuote: (b: { side: "BUY" | "SELL"; pay: "SOL" | "USDC"; mint: string; symbol: string; usd?: number; pct?: number }) => req<RealQuote>("/real/quote", b),
   realExecute: (b: { requestId: string; signedTransaction: string }) => req<RealTrade>("/real/execute", b),
-  realTrades: () => req<RealTrade[]>("/real/trades"),
+  realTrades: (limit = 50) => req<RealTrade[]>(`/real/trades?limit=${limit}`),
   list: (kind: ListKind) => req<{ kind: ListKind; coins: ListCoin[] }>(`/lists/${kind}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
   candles: async (chain: string, pool: string, tf: Timeframe) => {

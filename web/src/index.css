@@ -699,3 +699,5 @@ body.resizing { cursor: col-resize; user-select: none; }
 @media (max-width: 760px) {
   .layout, .layout.list-collapsed { grid-template-columns: 1fr; }
 }
+.history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; position: sticky; left: 0; }
+.export-btns { display: inline-flex; gap: 6px; }

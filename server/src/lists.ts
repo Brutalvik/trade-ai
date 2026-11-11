@@ -1,5 +1,6 @@
 // Coin lists for the left sidebar (Solana only, so every coin can be bought for real):
 //   crypto    – biggest Solana tokens by market cap (Jupiter, stablecoins left out)
+//   top       – trending Solana coins ranked by our quick score (the old Opportunities list)
 //   trending  – Jupiter's top trending (last hour)
 //   held      – most holders (Jupiter: top traded / organic / trending, sorted by holders)
 //   graduated – pump.fun coins that finished their bonding curve (PumpSwap pools, GeckoTerminal)
@@ -7,13 +8,15 @@
 //   community – what TRADING//RUST users bought most this week (our own records)
 import { cachedJson, fromDexScreener, fromGeckoPool, type PairInfo } from "./data.js";
 import { createStore } from "./store.js";
+import { scanOpportunities } from "./scan.js";
 
-export const LIST_KINDS = ["crypto", "trending", "held", "graduated", "bonding", "community"] as const;
+export const LIST_KINDS = ["crypto", "top", "trending", "held", "graduated", "bonding", "community"] as const;
 export type ListKind = (typeof LIST_KINDS)[number];
 export type ListCoin = {
   mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; change24h: number;
   holders?: number; volume24h?: number; liquidity?: number; verified?: boolean; buys?: number; buyers?: number;
   pair?: PairInfo; // known pool (bonding / graduated / community lists)
+  score?: number | null; verdict?: "BUY ZONE" | "WAIT" | "AVOID"; why?: string; // Top list: the quick chart score
 };
 
 const store = createStore();
@@ -98,6 +101,22 @@ export async function coinList(kind: string): Promise<{ kind: ListKind; coins: L
   let coins: ListCoin[] = [];
   if (k === "crypto") {
     coins = (await jup("toporganicscore/24h?limit=100")).map(fromJup).filter((c) => notStable(c) && (c.liquidity ?? 0) > 100_000).sort((a, b) => b.mcap - a.mcap);
+  } else if (k === "top") {
+    // The old Opportunities list: trending Solana coins ranked by a quick score from their own stats.
+    const scan = await scanOpportunities("solana", 3);
+    coins = scan.rows.map((r) => ({
+      mint: r.pair.tokenAddress, symbol: r.pair.symbol, name: r.pair.name, icon: r.pair.imageUrl, priceUsd: r.pair.priceUsd, mcap: r.pair.marketCap,
+      change24h: r.pair.change.h24, volume24h: r.pair.volume24h, liquidity: r.pair.liquidityUsd, pair: r.pair,
+      score: r.score, verdict: r.plan?.verdict, why: r.plan?.why,
+    }));
+    // The trending source has no pictures: fill them in from DexScreener (one call).
+    const missing = coins.filter((c) => !c.icon).map((c) => c.mint).slice(0, 30);
+    if (missing.length) {
+      const pairs = await cachedJson<any[]>(`https://api.dexscreener.com/tokens/v1/solana/${missing.join(",")}`, 300_000).catch(() => []);
+      const img = new Map<string, string>();
+      for (const p of pairs ?? []) if (p?.info?.imageUrl && p.baseToken?.address) img.set(p.baseToken.address, p.info.imageUrl);
+      for (const c of coins) if (!c.icon && img.has(c.mint)) { c.icon = img.get(c.mint); if (c.pair) c.pair = { ...c.pair, imageUrl: c.icon }; }
+    }
   } else if (k === "trending") {
     coins = (await jup("toptrending/1h?limit=100")).map(fromJup).filter(notStable);
   } else if (k === "held") {

@@ -170,7 +170,7 @@ type State = {
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number } | null;
 };
 
 const store = createStore();
@@ -601,7 +601,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const ex = {
     be: cfg?.breakEvenAtPct ?? 8,
     lock: cfg?.lockPct ?? 50,
-    half: cfg?.partialAtPct ?? 75,
+    half: cfg?.partialAtPct ?? 100,
     trail: cfg?.trailPct ?? 3,
     minWin: cfg ? minWin(cfg) : 45,
   };
@@ -621,7 +621,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const model = opts.forBot ? BOT_MODEL : CLAUDE_MODEL;
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
   rec("ai.analysis", `${opts.forBot ? "Bot re-plan" : "AI analysis"} on ${pair.symbol}: ${apiTokens.toLocaleString()} AI tokens (${appTokens.toLocaleString()} app tokens)`, { symbol: pair.symbol, pool, model, apiTokens, appTokens, forBot: !!opts.forBot, stance: consensus.stance });
-  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown };
+  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown, atrPct: primary.snap.atrPct };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
   save();
@@ -675,7 +675,7 @@ export function startBot(cfg: BotConfig) {
       ? `Bot started in NEW COINS mode (${cfg.newChain ?? "solana"}): ${cfg.newCoinPct ?? 3}% per coin, stop -${cfg.newStopPct ?? 15}%, half at +${cfg.newTakePct ?? 30}%, max ${cfg.newMaxPerDay ?? 5} buys a day. Cash $${state.cash.toFixed(2)}.`
       : isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round the AI checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
-      : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling and skip the cool-downs (you accepted the risk)." : ""}`,
+      : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling (you accepted the risk). Trades are capped at 25% of the account, with a 5-minute cool-down after a loss." : ""}`,
     "good",
   );
   save();
@@ -743,15 +743,26 @@ function dailyBlock(cfg: BotConfig): string | null {
 }
 
 // Cool-down: after a loss, wait before re-buying the coin; after 2 losses in a row, skip it for the day.
+// Risky mode keeps both, with a short cool-down (it used to skip them and re-bought a minute
+// after each stop-loss).
+export const RISKY_COOLDOWN_MIN = 5;
 function coinBlock(cfg: BotConfig, pool: string, symbol: string): string | null {
-  if (cfg.allowRisky) return null; // the user chose to trade anyway
   const cs = state.bot.coinStats[pool];
   if (!cs || !cs.losses) return null;
   if (cs.losses >= 2 && cs.lossDay === utcDay()) return `${symbol} lost ${cs.losses} trades in a row today, so it's skipped until 00:00 UTC`;
-  const until = cs.lastLossAt + (cfg.cooldownMin ?? 30) * 60_000;
+  const until = cs.lastLossAt + (cfg.allowRisky ? RISKY_COOLDOWN_MIN : (cfg.cooldownMin ?? 30)) * 60_000;
   return Date.now() < until ? `cooling down on ${symbol} after a losing trade, until ${clock(until)}` : null;
 }
 
+export const MIN_REWARD_RISK = 1.5; // gain after fees must be at least this many times the loss
+export const RISKY_MAX_POSITION_PCT = 25; // risky mode: at most this % of the account per trade
+// Trailing stop sized to how much the coin normally swings: 3x its average 5-minute range,
+// never tighter than the setting, never wider than 12%.
+export function trailFor(cfg: Pick<BotConfig, "trailPct">, atrPct?: number) {
+  const base = cfg.trailPct ?? 3;
+  const swing = atrPct && Number.isFinite(atrPct) ? atrPct * 3 : 0;
+  return Math.round(clampNum(Math.max(base, swing), 0.5, Math.max(base, 12)) * 10) / 10;
+}
 const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
 const MIN_CLAUDE_GAP_MS = 2 * 60_000; // never ask Claude more often than this, whatever happens
 const fmt = (n: number) => `$${n.toPrecision(4)}`;
@@ -791,7 +802,7 @@ async function autoPick(cfg: BotConfig) {
   }
   const { pair, result } = best;
   state.bot.target = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, chosenAt: Date.now() };
-  state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus };
+  state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus, atrPct: result.snapshot?.atrPct };
   log(`Auto-pick chose ${pair.symbol}. AI: ${summary}. ${result.consensus.note}`, "good");
 }
 
@@ -976,15 +987,15 @@ export async function tick(persist = true) {
         }
       }
       // Take half before the target: targets often sit at resistance, where a run can stall.
-      const partialAt = cfg.partialAtPct ?? 75;
+      const partialAt = cfg.partialAtPct ?? 100;
       if (pos.strategy !== "newcoin" && partialAt > 0 && !pos.partialDone && pos.target && pos.target > pos.entryPrice) {
         const level = pos.entryPrice + (pos.target - pos.entryPrice) * (partialAt / 100);
         const be = pos.entryPrice * (1 + cost / 100);
         if (level > be && q.high >= level) {
-          const t = sell(pos.id, Math.max(level, price), 0.5, `Took half ${partialAt}% of the way to the target`);
+          const t = sell(pos.id, Math.max(level, price), 0.5, partialAt >= 100 ? "Took half at the target" : `Took half ${partialAt}% of the way to the target`);
           pos.partialDone = true;
           if (!pos.stopLoss || pos.stopLoss < be) pos.stopLoss = be; // the rest can't turn into a loss
-          log(`${pos.symbol}: sold half @ ${fmt(t.price)} (P&L +$${t.pnlUsd!.toFixed(2)}), ${partialAt}% of the way to the ${fmt(pos.target)} target. The rest rides with the profit lock.`, "good");
+          log(`${pos.symbol}: sold half @ ${fmt(t.price)} (P&L +$${t.pnlUsd!.toFixed(2)}), ${partialAt >= 100 ? "at" : `${partialAt}% of the way to`} the ${fmt(pos.target)} target. The rest rides with the profit lock.`, "good");
           alert(`💰 ${pos.symbol}: sold half @ ${fmt(t.price)}, +$${t.pnlUsd!.toFixed(2)}. Riding the rest.`);
           return;
         }
@@ -1153,6 +1164,13 @@ export async function tick(persist = true) {
           continue;
         }
       }
+      // Reward must clearly beat risk after fees (1.5x), in every mode: a coin-flip with
+      // equal-sized wins and losses loses money once fees are paid.
+      if (o.netRiskPct > 0 && o.netRewardPct < MIN_REWARD_RISK * o.netRiskPct) {
+        if (triggerMet(o, q))
+          noteOnce(`rr:${sig.at}:${i}`, `${t3.symbol} reached the ${label}, but after fees it could gain ${o.netRewardPct.toFixed(1)}% vs lose ${o.netRiskPct.toFixed(1)}%: less than ${MIN_REWARD_RISK}x the risk. Not buying.`);
+        continue;
+      }
       if (o.winChancePct < minWin(cfg)) {
         if (triggerMet(o, q) && !state.bot.skipNoted[i]) {
           state.bot.skipNoted[i] = true;
@@ -1182,7 +1200,8 @@ export async function tick(persist = true) {
       const riskPct = cfg.riskPerTradePct ?? 1.5;
       const exitLossPct = ((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100 + roundTripCostPct();
       const bySize = riskPct > 0 ? (equity() * riskPct) / 100 / (exitLossPct / 100) : Infinity;
-      const cap = Math.min(state.cash, equity() * (cfg.positionPct / 100));
+      const sizePct = cfg.allowRisky ? Math.min(cfg.positionPct, RISKY_MAX_POSITION_PCT) : cfg.positionPct; // risky trades stay small
+      const cap = Math.min(state.cash, equity() * (sizePct / 100));
       const usd = Math.floor(Math.min(cap, bySize) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
@@ -1191,7 +1210,7 @@ export async function tick(persist = true) {
         stopLoss: o.stopLoss,
         target: o.target,
         takeProfit: o.target,
-        trailPct: cfg.trailPct ?? 3,
+        trailPct: trailFor(cfg, sig.atrPct),
         sellBy: Date.now() + o.maxHoldMinutes * 60_000,
         predictedWinPct: o.winChancePct,
       });

@@ -7,6 +7,7 @@ import { RulesPage } from "./Rules";
 import { WalletButton } from "./Wallet";
 import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
+import { paperCsv, paperPdf, realCsv, realPdf } from "./exportTrades";
 import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
@@ -272,7 +273,7 @@ export default function App() {
               <GoalLadder state={state} />
             </>
           )}
-          {tab === "trades" && (me?.tradeMode === "real" ? <RealTrades /> : <Trades state={state} />)}
+          {tab === "trades" && (me?.tradeMode === "real" ? <RealTrades notify={notify} /> : <Trades state={state} notify={notify} />)}
           {tab === "log" && <BotLog state={state} />}
         </section>
       </main>
@@ -908,7 +909,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
 type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number; riskPerTradePct: number; newCoinPct: number; newStopPct: number; newTakePct: number; newTrailPct: number; newMaxMin: number; newMaxPerDay: number; lockPct: number; partialAtPct: number; riskyMinWin: number };
 // Profit protection, the same for every preset: keep at least half of the best gain once
 // up the break-even amount, and take half 75% of the way to the target.
-const PROFIT_DEFAULTS = { lockPct: 50, partialAtPct: 75, riskyMinWin: 30 };
+const PROFIT_DEFAULTS = { lockPct: 50, partialAtPct: 100, riskyMinWin: 30 };
 const NEW_COIN_DEFAULTS = { newCoinPct: 3, newStopPct: 15, newTakePct: 30, newTrailPct: 10, newMaxMin: 45, newMaxPerDay: 5 };
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
   safe: { label: "Safe", blurb: "Risks 1% of the account per trade, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7, riskPerTradePct: 1, ...NEW_COIN_DEFAULTS, ...PROFIT_DEFAULTS },
@@ -1073,7 +1074,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
 
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
-    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, lockPct: active.lockPct ?? 50, partialAtPct: active.partialAtPct ?? 75, riskyMinWin: active.riskyMinWin ?? 30, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, newCoinPct: active.newCoinPct ?? 3, newStopPct: active.newStopPct ?? 15, newTakePct: active.newTakePct ?? 30, newTrailPct: active.newTrailPct ?? 10, newMaxMin: active.newMaxMin ?? 45, newMaxPerDay: active.newMaxPerDay ?? 5, goalUsd: active.goalUsd } : cfg;
+    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, lockPct: active.lockPct ?? 50, partialAtPct: active.partialAtPct ?? 100, riskyMinWin: active.riskyMinWin ?? 30, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, newCoinPct: active.newCoinPct ?? 3, newStopPct: active.newStopPct ?? 15, newTakePct: active.newTakePct ?? 30, newTrailPct: active.newTrailPct ?? 10, newMaxMin: active.newMaxMin ?? 45, newMaxPerDay: active.newMaxPerDay ?? 5, goalUsd: active.goalUsd } : cfg;
   // When the bot stops, keep the settings it was running with (even if this page was
   // refreshed or the bot was started elsewhere), ready for the next start.
   const lastRun = useRef<{ shown: typeof shown; active: BotConfig } | null>(null);
@@ -1278,7 +1279,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
                 <li>The AI writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
                 <li>Sells below the AI's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
                 <li>Profit lock: from then on it keeps at least <b>{shown.lockPct}%</b> of the best gain, so a run that fades still ends in profit</li>
-                <li>Takes half the profit <b>{shown.partialAtPct}%</b> of the way to the target, then lets the rest ride</li>
+                <li>Takes half the profit {shown.partialAtPct >= 100 ? <b>at the target</b> : <><b>{shown.partialAtPct}%</b> of the way to the target</>}, then lets the rest ride on a trailing stop sized to the coin's swings</li>
                 <li>At the AI's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
                 <li>Asks the AI again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
                 <li>No dip buys while a coin is falling (down more than <b>{shown.maxDrop1hPct}%</b> in an hour, or a 1-hour downtrend)</li>
@@ -1405,7 +1406,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
         </div>,
         document.body,
       )}
-      {running && active?.allowRisky && <div className="risky-pill">⚠ Risky mode: buys while falling, no cool-downs</div>}
+      {running && active?.allowRisky && <div className="risky-pill">⚠ Risky mode: buys while falling · max 25% per trade · 5-min cool-down</div>}
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
@@ -1602,7 +1603,41 @@ function TrackRecord({ state }: { state: AppState | null }) {
   );
 }
 
-function Trades({ state }: { state: AppState | null }) {
+// CSV / PDF export of the full trade history (paper: every trade ever; real: your swaps).
+function ExportButtons({ kind, notify }: { kind: "paper" | "real"; notify: (m: string, bad?: boolean) => void }) {
+  const { me } = useAccess();
+  const [busy, setBusy] = useState<"" | "csv" | "pdf">("");
+  const run = async (fmt: "csv" | "pdf") => {
+    setBusy(fmt);
+    try {
+      const who = { username: me?.username, name: me ? `${me.firstName} ${me.lastName}` : undefined };
+      if (kind === "paper") {
+        const items = (await api.tradeHistory(0, 5000)).items;
+        if (!items.length) return notify("No trades to export yet", true);
+        if (fmt === "csv") paperCsv(items);
+        else await paperPdf(items, who);
+      } else {
+        const items = await api.realTrades(1000);
+        if (!items.length) return notify("No real trades to export yet", true);
+        if (fmt === "csv") realCsv(items);
+        else await realPdf(items, who);
+      }
+      notify(`Trade history ${fmt.toUpperCase()} downloaded`);
+    } catch (e: any) {
+      notify(e.message, true);
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <span className="export-btns">
+      <button className="chip" onClick={() => void run("csv")} disabled={!!busy} title="Download every trade as a spreadsheet (CSV)">{busy === "csv" ? "…" : "⬇ CSV"}</button>
+      <button className="chip" onClick={() => void run("pdf")} disabled={!!busy} title="Download a PDF report with a summary and every trade">{busy === "pdf" ? "Making PDF…" : "⬇ PDF"}</button>
+    </span>
+  );
+}
+
+function Trades({ state, notify }: { state: AppState | null; notify: (m: string, bad?: boolean) => void }) {
   if (!state?.trades.length) return <p className="muted small pad">No trades yet.</p>;
   const closed = state.trades.filter((t) => t.pnlUsd != null);
   const wins = closed.filter((t) => t.pnlUsd! > 0).length;
@@ -1610,7 +1645,7 @@ function Trades({ state }: { state: AppState | null }) {
   return (
     <div className="table-wrap">
       <TrackRecord state={state} />
-      <div className="scan-head muted small">Win rate {closed.length ? ((wins / closed.length) * 100).toFixed(0) : 0}% over {closed.length} closed trades · fees paid {fmtUsd(fees)}</div>
+      <div className="scan-head muted small history-head"><span>Win rate {closed.length ? ((wins / closed.length) * 100).toFixed(0) : 0}% over {closed.length} closed trades · fees paid {fmtUsd(fees)}</span><ExportButtons kind="paper" notify={notify} /></div>
       <table>
         <thead><tr><th>Time</th><th>Side</th><th>Token</th><th>Price</th><th>USD</th><th>P&L</th><th className="hide-sm">Reason</th></tr></thead>
         <tbody>
@@ -1645,7 +1680,7 @@ function BotLog({ state }: { state: AppState | null }) {
 // Real mode: trading and the bot with your own wallet aren't switched on yet, so nothing
 // pretends to trade real money. The paper bot (if on) keeps running in the background.
 // Real mode's Trade history: swaps from your own wallet, each with its Solscan link.
-function RealTrades() {
+function RealTrades({ notify }: { notify: (m: string, bad?: boolean) => void }) {
   const [rows, setRows] = useState<RealTrade[] | null>(null);
   const [err, setErr] = useState("");
   useEffect(() => {
@@ -1660,6 +1695,7 @@ function RealTrades() {
   const amt = (n: number) => (n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n >= 1 ? n.toFixed(4) : n.toPrecision(4));
   return (
     <div className="table-wrap">
+      <div className="scan-head muted small history-head"><span>{rows.length} real swap{rows.length === 1 ? "" : "s"} from your wallet</span><ExportButtons kind="real" notify={notify} /></div>
       <table>
         <thead><tr><th>Time</th><th>Side</th><th>Token</th><th>Paid</th><th>Got</th><th>Status</th><th /></tr></thead>
         <tbody>

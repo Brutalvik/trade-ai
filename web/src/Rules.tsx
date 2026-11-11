@@ -88,7 +88,7 @@ export function RulesPage({ presets, plans, onClose }: { presets: Record<string,
             <h2>1. How a trade happens</h2>
             <ol>
               <li><b>The AI writes a plan</b> for the coin: whether to buy, at what price, where to exit if wrong, and where to take profit.</li>
-              <li><b>The app checks every order</b> in the plan against fees and risk, and against your minimum win chance.</li>
+              <li><b>The app checks every order</b> in the plan against fees and risk, and against your minimum win chance. The bot only buys when the possible gain after fees is at least <b>1.5x</b> the possible loss.</li>
               <li><b>The bot watches the price every 5 seconds</b> and buys the moment an order's trigger is reached, if the safety rules allow it.</li>
               <li><b>It manages the trade</b> until it sells: stop-loss, break-even, profit lock, taking half early, a trailing stop past the target, and a time limit.</li>
               <li><b>After the trade</b> it waits for a fresh AI plan before buying again, and applies the cool-down and daily limits.</li>
@@ -159,8 +159,8 @@ export function RulesPage({ presets, plans, onClose }: { presets: Record<string,
               <li><b>Stop-loss:</b> sells if the price falls to the exit price, at that price, or at the live price if it gapped lower.</li>
               <li><b>Break-even:</b> once the trade is up the break-even amount <i>(your setting)</i>, the stop moves to the buy price plus costs, so it can't turn into a loss.</li>
               <li><b>Profit lock</b> <i>(your setting, default 50%)</i>: from then on the stop follows the best price so the trade keeps at least that share of its best gain.</li>
-              <li><b>Take half early</b> <i>(your setting, default 75%)</i>: sells half once the price is that far from the buy price to the target (runs often stall just short of it). The rest rides on.</li>
-              <li><b>At the target:</b> it doesn't sell; it switches to a <b>trailing stop</b> <i>(your setting)</i> that sells if the price falls that % from its highest point.</li>
+              <li><b>Take half</b> <i>(your setting, default 100% = at the target)</i>: sells half once the price is that far from the buy price to the target. The rest rides on. (A lower setting takes profit earlier but cuts winners short.)</li>
+              <li><b>At the target:</b> it doesn't sell; it switches to a <b>trailing stop</b> that sells if the price falls that % from its highest point. The % is sized to how much the coin normally moves (3x its average 5-minute range), never tighter than <i>your setting</i> and at most 12%.</li>
               <li><b>Time limit:</b> sells after the order's maximum holding time.</li>
               <li><b>Bad-tick protection:</b> highs and lows more than 15% beyond the live price are ignored, and trailing stops and the profit lock follow closing prices, so one bad tick can't end a trade.</li>
               <li><b>Emergency stop:</b> see account safety limits.</li>
@@ -190,8 +190,9 @@ export function RulesPage({ presets, plans, onClose }: { presets: Record<string,
             <h2>9. Risky mode</h2>
             <p>When you start the bot on a coin the AI rates High/Extreme risk, advises avoiding, that is falling, or with thin liquidity (under $50K), a popup lists the reasons. <b>"I understand, trade anyway"</b> starts risky mode (AI Pro and up):</p>
             <ul>
-              <li><b>Changes:</b> buys dips even while the coin is falling; uses Avoid plans and setups that fail the fee/risk check; uses orders down to your <b>risky-mode minimum win chance</b> (default 30%) instead of the normal minimum; no cool-down or two-loss skip on the coin.</li>
-              <li><b>Still applies:</b> the AI's exit, profit lock, take-half, trailing stop, the risky-mode minimum, the daily loss limit and the emergency stop.</li>
+              <li><b>Changes:</b> buys dips even while the coin is falling; uses Avoid plans and setups that fail the fee/risk check; uses orders down to your <b>risky-mode minimum win chance</b> (default 30%) instead of the normal minimum.</li>
+              <li><b>Still applies:</b> a <b>5-minute cool-down</b> on the coin after a losing trade, and the coin is skipped for the rest of the day after <b>two losses in a row</b>. Each trade is capped at <b>25% of the account</b>, and a trade must be able to gain at least <b>1.5x</b> what it risks after fees.</li>
+              <li><b>Also still applies:</b> the AI's exit, profit lock, take-half, trailing stop, the risky-mode minimum, the daily loss limit and the emergency stop.</li>
               <li>Your acceptance, with the warnings shown, is kept in your activity history.</li>
             </ul>
           </section>

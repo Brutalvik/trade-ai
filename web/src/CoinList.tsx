@@ -4,6 +4,7 @@ import { api, fmtBig, fmtPrice, type ListCoin, type ListKind, type PairInfo } fr
 
 const KINDS: { id: ListKind; label: string; hint: string }[] = [
   { id: "crypto", label: "Crypto", hint: "Biggest Solana coins by market cap" },
+  { id: "top", label: "Top", hint: "Trending Solana coins ranked by a quick score from their price, volume and buyers (not AI)" },
   { id: "trending", label: "Trending", hint: "Trending on Solana in the last hour" },
   { id: "held", label: "Most held", hint: "Coins with the most holders" },
   { id: "graduated", label: "Graduated", hint: "pump.fun coins that finished their bonding curve, busiest first" },
@@ -78,7 +79,9 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
             </span>
             <span className="coin-nums">
               <b><Price p={c.priceUsd} /></b>
-              {kind === "held" && c.holders ? (
+              {kind === "top" && c.verdict ? (
+                <span className={`verdict ${c.verdict === "BUY ZONE" ? "up" : c.verdict === "AVOID" ? "down" : "amber"}`} title={c.why}>{c.verdict === "BUY ZONE" ? "Buy zone" : c.verdict === "AVOID" ? "Avoid" : "Wait"}{c.score != null ? ` · ${c.score}` : ""}</span>
+              ) : kind === "held" && c.holders ? (
                 <span className="muted">{fmtCount(c.holders)} holders</span>
               ) : kind === "community" && c.buyers ? (
                 <span className="muted">{c.buyers} trader{c.buyers === 1 ? "" : "s"}</span>
