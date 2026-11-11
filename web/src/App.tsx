@@ -8,7 +8,7 @@ import { WalletButton } from "./Wallet";
 import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
 import { paperCsv, paperPdf, realCsv, realPdf } from "./exportTrades";
-import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
+import { AccessCtx, AccountButton, AdminModal, LockChip, Modal, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
@@ -1013,6 +1013,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
   const [autoChain, setAutoChain] = useState<ScanChain>((savedBot.autoChain as ScanChain) ?? "all");
   const [waitForHold, setWaitForHold] = useState(savedBot.waitForHold ?? false);
   const [rewardRule, setRewardRule] = useState(savedBot.rewardRule ?? true); // 1.5x reward rule (off = old rules)
+  const [ruleInfoOpen, setRuleInfoOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   // Changes in the popup are drafts: Confirm keeps them, Cancel / ✕ / Escape / clicking outside undoes them.
   const [snap, setSnap] = useState<{ cfg: typeof cfg; custom: boolean; waitForHold: boolean } | null>(null);
@@ -1408,9 +1409,12 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
         </div>,
         document.body,
       )}
-      <label className="rule-switch" title="New rule: the bot only buys when the possible gain after fees is at least 1.5 times the possible loss. Off = the old rules, which also buy setups whose gain is smaller than the risk.">
+      <div className="rule-switch">
         <span>
-          <b>Gain must be 1.5× the risk</b>
+          <span className="rule-title">
+            <b>Gain must be 1.5× the risk</b>
+            <button type="button" className="info-btn small" onClick={() => setRuleInfoOpen(true)} aria-label="What this switch does" title="What this switch does">i</button>
+          </span>
           <span className="muted tiny">{(running ? active?.rewardRule !== false : rewardRule) ? "On: skips setups where the loss could outweigh the gain." : "Off (old rules): may buy setups whose gain is smaller than the risk."}</span>
         </span>
         <button
@@ -1434,7 +1438,8 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
         >
           <span />
         </button>
-      </label>
+      </div>
+      {ruleInfoOpen && <RewardRuleInfo on={running ? active?.rewardRule !== false : rewardRule} risky={!!(running ? active?.allowRisky : false)} onClose={() => setRuleInfoOpen(false)} />}
       {running && active?.allowRisky && <div className="risky-pill">⚠ Risky mode: buys while falling · max 25% per trade · 5-min cool-down</div>}
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
@@ -1629,6 +1634,37 @@ function TrackRecord({ state }: { state: AppState | null }) {
       </p>
       {newCoinsBlock}
     </div>
+  );
+}
+
+// What the "Gain must be 1.5x the risk" switch does, with a worked example.
+function RewardRuleInfo({ on, risky, onClose }: { on: boolean; risky: boolean; onClose: () => void }) {
+  return (
+    <Modal title="Gain must be 1.5× the risk" onClose={onClose} narrow>
+      <p className="rule-now">Right now: <b className={on ? "up" : "amber"}>{on ? "ON (new rule)" : "OFF (old rules)"}</b>{risky ? " · risky mode" : ""}</p>
+      <h3>What it checks</h3>
+      <p>For every buy the AI plans, the app works out two numbers <b>after fees and slippage</b> (about 3% for a round trip on the paper account):</p>
+      <ul className="small">
+        <li><b>Gain</b>: from the buy price to the target, minus fees.</li>
+        <li><b>Loss</b>: from the buy price down to the exit (stop-loss), plus fees.</li>
+      </ul>
+      <h3>When it's ON</h3>
+      <p>The bot only buys if the gain is <b>at least 1.5 times</b> the loss. Otherwise it skips the setup and says why in the Bot log, for example: <i>"could gain 4.3% vs lose 10.7%: less than 1.5x the risk. Not buying."</i></p>
+      <h3>When it's OFF (old rules)</h3>
+      <ul className="small">
+        <li>Normal modes: the bot buys any setup that passes the app's fee check, even when the gain is smaller than 1.5× the loss.</li>
+        <li>Risky mode: it also buys setups the AI flagged as failing the fee check, including ones where the loss is bigger than the gain.</li>
+      </ul>
+      <h3>Why it matters</h3>
+      <p>If losses are bigger than wins, you have to win most trades just to break even. Example: a setup that can gain 4.3% but lose 10.7% at a 35% win chance loses about <b>5.5% per trade</b> on average. In the SEPPUKU run, average wins were about $346 and average losses about $646.</p>
+      <h3>Good to know</h3>
+      <ul className="small">
+        <li>It takes effect within seconds, even while the bot is running. No restart needed.</li>
+        <li>Each change is noted in the Bot log and saved in your activity history.</li>
+        <li>With it ON the bot trades less often: it waits for setups worth taking.</li>
+        <li>Either way, these still apply: the cool-down after a loss, skipping a coin after 2 losses in a row, the 25% size cap in risky mode, the daily loss limit and the emergency stop.</li>
+      </ul>
+    </Modal>
   );
 }
 

@@ -709,3 +709,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 .mini-switch.on { background: rgba(0, 245, 160, 0.18); border-color: rgba(0, 245, 160, 0.5); }
 .mini-switch.on span { transform: translateX(18px); background: var(--green, #00f5a0); }
 .mini-switch:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.rule-title { display: inline-flex; align-items: center; gap: 8px; }
+.info-btn.small { width: 20px; height: 20px; font-size: 12px; border-width: 1.2px; }
+.rule-now { padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); }
