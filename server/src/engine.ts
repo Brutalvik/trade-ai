@@ -35,6 +35,7 @@ export type Position = {
   strategy?: "newcoin"; // opened by the New coins mode (separate rules and scorecard)
   partialDone?: boolean; // new coins: half already sold at the first target
   extraSlipPct?: number; // extra slippage for thin liquidity, applied on the way out too
+  realizedUsd?: number; // P&L already taken by partial sales (new coins: half at the first target)
 };
 
 export type Trade = {
@@ -96,7 +97,9 @@ export type BotConfig = {
   riskPerTradePct?: number;
 };
 
-export type Settings = { feePct: number; slippagePct: number };
+// continuous: false (default) = the bot stops itself after one profitable trade;
+// true = it keeps trading round after round until you stop it.
+export type Settings = { feePct: number; slippagePct: number; continuous?: boolean };
 
 type State = {
   mode: "paper";
@@ -302,6 +305,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
   p.qty -= qty;
   p.costUsd -= costPart;
   if (f >= 0.999 || p.qty * price < 0.01) state.positions = state.positions.filter((x) => x.id !== p.id);
+  else p.realizedUsd = (p.realizedUsd ?? 0) + (net - costPart);
   const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, reason, source: p.source };
   state.trades.unshift(t);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES;
@@ -311,7 +315,12 @@ export function sell(positionId: string, price: number, fraction: number, reason
 }
 
 export function updateSettings(s: Partial<Settings>) {
-  state.settings = { ...state.settings, ...s };
+  const next = { ...state.settings };
+  if (s.feePct !== undefined) next.feePct = Number(s.feePct);
+  if (s.slippagePct !== undefined) next.slippagePct = Number(s.slippagePct);
+  if (s.continuous !== undefined) next.continuous = Boolean(s.continuous);
+  if (!(next.feePct >= 0 && next.feePct <= 10 && next.slippagePct >= 0 && next.slippagePct <= 10)) throw new Error("Trading costs must be between 0 and 10%");
+  state.settings = next;
   save();
 }
 
@@ -741,6 +750,12 @@ export async function tick(persist = true) {
         state.bot.armedSince = [];
         state.bot.askNow = true;
         if (isAuto(cfg)) state.bot.target = null;
+        // One trade at a time (the default): stop after a profitable round trip.
+        const total = t.pnlUsd! + (pos.realizedUsd ?? 0);
+        if (total > 0 && !state.settings.continuous) {
+          stopBot(`Done: one profitable trade (+$${total.toFixed(2)}). Start it again for another, or turn on "Trade continuously" in Settings.`);
+          alert(`⏹ Bot stopped after a profitable trade (+$${total.toFixed(2)}). Account $${equity().toFixed(2)}.`);
+        }
       }
       return;
     }

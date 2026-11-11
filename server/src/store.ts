@@ -15,6 +15,11 @@ export interface Store {
   // Returns true if we got the lock (it expires by itself after ttlMs).
   lock(name: string, ttlMs: number): Promise<boolean>;
   unlock(name: string): Promise<void>;
+  // Small key-value records (user accounts). kvSet with nx only writes if the key is new
+  // and returns whether it wrote; ttlMs makes the record expire by itself.
+  kvGet<T>(key: string): Promise<T | null>;
+  kvSet<T>(key: string, value: T, opts?: { nx?: boolean; ttlMs?: number }): Promise<boolean>;
+  kvDel(key: string): Promise<void>;
 }
 
 const localLocks = new Map<string, number>();
@@ -59,6 +64,19 @@ function fileStore(): Store {
   // On Vercel only /tmp is writable, and it is wiped between instances ("temp").
   const dir = process.env.VERCEL ? "/tmp/trade-ai" : path.resolve("data");
   const file = path.join(dir, "state.json");
+  const kvFile = path.join(dir, "kv.json");
+  type Rec = { v: unknown; exp?: number };
+  const readKv = (): Record<string, Rec> => {
+    try {
+      return JSON.parse(fs.readFileSync(kvFile, "utf8"));
+    } catch {
+      return {};
+    }
+  };
+  const writeKv = (m: Record<string, Rec>) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(kvFile, JSON.stringify(m, null, 2));
+  };
   return {
     kind: process.env.VERCEL ? "temp" : "file",
     async load<T>() {
@@ -71,6 +89,23 @@ function fileStore(): Store {
     async save<T>(value: T) {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file, JSON.stringify(value, null, 2));
+    },
+    async kvGet<T>(key: string) {
+      const r = readKv()[key];
+      return r && (!r.exp || r.exp > Date.now()) ? (r.v as T) : null;
+    },
+    async kvSet<T>(key: string, value: T, opts: { nx?: boolean; ttlMs?: number } = {}) {
+      const m = readKv();
+      const cur = m[key];
+      if (opts.nx && cur && (!cur.exp || cur.exp > Date.now())) return false;
+      m[key] = { v: value, exp: opts.ttlMs ? Date.now() + opts.ttlMs : undefined };
+      writeKv(m);
+      return true;
+    },
+    async kvDel(key: string) {
+      const m = readKv();
+      delete m[key];
+      writeKv(m);
     },
     ...localLock,
   };
@@ -90,6 +125,17 @@ export function createStore(): Store {
     },
     async unlock(name: string) {
       await redis.del(`${KEY}:lock:${name}`);
+    },
+    kvGet: <T>(key: string) => redis.get<T>(`${KEY}:kv:${key}`),
+    async kvSet<T>(key: string, value: T, opts: { nx?: boolean; ttlMs?: number } = {}) {
+      const k = `${KEY}:kv:${key}`;
+      const r = opts.nx
+        ? opts.ttlMs ? await redis.set(k, value, { nx: true, px: opts.ttlMs }) : await redis.set(k, value, { nx: true })
+        : opts.ttlMs ? await redis.set(k, value, { px: opts.ttlMs }) : await redis.set(k, value);
+      return r === "OK";
+    },
+    async kvDel(key: string) {
+      await redis.del(`${KEY}:kv:${key}`);
     },
   };
 }

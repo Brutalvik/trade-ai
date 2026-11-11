@@ -34,7 +34,7 @@ export type AppState = {
   positions: Position[];
   trades: Trade[];
   equity: { t: number; v: number }[];
-  settings: { feePct: number; slippagePct: number };
+  settings: { feePct: number; slippagePct: number; continuous?: boolean };
   bot: {
     running: boolean;
     config: BotConfig | null;
@@ -61,6 +61,7 @@ export type ScanChain = "all" | "solana" | "base" | "ethereum" | "bsc";
 export type NewCoinRisk = "LOW" | "MEDIUM" | "HIGH" | "REJECTED";
 export type NewCoin = { pair: PairInfo; ageMin: number; risk: NewCoinRisk; reasons: string[]; safetyChecked: boolean; buyShare: number | null; momentum: "UP" | "FLAT" | "DOWN"; tradeable: boolean; why: string };
 export type ScanResult = { source: "trending" | "boosted"; chain: ScanChain; rows: { pair: PairInfo; snap: Snapshot | null; plan: Plan | null }[] };
+export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
 
 async function req<T>(path: string, body?: unknown): Promise<T> {
@@ -86,7 +87,12 @@ export const api = {
   state: () => req<AppState>("/state"),
   buy: (chain: string, pool: string, usd: number) => req("/trade", { side: "BUY", chain, pool, usd }),
   sell: (chain: string, pool: string, positionId: string, fraction: number) => req("/trade", { side: "SELL", chain, pool, positionId, fraction }),
-  settings: (s: { feePct?: number; slippagePct?: number }) => req("/settings", s),
+  settings: (s: { feePct?: number; slippagePct?: number; continuous?: boolean }) => req("/settings", s),
+  me: () => req<{ user: User | null }>("/auth/me"),
+  signIn: (b: { login: string; password: string }) => req<{ user: User }>("/auth/signin", b),
+  signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),
+  signOut: () => req("/auth/signout", {}),
+  changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   reset: (startCash: number) => req("/reset", { startCash }),
   startBot: (cfg: BotConfig) => req("/bot/start", cfg),
   stopBot: () => req("/bot/stop", {}),

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
+import { AccountButton, SettingsButton } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveScan, saveState, saveUi, savedAnalysis, savedChart, savedScan, savedState, savedUi, type SavedAnalysis } from "./persist";
@@ -141,7 +142,7 @@ export default function App() {
   return (
     <div className="app">
       <div className="bg-grid" />
-      <TopBar status={status} state={state} onSelect={selectPair} />
+      <TopBar status={status} state={state} onSelect={selectPair} notify={notify} refresh={() => api.state().then(setState)} />
       <BotTradeNotifications state={state} onOpen={openPool} />
       <UpdateBanner serverCommit={status?.commit} />
       {status?.storage === "temp" && (
@@ -233,7 +234,7 @@ function SoundToggle() {
   );
 }
 
-function TopBar({ status, state, onSelect }: { status: Status | null; state: AppState | null; onSelect: (p: PairInfo) => void }) {
+function TopBar({ status, state, onSelect, notify, refresh }: { status: Status | null; state: AppState | null; onSelect: (p: PairInfo) => void; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
   const [q, setQ] = useState("");
   const [res, setRes] = useState<PairInfo[]>([]);
   const [open, setOpen] = useState(false);
@@ -269,6 +270,7 @@ function TopBar({ status, state, onSelect }: { status: Status | null; state: App
         )}
       </div>
       <div className="stats">
+        <SettingsButton alerts={status?.alerts ?? null} continuous={!!state?.settings.continuous} onSaved={refresh} notify={notify} />
         <SoundToggle />
         <span className="badge paper">PAPER MODE</span>
         <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="Claude API key">Claude</span>
@@ -278,6 +280,7 @@ function TopBar({ status, state, onSelect }: { status: Status | null; state: App
           <b>{fmtUsd(eq)}</b>
           <small className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</small>
         </div>
+        <AccountButton notify={notify} />
       </div>
     </header>
   );
@@ -717,7 +720,7 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
   );
 }
 
-function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = null }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; alerts?: "telegram" | "ntfy" | null }) {
+function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; alerts?: "telegram" | "ntfy" | null }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
   // Your choices are saved in this browser, so a refresh or coin change keeps them.
@@ -1047,15 +1050,6 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
                 <label>Max new coins per day<input type="number" value={shown.newMaxPerDay} onChange={set("newMaxPerDay")} disabled={running} /><small>Each coin is traded at most once a day.</small></label>
               </div>
               <TradingCosts fee={feeDraft} slip={slipDraft} setFee={setFeeDraft} setSlip={setSlipDraft} />
-              <div className="settings-head">
-                <span>Phone alerts</span>
-                <span className="muted tiny">{alerts ? `On (${alerts === "telegram" ? "Telegram" : "ntfy"})` : "Off"}</span>
-              </div>
-              <p className="small">
-                {alerts
-                  ? "You'll get a message for every bot buy and sell, protected sells, the daily loss limit, the emergency stop, and a daily summary after midnight UTC."
-                  : "Get a message on your phone for every trade, safety limit and a daily summary: add Telegram or ntfy settings in Vercel (see the README), then redeploy."}
-              </p>
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={cancelRules}>Cancel</button>
@@ -1070,6 +1064,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
       ) : (
         <button className="btn buy wide" onClick={start} disabled={mode === "this" && !pair}>{mode === "newcoins" ? `START NEW COINS BOT (${newChain === "solana" ? "Solana" : "Base"})` : mode === "auto" ? "START AUTO-PICK BOT" : `START BOT ON ${pair?.symbol ?? "…"}`}</button>
       )}
+      <p className="muted small run-mode-hint">{state?.settings.continuous ? "Trades continuously until you stop it." : "Stops by itself after one profitable trade."} Change this in Settings (wrench, top right).</p>
       <p className="muted small">{mode === "newcoins" ? "New coins mode does not call Claude: it follows fixed safety and exit rules, so it is free to run." : multi ? "Each AI check calls Claude and ChatGPT (a few cents). The bot buys only when both agree and reward beats risk after fees." : "Claude is in charge. Each check is a paid Claude call (a few cents), and it only buys when reward beats risk after fees."}</p>
     </div>
   );

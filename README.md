@@ -23,6 +23,11 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 - **Growth ladder**: progress from $10 toward $15 / $20 / $100 / $1,000
 - Responsive layout: desktop, tablet and phone
 
+## Settings and accounts
+
+- **Settings** (wrench, top right): choose whether the bot stops by itself after one profitable trade (the default) or trades continuously, and see whether phone alerts are on.
+- **Accounts:** sign up with a unique username, first and last name, email and password; sign in with username or email. Passwords are hashed with scrypt; sessions are signed, HTTP-only cookies that last 30 days. The profile (click your initials) shows your details and lets you reset your password, which signs out your other devices. Accounts are stored in the same Upstash Redis database, so no extra setup is needed. The paper account and bot are still shared by everyone using the site.
+
 ## New coins mode
 
 A fast, rule-based mode (no Claude calls) for young coins on Solana or Base:

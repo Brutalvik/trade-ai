@@ -9,6 +9,7 @@ import { scanNewCoins, type NewCoinChain } from "./newcoins.js";
 import { storageEnvNames } from "./store.js";
 import { alertChannel } from "./alerts.js";
 import { waitUntil } from "@vercel/functions";
+import * as auth from "./auth.js";
 
 const app = express();
 app.use(cors());
@@ -86,6 +87,22 @@ app.post(
 );
 
 app.post("/api/settings", wrap(async (req) => engine.updateSettings(req.body)));
+
+// Accounts (don't touch the trading state, so no sync/flush needed).
+const authRoute = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await fn(req, res));
+  } catch (e: any) {
+    if (res.statusCode < 400) res.status(400);
+    res.json({ error: e?.message ?? String(e) });
+  }
+};
+app.get("/api/auth/me", authRoute(auth.me));
+app.post("/api/auth/signup", authRoute(auth.signUp));
+app.post("/api/auth/signin", authRoute(auth.signIn));
+app.post("/api/auth/signout", authRoute(auth.signOut));
+app.post("/api/auth/password", authRoute(auth.changePassword));
 app.post("/api/reset", wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10))));
 app.post("/api/bot/start", wrap(async (req) => engine.startBot(req.body)));
 app.post("/api/bot/stop", wrap(async () => engine.stopBot()));
