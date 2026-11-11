@@ -1,7 +1,7 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtUsd, type AdminUser, type AppState, type Permission, type PlanId, type PlanInfo, type User } from "./api";
+import { api, fmtUsd, type AdminUser, type AppState, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 
 // ---------- Shared modal ----------
 
@@ -308,11 +308,13 @@ export function TokenMeter({ usage }: { usage?: User["usage"] }) {
   if (usage.limit < 0) return <div className="token-meter"><div className="tm-head"><span>AI tokens this month</span><b>Unlimited</b></div></div>;
   if (usage.limit === 0) return <div className="token-meter"><div className="tm-head"><span>AI tokens</span><b>Not in your plan</b></div></div>;
   const pct = Math.min(100, (usage.used / usage.limit) * 100);
+  const topup = usage.topup ?? 0;
   return (
     <div className="token-meter">
       <div className="tm-head"><span>AI tokens this month</span><b>{fmtTokens(usage.used)} / {fmtTokens(usage.limit)}</b></div>
       <div className="tm-bar"><div className={pct > 90 ? "hot" : ""} style={{ width: `${pct}%` }} /></div>
-      <small className="muted">≈ {analysesFor(Math.max(0, usage.limit - usage.used))} AI analyses left · 10 tokens per AI token used</small>
+      {topup > 0 && <div className="tm-head"><span>+ Top-up tokens (don't expire)</span><b>{fmtTokens(topup)}</b></div>}
+      <small className="muted">≈ {analysesFor(Math.max(0, usage.limit - usage.used) + topup)} AI analyses left · 10 tokens per AI token used</small>
     </div>
   );
 }
@@ -329,17 +331,32 @@ const FEATURES: { perm: Permission; label: string }[] = [
 export function PlansModal({ onClose }: { onClose: () => void }) {
   const { me } = useAccess();
   const [plans, setPlans] = useState<PlanInfo[] | null>(null);
-  useEffect(() => void api.plans().then(setPlans).catch(() => setPlans([])), []);
+  const [extras, setExtras] = useState<PlanExtras | null>(null);
+  const [yearly, setYearly] = useState(false);
+  useEffect(() => {
+    void api.plans().then(setPlans).catch(() => setPlans([]));
+    void api.planExtras().then(setExtras).catch(() => {});
+  }, []);
+  const paid = extras?.yearlyMonthsPaid ?? 10;
   return (
     <Modal title="Plans" onClose={onClose} wide>
-      <p className="muted small plans-lead">Paper trading is free. Membership removes transaction charges on most trades; AI plans add AI analyses and the AI bot, with a monthly AI token allowance.</p>
+      <div className="plans-top">
+        <p className="muted small plans-lead">Paper trading is free. Membership removes transaction charges on most trades; AI plans add AI analyses and the AI bot, with a monthly AI token allowance.</p>
+        <div className="billing-toggle" role="radiogroup" aria-label="Billing period">
+          <button role="radio" aria-checked={!yearly} className={!yearly ? "on" : ""} onClick={() => setYearly(false)}>Monthly</button>
+          <button role="radio" aria-checked={yearly} className={yearly ? "on" : ""} onClick={() => setYearly(true)}>Yearly <span className="save">2 months free</span></button>
+        </div>
+      </div>
       <div className="plan-grid">
         {(plans ?? []).map((p) => {
           const current = (me?.plan ?? "free") === p.id;
           return (
             <div key={p.id} className={`plan-card ${current ? "current" : ""} ${p.id}`}>
               <div className="plan-name">{p.name}{current && <span className="plan-current">Your plan</span>}</div>
-              <div className="plan-price">{p.priceUsd ? <>${p.priceUsd}<small>/month</small></> : "Free"}</div>
+              <div className="plan-price">
+                {!p.priceUsd ? "Free" : yearly ? <>${p.priceUsd * paid}<small>/year</small></> : <>${p.priceUsd}<small>/month</small></>}
+              </div>
+              {yearly && p.priceUsd > 0 && <div className="plan-yearly">≈ ${(p.priceUsd * paid / 12).toFixed(2)}/month · save ${p.priceUsd * (12 - paid)}</div>}
               <p className="small">{p.blurb}</p>
               <ul className="plan-features">
                 <li>{p.feePct === 0 ? "No transaction charges" : p.freeTrades > 0 ? `${p.freeTrades} trades/month free, then ${p.feePct}%` : `${p.feePct}% charge per trade`}</li>
@@ -353,7 +370,23 @@ export function PlansModal({ onClose }: { onClose: () => void }) {
           );
         })}
       </div>
-      <p className="muted tiny">Online billing isn't connected yet: an admin can change your plan meanwhile. Prices are in USD.</p>
+      {extras && (
+        <div className="packs">
+          <div className="profile-section-title">Need more AI? Token packs</div>
+          <p className="muted small">For AI plans: used after your monthly allowance runs out, and they never expire.</p>
+          <div className="pack-row">
+            {extras.tokenPacks.map((k) => (
+              <div key={k.id} className="pack-card">
+                <b>{fmtTokens(k.tokens)} tokens</b>
+                <span className="muted small">≈ {analysesFor(k.tokens)} analyses</span>
+                <span className="pack-price">${k.priceUsd}</span>
+                <button className="btn ghost" disabled>Buy (billing coming soon)</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <p className="muted tiny">Online billing isn't connected yet: an admin can change your plan or add tokens meanwhile. Prices are in USD.</p>
     </Modal>
   );
 }
@@ -375,12 +408,21 @@ export function AdminModal({ onClose, notify }: { onClose: () => void; notify: (
       notify(e.message, true);
     }
   };
+  const addTokens = async (username: string, tokens: number) => {
+    try {
+      await api.adminTopup({ username, tokens });
+      notify(`Added ${fmtTokens(tokens)} tokens to ${username}`);
+      void load();
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
   return (
     <Modal title="Manage users" onClose={onClose} wide>
       {!users ? <p className="muted small">Loading…</p> : (
         <div className="table-wrap">
           <table className="scan">
-            <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>Role</th><th className="num">AI tokens this month</th></tr></thead>
+            <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>Role</th><th className="num">AI tokens this month</th><th>Top-up</th></tr></thead>
             <tbody>
               {users.map((u) => (
                 <tr key={u.username}>
@@ -398,6 +440,14 @@ export function AdminModal({ onClose, notify }: { onClose: () => void; notify: (
                     </select>
                   </td>
                   <td className="num">{u.usage.limit < 0 ? `${fmtTokens(u.usage.used)} / unlimited` : `${fmtTokens(u.usage.used)} / ${fmtTokens(u.usage.limit)}`}</td>
+                  <td>
+                    <div className="topup-cell">
+                      <span className="mono small">{fmtTokens(u.usage.topup ?? 0)}</span>
+                      {[2_000_000, 10_000_000].map((n) => (
+                        <button key={n} className="chip" onClick={() => void addTokens(u.username, n)}>+{fmtTokens(n)}</button>
+                      ))}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

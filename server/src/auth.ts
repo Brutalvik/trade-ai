@@ -146,7 +146,8 @@ const usageKey = (key: string, m = month()) => `usage:${key}:${m}`;
 export async function tokenUsage(key: string, plan: PlanId, role: Role) {
   const used = (await store.kvGet<number>(usageKey(key))) ?? 0;
   const limit = tokenLimit(plan, role);
-  return { month: month(), used, limit: Number.isFinite(limit) ? limit : -1 };
+  const topup = (await store.kvGet<number>(`topup:${key}`)) ?? 0;
+  return { month: month(), used, limit: Number.isFinite(limit) ? limit : -1, topup };
 }
 
 // Admin: list users and change a user's plan / role.
@@ -157,6 +158,17 @@ export async function listUsers() {
     users.filter((u): u is User => !!u).map(async (u) => ({ ...pub(u), usage: await tokenUsage(u.username.toLowerCase(), planOf(u.plan).id, u.role ?? "user") })),
   );
 }
+// Admin: add top-up AI tokens to a user (they don't expire; used after the monthly allowance).
+export async function addTopup(username: string, tokens: number) {
+  const k = String(username).toLowerCase();
+  if (!(await store.kvGet<User>(userKey(k)))) throw new Error("User not found");
+  if (!(tokens > 0) || tokens > 1_000_000_000) throw new Error("Enter a token amount");
+  const tk = `topup:${k}`;
+  const next = ((await store.kvGet<number>(tk)) ?? 0) + Math.round(tokens);
+  await store.kvSet(tk, next);
+  return { username: k, topup: next };
+}
+
 export async function setUserAccess(username: string, plan?: string, role?: string) {
   const u = await store.kvGet<User>(userKey(String(username)));
   if (!u) throw new Error("User not found");

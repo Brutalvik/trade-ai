@@ -64,6 +64,14 @@ export const PLANS: Record<PlanId, Plan> = {
 };
 export const PLAN_ORDER: PlanId[] = ["free", "member", "starter", "pro", "max"];
 
+// Extra AI tokens for AI plans: used after the monthly allowance runs out, and they don't expire.
+export const TOKEN_PACKS = [
+  { id: "pack2m", tokens: 2_000_000, priceUsd: 6 },
+  { id: "pack10m", tokens: 10_000_000, priceUsd: 25 },
+];
+// Yearly billing: pay for 10 months, get 12 (2 months free).
+export const YEARLY_MONTHS_PAID = 10;
+
 const ROLE_PERMISSIONS: Record<Role, Permission[]> = { user: [], admin: ["admin.users"] };
 
 export const planOf = (id?: string | null): Plan => PLANS[(id as PlanId) in PLANS ? (id as PlanId) : "free"];

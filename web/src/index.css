@@ -478,3 +478,18 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .fee-line { font-size: 11px; color: var(--muted); margin-top: 6px; }
 select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
 .link-btn { background: none; border: 0; padding: 0; color: var(--cyan); font-size: inherit; cursor: pointer; text-decoration: underline; }
+
+/* Plans: billing period, token packs; admin top-ups */
+.plans-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.billing-toggle { display: inline-flex; gap: 4px; padding: 4px; margin-top: 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.3); }
+.billing-toggle button { border: 0; background: none; color: var(--muted); padding: 6px 14px; border-radius: 999px; font-weight: 600; cursor: pointer; }
+.billing-toggle button.on { background: rgba(0, 229, 255, 0.14); color: var(--cyan); }
+.billing-toggle .save { margin-left: 4px; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: rgba(0, 245, 160, 0.15); color: var(--up); }
+.plan-yearly { font-size: 11px; color: var(--up); margin-top: -4px; }
+.packs { margin: 6px 0 10px; }
+.pack-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.pack-card { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; min-width: 200px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0, 0, 0, 0.25); }
+.pack-price { font-size: 20px; font-weight: 700; color: var(--text); }
+.topup-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.order.risky { border-color: rgba(255, 61, 113, 0.45); }
+.order-warning { display: block; margin-top: 6px; font-size: 11.5px; line-height: 1.4; color: #ffb3c4; }

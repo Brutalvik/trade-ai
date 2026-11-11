@@ -406,7 +406,7 @@ export function describeOrder(o: CheckedOrder, waitForHold = false) {
 function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: number; waitForHold?: boolean }) {
   const below = minWin !== undefined && o.winChancePct < minWin;
   return (
-    <div className={`order ${below ? "dim" : ""}`}>
+    <div className={`order ${below ? "dim" : ""} ${o.warning ? "risky" : ""}`}>
       <b>{describeOrder(o, waitForHold)}</b>
       <span className="tiny">
         <b className={below ? "down" : "up"}>{o.winChancePct}% win chance</b> <PredictionInfo pct={o.winChancePct} /> · expected {o.evPct >= 0 ? "+" : ""}
@@ -415,6 +415,7 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
       <span className="muted tiny">
         Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · from <span className="up">{fmtPrice(o.target)}</span> it rides the trend · +{o.netRewardPct.toFixed(1)}% after fees vs {o.netRiskPct.toFixed(1)}% risk · max {Math.round(o.maxHoldMinutes)} min
       </span>
+      {o.warning && <span className="order-warning">⚠ Risky: {o.warning.replace(/^Fails the fee\/risk check: /, "it ")} The bot uses it only if you start it and choose "I understand, trade anyway".</span>}
     </div>
   );
 }

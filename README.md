@@ -42,6 +42,9 @@ Every feature checks a permission; a user's permissions come from their plan plu
 
 - **AI tokens:** 10 app tokens per token of an AI API, for every model asked (two models cost both). Usage is metered per user per month; at the limit, AI requests are refused and the bot keeps managing open positions but makes no new plans.
 - **Roles:** user or admin. Admins manage users' plans and roles (profile, Manage users) and have unlimited AI tokens. The platform owner is the first admin.
+- **Token packs:** 2M tokens \$6, 10M \$25 for AI plans; used after the monthly allowance and they don't expire. Admins can add tokens to a user (Manage users).
+- **Yearly billing:** pay for 10 months, get 12 (2 months free).
+- **Models:** your own Analyze / Ask AI use Claude Opus 5.5; the bot's routine re-plans use Claude Sonnet 5.5 (half the cost per token). Set BOT_MODEL to change it.
 - **Billing** isn't connected yet: admins set plans; prices shown are proposed.
 
 ## New coins

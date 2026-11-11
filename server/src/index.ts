@@ -10,7 +10,7 @@ import { storageEnvNames } from "./store.js";
 import { alertChannel } from "./alerts.js";
 import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
-import { can, planOf, publicPlans, type Permission } from "./plans.js";
+import { can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
 app.use(cors());
@@ -98,6 +98,14 @@ const needs = (perm: Permission, fn: (req: Request, res: Response) => Promise<un
 
 // Plans (public) and admin: users' plans and roles.
 app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
+app.get("/api/plans/extras", (_req, res) => void res.json({ tokenPacks: TOKEN_PACKS, yearlyMonthsPaid: YEARLY_MONTHS_PAID }));
+app.post("/api/admin/topup", needs("admin.users", async (req, res) => {
+  try {
+    res.json(await auth.addTopup(String(req.body?.username ?? ""), Number(req.body?.tokens)));
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message ?? String(e) });
+  }
+}));
 app.get("/api/admin/users", needs("admin.users", async (_req, res) => void res.json(await auth.listUsers())));
 app.post("/api/admin/users", needs("admin.users", async (req, res) => {
   try {

@@ -1,7 +1,7 @@
 // Paper-trading broker + automated bot.
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
-import { analyze, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
+import { analyze, BOT_MODEL, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
 import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, type Timeframe } from "./data.js";
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
@@ -352,7 +352,10 @@ async function tokensLeft(): Promise<number> {
   if (!a.key) return Infinity; // scripts and tests without a login
   const limit = tokenLimit(a.plan, a.role);
   if (!Number.isFinite(limit)) return Infinity;
-  return limit - ((await store.kvGet<number>(usageKey(a.key))) ?? 0);
+  if (limit <= 0) return 0; // no AI on this plan (top-ups don't add AI to a plan without it)
+  const used = (await store.kvGet<number>(usageKey(a.key))) ?? 0;
+  const topup = (await store.kvGet<number>(`topup:${a.key}`)) ?? 0;
+  return Math.max(0, limit - used) + topup;
 }
 // Charge the AI tokens an analysis used: 10 app tokens per AI API token, for every model asked.
 async function chargeTokens(results: ModelResult[]) {
@@ -361,7 +364,16 @@ async function chargeTokens(results: ModelResult[]) {
   if (!a.key || !apiTokens) return 0;
   const appTokens = apiTokens * APP_TOKENS_PER_API_TOKEN;
   const k = usageKey(a.key);
-  await store.kvSet(k, ((await store.kvGet<number>(k)) ?? 0) + appTokens);
+  const used = (await store.kvGet<number>(k)) ?? 0;
+  const limit = tokenLimit(a.plan, a.role);
+  // The monthly allowance is used first; anything beyond it comes out of top-up tokens.
+  const fromMonthly = Number.isFinite(limit) ? Math.min(appTokens, Math.max(0, limit - used)) : appTokens;
+  await store.kvSet(k, used + fromMonthly);
+  const extra = appTokens - fromMonthly;
+  if (extra > 0) {
+    const tk = `topup:${a.key}`;
+    await store.kvSet(tk, Math.max(0, ((await store.kvGet<number>(tk)) ?? 0) - extra));
+  }
   return appTokens;
 }
 // The platform's transaction charge for the next trade: free for the first `freeTrades`
@@ -512,7 +524,7 @@ const PLAN_FRAMES: { tf: Timeframe; label: string; show: number }[] = [
   { tf: "1d", label: "1-day candles (last ~month): the big picture", show: 30 },
 ];
 
-export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
+export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean } = {}) {
   const pair = await getPair(chain, pool);
   // One timeframe at a time (CoinMarketCap allows ~1 request/second); skip any that fail,
   // e.g. no daily candles yet for a brand-new coin.
@@ -569,7 +581,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
     `Exact exit rules: once up ${ex.be}%, the stop moves to break-even, then a profit lock keeps at least ${ex.lock}% of the best gain; it sells half at ${ex.half}% of the way from entry to your target; at the target it trails ${ex.trail}% below the highest price. Orders with a win chance below ${ex.minWin}% are not used. After a losing trade it waits before re-buying, and skips the coin for the day after 2 losses.`,
   ].join("\n");
   if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
-  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context);
+  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined);
   await chargeTokens(results);
   state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
@@ -710,7 +722,7 @@ async function autoPick(cfg: BotConfig) {
   for (const row of inZone) {
     // One at a time, so CoinMarketCap's small allowance isn't used up in a burst.
     try {
-      const r = await runAnalysis(row.pair.chain, row.pair.pool, cfg.tf);
+      const r = await runAnalysis(row.pair.chain, row.pair.pool, cfg.tf, { forBot: true });
       const c = r.consensus;
       state.bot.candidates.push({ symbol: row.pair.symbol, chain: row.pair.chain, pool: row.pair.pool, action: c.stance === "WAIT_FOR_TRIGGER" ? "WAIT" : c.action, confidence: c.confidence, note: c.note });
       const usable = usableOrders(c).length > 0;
@@ -1040,7 +1052,7 @@ export async function tick(persist = true) {
       if (isAuto(cfg)) {
         await autoPick(cfg);
       } else {
-        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf);
+        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
       }
@@ -1068,6 +1080,8 @@ export async function tick(persist = true) {
       return noteOnce(`avoid:${sig.at}`, `The AI advises staying out of ${t3.symbol}, so its risky setup isn't traded. Start the bot and choose "I understand, trade anyway" to trade it.`), undefined;
     for (let i = 0; i < c.orders.length; i++) {
       const o = c.orders[i];
+      // Setups that fail the fee/risk check are shown as warnings; traded only in risky mode.
+      if (o.warning && !cfg.allowRisky) continue;
       const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;
       // Orders below the user's minimum win chance are never used, but say so when their trigger is hit.
       // Trend filter: a crash is not a dip.

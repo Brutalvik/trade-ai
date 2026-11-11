@@ -16,7 +16,7 @@ export type PairInfo = {
 };
 export type Snapshot = { price: number; ema9: number; ema21: number; ema50: number; rsi14: number; atrPct: number; volRatio: number; change1: number; change12: number; high50: number; low50: number; techScore: number };
 export type PlanOrder = { kind: "buy_now" | "buy_dip" | "buy_breakout"; triggerPrice: number; confirmSeconds: number; minVolumeRatio: number; stopLoss: number; target: number; maxHoldMinutes: number; winChancePct: number };
-export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number };
+export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number; warning?: string }; // warning = fails the fee/risk check (risky)
 export type Signal = { stance: "BUY_NOW" | "WAIT_FOR_TRIGGER" | "AVOID"; confidence: number; riskLevel: string; reasoning: string; orders: PlanOrder[]; cancelBelow: number; cancelAbove: number; validMinutes: number };
 export type ModelResult = { model: string; ok: true; signal: Signal; ms: number } | { model: string; ok: false; error: string; ms: number };
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
@@ -68,7 +68,8 @@ export const aiText = (s: string) => s.replace(/\bClaude plan: /g, "AI plan: ").
 export type LimitOrder = { id: string; side: "BUY" | "SELL"; chain: string; pool: string; symbol: string; price: number; usd?: number; positionId?: string; fraction?: number; createdAt: number };
 export type PlanId = "free" | "member" | "starter" | "pro" | "max";
 export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.analyze" | "bot.run" | "bot.autopick" | "bot.risky" | "admin.users";
-export type Usage = { month: string; used: number; limit: number }; // limit -1 = unlimited
+export type Usage = { month: string; used: number; limit: number; topup?: number }; // limit -1 = unlimited; topup = extra tokens that don't expire
+export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number }[]; yearlyMonthsPaid: number };
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; permissions: Permission[] }; // freeTrades -1 = unlimited
 export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; usage?: Usage };
 export type AdminUser = User & { usage: Usage };
@@ -106,6 +107,8 @@ export const api = {
   signOut: () => req("/auth/signout", {}),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   plans: () => req<PlanInfo[]>("/plans"),
+  planExtras: () => req<PlanExtras>("/plans/extras"),
+  adminTopup: (b: { username: string; tokens: number }) => req<{ username: string; topup: number }>("/admin/topup", b),
   adminUsers: () => req<AdminUser[]>("/admin/users"),
   setUserAccess: (b: { username: string; plan?: PlanId; role?: "user" | "admin" }) => req<User>("/admin/users", b),
   reset: (startCash: number) => req("/reset", { startCash }),

@@ -28,7 +28,7 @@ export const PlanSchema = z.object({
   confidence: z.number().describe("0-100, overall confidence in your read of this market (shown to the user; orders are judged by their own winChancePct)"),
   riskLevel: z.enum(["LOW", "MEDIUM", "HIGH", "EXTREME"]),
   reasoning: z.string().describe("2-4 short sentences explaining the plan in plain words"),
-  orders: z.array(OrderSchema).describe("1-2 standing buy orders: your best setups. Give them even with AVOID (the user may choose to trade risky setups); leave empty only for a confirmed rug/honeypot or when no sensible price level exists."),
+  orders: z.array(OrderSchema).describe("1-2 standing buy orders: your best setups. ALWAYS give at least one, even with AVOID (the user may choose to trade risky setups); leave empty only for a confirmed rug or honeypot."),
   cancelBelow: z.number().describe("Cancel the whole plan if price falls below this USD price (0 = none)"),
   cancelAbove: z.number().describe("Cancel the whole plan if price rises above this USD price without any order filling (0 = none)"),
   validMinutes: z.number().describe("How long this plan stays valid (5-720)"),
@@ -44,7 +44,8 @@ export type ModelResult = { model: string; ok: true; signal: Plan; ms: number; t
 // An order the server checked against fees and risk, ready for the bot.
 // evPct = expected profit per trade after fees, from Claude's win chance:
 //   winChance x gain-after-fees  -  (1 - winChance) x loss-after-fees
-export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number };
+// warning = the order failed the fee/risk check (shown in red; the bot uses it only in risky mode).
+export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number; warning?: string };
 
 export type Consensus = {
   action: "BUY" | "SELL" | "HOLD"; // BUY = buy now, HOLD = waiting for a trigger (or nothing), SELL = avoid
@@ -68,6 +69,9 @@ export type Consensus = {
 };
 
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
+// The bot's routine re-plans (after each trade, when a plan expires) use a cheaper model:
+// Claude Sonnet 5.5 costs half as much per token. Your own Analyze / Ask AI stay on Opus.
+export const BOT_MODEL = process.env.BOT_MODEL || "claude-sonnet-5-5";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 
 let anthropic: Anthropic | null = null;
@@ -93,7 +97,7 @@ Rules:
 - Respect the bot's current limits given below: if dip orders are blocked, use a breakout order or AVOID.
 - Use your track record (given below when available) to calibrate winChancePct: if your past predictions were too optimistic, lower them.
 - Read buy/sell pressure (share of buys in the last hour), liquidity and the pool's age: thin, brand-new or sell-heavy pools deserve lower win chances.
-- Use AVOID as your advice for rugs, parabolic pumps, collapsing volume, thin liquidity, or no edge, but STILL give your best 1-2 orders (buy level, stop, target) with an honest, usually low, winChancePct. The user decides whether to trade a risky setup; the bot only trades AVOID plans if they accept the risk. Leave orders empty only for a confirmed rug/honeypot or when there is no sensible level at all.
+- Use AVOID as your advice for rugs, parabolic pumps, collapsing volume, thin liquidity, or no edge, but STILL give your best 1-2 orders (buy level, stop, target) with an honest, usually low, winChancePct. The user decides whether to trade a risky setup; the bot only trades AVOID plans if they accept the risk. Always give at least one order; leave orders empty only for a confirmed rug or honeypot.
 - Put target slightly BELOW the nearest resistance (where recent rallies stalled or sellers stepped in), not at or above it.
   Runs often stall just under resistance; a target that actually gets reached lets the bot ride the trend from there.
   Base winChancePct on that reachable target.
@@ -129,10 +133,10 @@ ${context ? `\n${context}\n` : ""}
 Write your trading plan (standing orders) for roughly the next few hours.`;
 }
 
-async function askClaude(prompt: string): Promise<{ plan: Plan; tokens: number }> {
+async function askClaude(prompt: string, model = CLAUDE_MODEL): Promise<{ plan: Plan; tokens: number }> {
   anthropic ??= new Anthropic();
   const res = await anthropic.beta.messages.parse({
-    model: CLAUDE_MODEL,
+    model,
     max_tokens: 16000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default", // if a safety classifier declines, retry on a fallback model
@@ -170,10 +174,10 @@ async function timed(model: string, fn: () => Promise<{ plan: Plan; tokens: numb
   }
 }
 
-export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "") {
+export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string) {
   const prompt = buildPrompt(pair, frames, costPct, context);
   const jobs: Promise<ModelResult>[] = [];
-  if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt)));
+  if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt, model)));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
   if (!jobs.length) throw new Error("AI is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
   const results = await Promise.all(jobs);
@@ -185,9 +189,16 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, N
 // Checks each order for sanity and against fees/risk; drops the ones that fail.
 // An order is kept only if, using Claude's own win chance, it makes money on
 // average after fees (positive expected value) and its gain >= its loss.
-export function checkOrders(orders: PlanOrder[], costPct: number): { kept: CheckedOrder[]; dropped: string[] } {
+export function checkOrders(orders: PlanOrder[], costPct: number): { kept: CheckedOrder[]; dropped: string[]; warned: CheckedOrder[] } {
   const kept: CheckedOrder[] = [];
   const dropped: string[] = [];
+  const warned: CheckedOrder[] = []; // sensible prices, but they fail the fee/risk check
+  const clean = (o: PlanOrder) => ({
+    winChancePct: Math.round(clamp(o.winChancePct, 0, 100)),
+    confirmSeconds: clamp(o.confirmSeconds, 0, 600),
+    minVolumeRatio: o.kind === "buy_breakout" ? clamp(o.minVolumeRatio, 0, 10) : 0,
+    maxHoldMinutes: clamp(o.maxHoldMinutes, 5, 1440),
+  });
   for (const o of orders.slice(0, 2)) {
     const t = o.triggerPrice;
     if (!(t > 0 && o.stopLoss > 0 && o.stopLoss < t && o.target > t)) {
@@ -199,11 +210,15 @@ export function checkOrders(orders: PlanOrder[], costPct: number): { kept: Check
     const win = clamp(o.winChancePct, 0, 100) / 100;
     const evPct = win * netRewardPct - (1 - win) * netRiskPct;
     if (netRewardPct <= 0 || netRewardPct < netRiskPct) {
-      dropped.push(`${o.kind}: after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) is smaller than the risk (${netRiskPct.toFixed(1)}%)`);
+      const why = `after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) is smaller than the risk (${netRiskPct.toFixed(1)}%)`;
+      dropped.push(`${o.kind}: ${why}`);
+      warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.` });
       continue;
     }
     if (evPct <= 0) {
-      dropped.push(`${o.kind}: with a ${Math.round(win * 100)}% win chance it loses money on average after costs`);
+      const why = `with a ${Math.round(win * 100)}% win chance it loses money on average after costs (${evPct.toFixed(1)}% per trade)`;
+      dropped.push(`${o.kind}: ${why}`);
+      warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.` });
       continue;
     }
     kept.push({
@@ -217,7 +232,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number): { kept: Check
       evPct,
     });
   }
-  return { kept, dropped };
+  return { kept, dropped, warned };
 }
 
 // Conservative combination: orders only when every model that answered has the same stance
@@ -237,13 +252,17 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   if (!agreement) return { ...empty, action: "HOLD", stance: "AVOID", confidence: Math.round(confidence / 2), agreement, note: `Models disagree (${[...stances].join(" vs ")}), so standing aside.` };
 
   const plan = plans[0];
-  const { kept, dropped } = checkOrders(plan.orders, costPct);
+  const checked = checkOrders(plan.orders, costPct);
+  const { dropped } = checked;
+  // Orders that pass come first; ones that fail the check stay as warned, risky setups.
+  const kept = [...checked.kept, ...checked.warned];
+  const passing = checked.kept;
   const validMs = clamp(plan.validMinutes, 5, 720) * 60_000;
   // Default cancel range: below the lowest stop, above the highest target.
   const cancelBelow = plan.cancelBelow > 0 ? plan.cancelBelow : kept.length ? Math.min(...kept.map((o) => o.stopLoss)) : 0;
   const cancelAbove = plan.cancelAbove > 0 ? plan.cancelAbove : kept.length ? Math.max(...kept.map((o) => o.target)) : 0;
   const first = kept[0];
-  const stance = plan.stance !== "AVOID" && !kept.length ? "AVOID" : plan.stance;
+  const stance = plan.stance !== "AVOID" && !passing.length ? "AVOID" : plan.stance;
   const action = stance === "BUY_NOW" ? "BUY" : stance === "AVOID" ? "SELL" : "HOLD";
   const describe = (o: CheckedOrder) =>
     (o.kind === "buy_dip" ? `buy if it dips to $${o.triggerPrice.toPrecision(4)}` : o.kind === "buy_breakout" ? `buy if it breaks above $${o.triggerPrice.toPrecision(4)}` : `buy now up to $${o.triggerPrice.toPrecision(4)}`) +
@@ -253,10 +272,10 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
       ? plan.stance === "AVOID"
         ? kept.length
           ? `The AI advises staying out (risky). Its best setup if you trade anyway: ${kept.map(describe).join(" or ")}.`
-          : `The AI says stay out for now${dropped.length ? ` (its setups failed the fee/risk check: ${dropped.join("; ")})` : ""}.`
-        : `No order passed the fee/risk check (${dropped.join("; ")}).`
+          : "The AI says stay out for now (no sensible setup)."
+        : `No order passed the fee/risk check; risky setup shown: ${kept.map(describe).join(" or ")}.`
       : `Standing orders: ${kept.map(describe).join(" or ")}.`;
-  if (kept.length && dropped.length) note += ` Dropped: ${dropped.join("; ")}.`;
+  if (passing.length && dropped.length) note += ` Risky, not used unless you accept the risk: ${dropped.join("; ")}.`;
   if (plans.length > 1) note += ` All ${plans.length} models agree.`;
 
   return {
