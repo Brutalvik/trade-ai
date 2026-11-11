@@ -880,3 +880,13 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .demo-stance { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; font-family: Orbitron, sans-serif; letter-spacing: 1px; }
 .demo-order { display: flex; flex-direction: column; gap: 3px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); font-size: 12.5px; }
 .ladder-toggle { margin: 0 0 0 auto; align-self: center; white-space: nowrap; }
+
+/* Delete drawings window */
+.draw-list-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 6px 0 10px; }
+.draw-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; }
+.draw-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); font-size: 13px; color: var(--text); cursor: pointer; }
+.draw-item.on { border-color: rgba(255, 61, 113, 0.55); background: rgba(255, 61, 113, 0.08); }
+.draw-item.single { cursor: default; margin-top: 8px; }
+.draw-item input { width: 15px !important; height: 15px; margin: 0; flex: none; accent-color: #ff3d71; }
+.draw-item i { width: 14px; height: 3px; border-radius: 2px; flex: none; }
+.draw-item span { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }

@@ -10,6 +10,7 @@ import {
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Candle, Trade } from "./api";
+import { Modal } from "./Account";
 
 export type ChartLine = { price: number; color: string; title: string };
 
@@ -350,6 +351,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
   const [magnet, setMagnet] = useState(true);
   const [hidden, setHidden] = useState(false);
   const [drawings, setDrawings] = useState<Drawing[]>(() => loadDrawings(drawKey));
+  const [deleting, setDeleting] = useState(false);
   const [hover, setHover] = useState<{ o: number; h: number; l: number; c: number; v: number; t: number } | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const toolRef = useRef(tool);
@@ -784,7 +786,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
           <button className="tv-tool" onClick={() => setDrawings((d) => d.slice(0, -1))} disabled={!drawings.length} title="Undo the last drawing" aria-label="Undo last drawing">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 7L4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2" /></svg>
           </button>
-          <button className="tv-tool" onClick={() => drawings.length && window.confirm(`Delete all ${drawings.length} drawing${drawings.length === 1 ? "" : "s"} on this coin?`) && setDrawings([])} disabled={!drawings.length} title="Delete all drawings on this coin" aria-label="Delete all drawings">
+          <button className="tv-tool" onClick={() => drawings.length && setDeleting(true)} disabled={!drawings.length} title={`Delete drawings on ${symbol}`} aria-label={`Delete drawings on ${symbol}`}>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>
           </button>
         </div>
@@ -826,6 +828,18 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
         </div>
       </div>
 
+      {deleting && (
+        <DeleteDrawings
+          symbol={symbol}
+          drawings={drawings}
+          onClose={() => setDeleting(false)}
+          onDelete={(ids) => {
+            setDrawings((ds) => ds.filter((d) => !ids.includes(d.id)));
+            setDeleting(false);
+          }}
+        />
+      )}
+
       <div className="tv-bottom">
         <div className="tv-ranges">
           {RANGES.map((r) => <button key={r.label} onClick={() => setRange(r.secs)} title={`Show the last ${r.label}`}>{r.label}</button>)}
@@ -839,5 +853,60 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
         <button className={`tv-mini ${autoScale ? "on" : ""}`} onClick={() => setAutoScale((v) => !v)} title="Auto-fit the price scale to the visible candles">auto</button>
       </div>
     </div>
+  );
+}
+
+// A short description of a drawing, for the delete window.
+const KIND_NAME: Record<Drawing["kind"], string> = { trend: "Trend line", hline: "Horizontal line", vline: "Vertical line", rect: "Rectangle", fib: "Fibonacci", ruler: "Measurement", text: "Note" };
+function describeDrawing(d: Drawing) {
+  const time = (t: number) => new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  if (d.kind === "hline") return `Horizontal line at $${fmtPrice(d.a.p)}`;
+  if (d.kind === "vline") return `Vertical line at ${time(d.a.t)}`;
+  if (d.kind === "text") return `Note "${d.text ?? ""}"`;
+  if (!d.b) return KIND_NAME[d.kind];
+  if (d.kind === "ruler") {
+    const pct = ((d.b.p - d.a.p) / d.a.p) * 100;
+    return `Measurement ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% (${time(d.a.t)} to ${time(d.b.t)})`;
+  }
+  if (d.kind === "rect") return `Rectangle $${fmtPrice(Math.min(d.a.p, d.b.p))} to $${fmtPrice(Math.max(d.a.p, d.b.p))}`;
+  return `${KIND_NAME[d.kind]} $${fmtPrice(d.a.p)} to $${fmtPrice(d.b.p)}`;
+}
+const KIND_COLOR: Record<Drawing["kind"], string> = { trend: "#00e5ff", hline: "#ffc857", vline: "#8a96b4", rect: "#00e5ff", fib: "#ffa94d", ruler: "#00f5a0", text: "#e6f0ff" };
+
+// Pick which drawings to delete (one drawing: just confirm it).
+function DeleteDrawings({ symbol, drawings, onClose, onDelete }: { symbol: string; drawings: Drawing[]; onClose: () => void; onDelete: (ids: string[]) => void }) {
+  const [picked, setPicked] = useState<string[]>([]);
+  if (drawings.length === 1) {
+    const d = drawings[0];
+    return (
+      <Modal title={`Delete drawing on ${symbol}`} onClose={onClose} narrow foot={<>
+        <button className="btn ghost" onClick={onClose}>Cancel</button>
+        <button className="btn sell" onClick={() => onDelete([d.id])}>Delete</button>
+      </>}>
+        <p>Delete this drawing from the <b>{symbol}</b> chart?</p>
+        <div className="draw-item single"><i style={{ background: KIND_COLOR[d.kind] }} /><span>{describeDrawing(d)}</span></div>
+      </Modal>
+    );
+  }
+  const all = picked.length === drawings.length;
+  return (
+    <Modal title={`Delete drawings on ${symbol}`} onClose={onClose} narrow foot={<>
+      <button className="btn ghost" onClick={onClose}>Cancel</button>
+      <button className="btn sell" disabled={!picked.length} onClick={() => onDelete(picked)}>{picked.length ? `Delete selected (${picked.length})` : "Delete selected"}</button>
+    </>}>
+      <div className="draw-list-head">
+        <span className="muted small">{drawings.length} drawings on the <b>{symbol}</b> chart. Pick the ones to remove.</span>
+        <button className="link-btn small" onClick={() => setPicked(all ? [] : drawings.map((d) => d.id))}>{all ? "Select none" : "Select all"}</button>
+      </div>
+      <div className="draw-list">
+        {[...drawings].reverse().map((d) => (
+          <label key={d.id} className={`draw-item ${picked.includes(d.id) ? "on" : ""}`}>
+            <input type="checkbox" checked={picked.includes(d.id)} onChange={(e) => setPicked((p) => (e.target.checked ? [...p, d.id] : p.filter((x) => x !== d.id)))} />
+            <i style={{ background: KIND_COLOR[d.kind] }} />
+            <span>{describeDrawing(d)}</span>
+          </label>
+        ))}
+      </div>
+    </Modal>
   );
 }
