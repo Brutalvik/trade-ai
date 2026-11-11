@@ -946,3 +946,9 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .ai-candles i { display: block; flex: none; height: 5px; }
 .ai-working { font-family: Inter, system-ui, sans-serif; }
 .modal-body ul { padding-left: 18px; margin: 0 0 8px; display: flex; flex-direction: column; gap: 4px; }
+/* The On/Off checkbox in each setting card: a small pill, not a card */
+.settings-body .grid2.knobs .knob-switch { display: inline-flex; grid-template-rows: none; align-items: center; gap: 6px; min-height: 0; height: 24px; padding: 0 9px 0 7px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255, 255, 255, 0.04); font-size: 11px; font-weight: 700; line-height: 1; color: var(--green, #00f5a0); flex: none; align-self: flex-start; }
+.settings-body .grid2.knobs .knob.off .knob-switch { color: #ff8fab; border-color: rgba(255, 61, 113, 0.45); background: rgba(255, 61, 113, 0.08); }
+.settings-body .grid2.knobs .knob-switch input { width: 13px !important; height: 13px; margin: 0; }
+.settings-body .grid2.knobs .knob-switch:has(input:disabled) { opacity: 0.7; cursor: default; }
+.settings-body .grid2.knobs .knob-switch { flex-direction: row !important; white-space: nowrap; }
