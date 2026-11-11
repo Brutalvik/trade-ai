@@ -748,3 +748,12 @@ body.resizing { cursor: col-resize; user-select: none; }
   .layout, .layout.list-collapsed { grid-template-areas: "chart right" "bottom right" "list right"; grid-template-rows: auto auto 1fr; }
   .coin-side { align-self: start; }
 }
+
+/* Chart height: set by the drag handle under the chart */
+.layout .chart-panel { position: relative; }
+.layout .chart-panel:not(.maximized) .chart-wrap, .layout .chart-panel:not(.maximized) .chart.empty { flex: none; min-height: 0; height: var(--chart-h, 420px); }
+.row-resizer { position: absolute; left: 0; right: 0; bottom: -12px; height: 10px; display: grid; place-items: center; cursor: row-resize; touch-action: none; z-index: 5; }
+.row-resizer span { width: 46px; height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.22); transition: background 0.15s, width 0.15s; }
+.row-resizer:hover span, .row-resizer:focus-visible span { background: var(--cyan); width: 64px; }
+.row-resizer:focus-visible { outline: none; }
+body.resizing-row { cursor: row-resize; user-select: none; }

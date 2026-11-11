@@ -79,6 +79,8 @@ export default function App() {
   useEffect(() => { if (state) saveState(state); }, [state]);
   // Chart maximize: fills the window; Esc (or the button) brings it back.
   const [chartMax, setChartMax] = useState(false);
+  // Chart height: drag the handle between the chart and Positions (remembered).
+  const [chartH, setChartH] = useState(() => Math.max(CHART_MIN, Math.min(CHART_MAX, Number(localStorage.getItem("nexus-chart-h")) || 420)));
   // Left coin-list panel: collapsible and resizable (both remembered).
   const [listCollapsed, setListCollapsed] = useState(() => localStorage.getItem("nexus-list-collapsed") === "1");
   const [listW, setListW] = useState(() => Math.max(LIST_MIN, Math.min(LIST_MAX, Number(localStorage.getItem("nexus-list-w")) || 300)));
@@ -231,7 +233,8 @@ export default function App() {
           </aside>
         )}
 
-        <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`}>
+        <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`} style={{ "--chart-h": `${chartH}px` } as CSSProperties}>
+          {!chartMax && <RowResizer height={chartH} onChange={setChartH} onDone={(h) => localStorage.setItem("nexus-chart-h", String(h))} />}
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
           {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
           <div className="legend">
@@ -1670,6 +1673,53 @@ function RewardRuleInfo({ on, risky, onClose }: { on: boolean; risky: boolean; o
         <li>Either way, these still apply: the cool-down after a loss, skipping a coin after 2 losses in a row, the 25% size cap in risky mode, the daily loss limit and the emergency stop.</li>
       </ul>
     </Modal>
+  );
+}
+
+// Drag handle under the chart: drag up/down to make the chart shorter/taller (Positions moves with it).
+const CHART_MIN = 260;
+const CHART_MAX = 900;
+function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h: number) => void; onDone: (h: number) => void }) {
+  const drag = useRef<{ y: number; h: number; last: number } | null>(null);
+  const clamp = (h: number) => Math.max(CHART_MIN, Math.min(CHART_MAX, Math.round(h)));
+  return (
+    <div
+      className="row-resizer"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize the chart"
+      aria-valuemin={CHART_MIN}
+      aria-valuemax={CHART_MAX}
+      aria-valuenow={height}
+      tabIndex={0}
+      title="Drag to resize the chart"
+      onPointerDown={(e) => {
+        drag.current = { y: e.clientY, h: height, last: height };
+        e.currentTarget.setPointerCapture(e.pointerId);
+        document.body.classList.add("resizing-row");
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        const h = clamp(drag.current.h + e.clientY - drag.current.y);
+        drag.current.last = h;
+        onChange(h);
+      }}
+      onPointerUp={() => {
+        if (drag.current) onDone(drag.current.last);
+        drag.current = null;
+        document.body.classList.remove("resizing-row");
+      }}
+      onDoubleClick={() => { onChange(420); onDone(420); }}
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+        e.preventDefault();
+        const h = clamp(height + (e.key === "ArrowDown" ? 30 : -30));
+        onChange(h);
+        onDone(h);
+      }}
+    >
+      <span />
+    </div>
   );
 }
 
