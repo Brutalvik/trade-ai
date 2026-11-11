@@ -15,12 +15,12 @@ export function WalletButton({ notify }: { notify: (m: string, bad?: boolean) =>
   const real = me?.tradeMode === "real";
   return (
     <>
-      <button className={`wallet-btn ${real ? "real" : ""}`} onClick={() => (me ? setOpen(true) : notify("Sign in to see your wallet", true))} title="Wallet" aria-label={`Wallet (${real ? "Real" : "Paper"} mode)`}>
+      <button className={real ? "sound-toggle" : "wallet-btn"} onClick={() => (me ? setOpen(true) : notify("Sign in to see your wallet", true))} title="Wallet" aria-label={real ? "Wallet" : "Wallet (Paper mode)"}>
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h14a2 2 0 0 1 2 2v3m0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5" />
           <path d="M21 12h-4a2 2 0 0 0 0 4h4z" />
         </svg>
-        <span>{real ? "REAL" : "PAPER"}</span>
+        {!real && <span>PAPER</span>}
       </button>
       {open && <WalletModal notify={notify} onClose={() => setOpen(false)} />}
     </>
@@ -52,7 +52,7 @@ function WalletModal({ notify, onClose }: { notify: (m: string, bad?: boolean) =
         <div className="wallet-tab">
           <div className="wallet-head">
             <div>
-              <div className="label-sm">Solana · {real ? <b className="up">Real mode</b> : <b className="amber">Paper mode</b>}</div>
+              <div className="label-sm">Solana{real ? null : <> · <b className="amber">Paper mode</b></>}</div>
               <div className="wallet-total">{view ? fmtUsd(view.totalUsd) : "…"}</div>
               <button className="link-btn mono small" onClick={() => void copy(address, notify)} title="Copy the full address">{address.slice(0, 6)}…{address.slice(-6)} ⧉</button>
             </div>

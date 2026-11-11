@@ -547,8 +547,6 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .label-sm { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
 .wallet-btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border-radius: 10px; cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--amber); border: 1px solid rgba(255, 200, 87, 0.4); background: rgba(255, 200, 87, 0.08); }
 .wallet-btn:hover { background: rgba(255, 200, 87, 0.16); }
-.wallet-btn.real { color: var(--green, #00f5a0); border-color: rgba(0, 245, 160, 0.45); background: rgba(0, 245, 160, 0.08); }
-.wallet-btn.real:hover { background: rgba(0, 245, 160, 0.16); }
 .wallet-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .modal-backdrop.on-top { z-index: 110; }
 .mode-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; margin: 0 0 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0, 0, 0, 0.25); }

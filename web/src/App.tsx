@@ -348,7 +348,6 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
           <div className="equity">
             <small>WALLET</small>
             <b>{walletUsd === null ? "…" : fmtUsd(walletUsd)}</b>
-            <small className="up">REAL</small>
           </div>
         ) : (
           <div className="equity">
