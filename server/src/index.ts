@@ -11,6 +11,7 @@ import { alertChannel } from "./alerts.js";
 import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
 import * as history from "./audit.js";
+import * as privy from "./privy.js";
 import { can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
@@ -47,6 +48,7 @@ app.get(
     serverless: Boolean(process.env.VERCEL), // true = the dashboard must send heartbeats to keep the bot ticking
     commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").slice(0, 7), // deployed build, so open pages can offer a refresh
     alerts: alertChannel(), // "telegram" | "ntfy" | null
+    privyAppId: privy.privyAppId(), // public: the page uses it to load the wallet SDK
     activeAccounts: (await engine.activeAccounts().catch(() => [])).length, // bots / orders the scheduler keeps watching
     // Only when storage isn't working: names (not values) of database settings the server can see.
     ...(engine.storeKind() === "temp" ? { storageEnvNames: storageEnvNames() } : {}),
@@ -166,6 +168,19 @@ const authRoute = (fn: (req: Request, res: Response) => Promise<unknown>) => asy
   }
 };
 app.get("/api/auth/me", authRoute(auth.me));
+// Privy custom auth: the public key set, and a short-lived token for the signed-in user.
+app.get("/api/auth/jwks.json", async (_req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=300");
+  res.json(await privy.jwks());
+});
+app.get("/api/auth/privy-token", authRoute(async (req, res) => {
+  const a = await auth.requestAuth(req);
+  if (!a) {
+    res.status(401);
+    throw new Error("Sign in first");
+  }
+  return privy.tokenFor(a.key);
+}));
 app.post("/api/auth/signup", authRoute(auth.signUp));
 app.post("/api/auth/signin", authRoute(auth.signIn));
 app.post("/api/auth/signout", authRoute(auth.signOut));
