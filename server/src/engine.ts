@@ -242,6 +242,7 @@ type Account = {
   busy: boolean; // a bot step is running: don't swap the state under it
   guarding: boolean;
   active?: boolean; // last value written to the active-accounts list
+  activeCheckedAt?: number; // when that list was last read (other servers may have changed it)
   plan?: PlanId; // the user's plan and role (refreshed from their user record about once a minute)
   role?: Role;
   planAt?: number;
@@ -285,8 +286,11 @@ const isActive = (st: State) => st.bot.running || st.positions.some((p) => p.pro
 async function markActive(a: Account) {
   if (!a.key) return;
   const now = isActive(a.state);
-  if (a.active === now) return;
+  // Another server copy may have changed the shared list since we last looked, so a cached
+  // "already on the list" is only trusted for 30 s; otherwise read the list again.
+  if (a.active === now && Date.now() - (a.activeCheckedAt ?? 0) < 30_000) return;
   const list = (await store.kvGet<string[]>(ACTIVE_KEY)) ?? [];
+  a.activeCheckedAt = Date.now();
   const next = now ? [...new Set([...list, a.key])] : list.filter((k) => k !== a.key);
   if (next.length !== list.length || now !== list.includes(a.key)) await store.kvSet(ACTIVE_KEY, next);
   a.active = now;
@@ -1175,7 +1179,7 @@ export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dash
   if (!(await store.lock(lockName, maxMs + 10_000))) return { ticks: 0, reason: "another window is already watching" };
   // Record the wake-up (one small write per window) so the dashboard can show the bot is alive.
   state.bot.lastWatch = { at: Date.now(), by };
-  save();
+  save(); // also makes sure this account is on the scheduler's list
   let ticks = 0;
   try {
     const end = Date.now() + maxMs;
