@@ -79,7 +79,8 @@ export type BotConfig = {
   minConfidence: number;
   analyzeEverySec: number;
   checkEverySec: number;
-  maxDrawdownPct: number; // bot stops itself below this
+  maxDrawdownPct: number; // bot stops itself if the account falls this % below its value when the bot started
+  startEquity?: number; // account value when this bot was started (the emergency stop counts from here)
   breakEvenAtPct: number; // move stop to break-even once up this much
   lockPct?: number; // profit lock: once up breakEvenAtPct, never give back more than (100 - lockPct)% of the best gain (default 50; 0 = off)
   partialAtPct?: number; // sell half once the price is this % of the way to the target (default 75; 0 = off)
@@ -101,7 +102,8 @@ export type BotConfig = {
   // false = wait for the price to hold past the trigger for the order's confirmSeconds.
   // Anything else (default) = buy the instant the trigger price is hit.
   waitForHold?: boolean;
-  rewardRule?: boolean; // only buy when the gain after fees is >= 1.5x the loss (default on; off = the old rules)
+  rewardRule?: boolean;
+  takeProfitUsd?: number; // sell the whole position once it is up this many dollars after fees (0 / missing = off) // only buy when the gain after fees is >= 1.5x the loss (default on; off = the old rules)
   // Safety rules (defaults apply when missing, including bots started before they existed).
   cooldownMin?: number; // after a losing trade, don't re-buy that coin for this long (default 30)
   dailyLossPct?: number; // stop opening trades for the rest of the UTC day after losing this % (default 10)
@@ -773,6 +775,7 @@ function startBotHere(cfg: BotConfig) {
       warningsShown: cfg.riskReasons ?? [],
       note: "In risky mode the bot buys even while the coin is falling and doesn't pause after losing trades on it. Exits, minimum win chance, the daily loss limit and the emergency stop still apply.",
     });
+  cfg.startEquity = equity(); // the emergency stop counts from today's account value, not the original deposit
   state.bot.config = cfg;
   state.bot.running = true;
   state.bot.lastAnalysisAt = 0;
@@ -882,6 +885,11 @@ function coinBlock(cfg: BotConfig, pool: string, symbol: string): string | null 
   return Date.now() < until ? `cooling down on ${symbol} after a losing trade, until ${clock(until)}` : null;
 }
 
+// Profit guard: protection starts at the "protect" setting, but never later than fees + 1.5%,
+// and then locks at least fees + 0.5% (a small profit after costs).
+export const GUARD_EXTRA_PCT = 1.5;
+export const GUARD_PROFIT_PCT = 0.5;
+export const protectAt = (cfg: Pick<BotConfig, "breakEvenAtPct">, cost: number) => Math.max(cost + 1, Math.min(cfg.breakEvenAtPct, cost + GUARD_EXTRA_PCT));
 export const MIN_REWARD_RISK = 1.5; // gain after fees must be at least this many times the loss
 export const RISKY_MAX_POSITION_PCT = 25; // risky mode: at most this % of the account per trade
 // Trailing stop sized to how much the coin normally swings: 3x its average 5-minute range,
@@ -1106,13 +1114,26 @@ async function tickBot(persist: boolean) {
       if (checkDrawdown(cfg)) return;
       const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
       const cost = roundTripCostPct();
-      // Lock in a no-loss exit once the trade is far enough in profit
-      // (new coins swing too hard for this: only after their half-profit sale).
-      if (gainPct >= Math.max(cfg.breakEvenAtPct, cost * 1.5) && (pos.strategy !== "newcoin" || pos.partialDone)) {
-        const be = pos.entryPrice * (1 + cost / 100);
-        if (!pos.stopLoss || pos.stopLoss < be) {
-          pos.stopLoss = be;
-          log(`${pos.symbol} up ${gainPct.toFixed(1)}%: stop moved to break-even after fees (${fmt(be)}).`, "good");
+      // Profit guard: once the trade is far enough up, the stop jumps to a small locked-in profit
+      // after fees, so a winner can't turn into a loss. It starts at your "protect" setting, but at
+      // the latest once up fees + 1.5% (new coins: only after their half-profit sale).
+      const guardAt = protectAt(cfg, cost);
+      const floor = pos.entryPrice * (1 + (cost + GUARD_PROFIT_PCT) / 100);
+      if (gainPct >= guardAt && (pos.strategy !== "newcoin" || pos.partialDone)) {
+        if (!pos.stopLoss || pos.stopLoss < floor) {
+          pos.stopLoss = floor;
+          log(`${pos.symbol} up ${gainPct.toFixed(1)}%: profit guard on. It now sells no lower than ${fmt(floor)}, a small profit after fees.`, "good");
+        }
+      }
+      // Sell everything once the trade is up the dollar amount you set (after fees).
+      const tpUsd = cfg.takeProfitUsd ?? 0;
+      if (tpUsd > 0 && pos.strategy !== "newcoin") {
+        const upUsd = pos.qty * price * (1 - cost / 200) - pos.costUsd + (pos.realizedUsd ?? 0);
+        if (upUsd >= tpUsd) {
+          const t = sell(pos.id, price, 1, `Took profit: up $${upUsd.toFixed(2)} (your $${tpUsd} goal)`);
+          log(`${pos.symbol}: up $${upUsd.toFixed(2)} after fees, your $${tpUsd} take-profit. Sold everything @ ${fmt(t.price)}.`, "good");
+          alert(`💰 ${pos.symbol}: took profit, up $${upUsd.toFixed(2)}. Sold @ ${fmt(t.price)}.`);
+          return;
         }
       }
       // Profit lock: once the best gain reaches the break-even level, the stop follows it up
@@ -1125,12 +1146,11 @@ async function tickBot(persist: boolean) {
       }
       const best = pos.best ?? pos.entryPrice;
       const bestGainPct = ((best - pos.entryPrice) / pos.entryPrice) * 100;
-      if (lockPct > 0 && bestGainPct >= Math.max(cfg.breakEvenAtPct, cost * 1.5) && (pos.strategy !== "newcoin" || pos.partialDone)) {
-        const be = pos.entryPrice * (1 + cost / 100);
-        const lock = Math.max(be, pos.entryPrice + (best - pos.entryPrice) * (lockPct / 100));
+      if (lockPct > 0 && bestGainPct >= guardAt && (pos.strategy !== "newcoin" || pos.partialDone)) {
+        const lock = Math.max(floor, pos.entryPrice + (best - pos.entryPrice) * (lockPct / 100));
         if (!pos.stopLoss || lock > pos.stopLoss * 1.001) {
           pos.stopLoss = lock;
-          pos.locked = lock > be;
+          pos.locked = lock > floor;
           acct().dirty = true;
           if (pos.locked && noteKey(pos, bestGainPct)) // first lock, then every +5% of best gain
             log(`${pos.symbol} best gain +${bestGainPct.toFixed(1)}%: profit lock raised to ${fmt(lock)} (keeps at least ${lockPct}% of the gain).`, "good");
@@ -1188,7 +1208,7 @@ async function tickBot(persist: boolean) {
         reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
         sellAt = Math.min(trailStop, price);
       } else if (pos.stopLoss && (pos.stopLoss >= pos.entryPrice ? (newBestThisCheck ? price : q.closeLow) : q.low) <= pos.stopLoss) {
-        reason = pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
+        reason = pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
         sellAt = Math.min(pos.stopLoss, price);
       } else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
       else if (!pos.target && pos.takeProfit && q.high >= pos.takeProfit) {
@@ -1634,10 +1654,11 @@ export function overrideDailyLimit() {
 // Emergency stop: sell everything and switch off if equity falls below the limit.
 function checkDrawdown(cfg: BotConfig) {
   const eq = equity();
-  if (eq >= state.startCash * (1 - cfg.maxDrawdownPct / 100)) return false;
+  const base = (cfg.startEquity ??= eq); // bots started before this rule: count from today
+  if (eq >= base * (1 - cfg.maxDrawdownPct / 100)) return false;
   for (const p of state.positions.filter((x) => x.source === "bot")) sell(p.id, p.lastPrice, 1, "Emergency stop");
-  for (const id of runningIds()) withBot(id, () => stopBot(`Equity $${eq.toFixed(2)} fell below the ${cfg.maxDrawdownPct}% limit`));
-  alert(`🚨 Emergency stop: account $${eq.toFixed(2)} fell below your ${cfg.maxDrawdownPct}% limit. Bot positions sold and the bot is OFF.`);
+  for (const id of runningIds()) withBot(id, () => stopBot(`Emergency stop: the account ($${eq.toFixed(2)}) fell more than ${cfg.maxDrawdownPct}% below $${base.toFixed(2)}, its value when this bot started`));
+  alert(`🚨 Emergency stop: account $${eq.toFixed(2)} fell more than ${cfg.maxDrawdownPct}% since the bot started ($${base.toFixed(2)}). Bot positions sold and the bots are OFF.`);
   return true;
 }
 

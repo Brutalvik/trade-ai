@@ -273,7 +273,7 @@ export default function App() {
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
-            <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} onOpen={openPool}>
+            <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} onOpen={openPool} pairPool={pair?.pool}>
               {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
             </BotTabs>
           )}
@@ -1042,6 +1042,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   const [waitForHold, setWaitForHold] = useState(savedBot.waitForHold ?? false);
   const [rewardRule, setRewardRule] = useState(savedBot.rewardRule ?? true); // 1.5x reward rule (off = old rules)
   const [ruleInfoOpen, setRuleInfoOpen] = useState(false);
+  const [takeProfitUsd, setTakeProfitUsd] = useState<number>(savedBot.takeProfitUsd ?? 0);
   const [rulesOpen, setRulesOpen] = useState(false);
   // Changes in the popup are drafts: Confirm keeps them, Cancel / ✕ / Escape / clicking outside undoes them.
   const [snap, setSnap] = useState<{ cfg: typeof cfg; custom: boolean; waitForHold: boolean } | null>(null);
@@ -1096,7 +1097,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   };
   // "Custom" shows the input boxes; picking a preset goes back to the summary view.
   const [custom, setCustom] = useState(savedBot.custom ?? false);
-  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule } }), [cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule]);
+  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd } }), [cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule, takeProfitUsd]);
   const pick = (p: PresetKey) => {
     setCustom(false);
     setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
@@ -1120,13 +1121,16 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
       if (a.autoChain) setAutoChain(a.autoChain);
       setWaitForHold(!!a.waitForHold);
       setRewardRule(a.rewardRule !== false);
+      setTakeProfitUsd(a.takeProfitUsd ?? 0);
     }
   }, [running, active]); // eslint-disable-line react-hooks/exhaustive-deps
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
   const perTrade = Math.min(cash, ((state?.equityNow ?? cash) * shown.positionPct) / 100);
-  const floor = startCash * (1 - shown.maxDrawdownPct / 100);
+  // Emergency stop counts from the account value when the bot starts (now, if it's off).
+  const stopBase = running && active?.startEquity ? active.startEquity : (state?.equityNow ?? startCash);
+  const floor = stopBase * (1 - shown.maxDrawdownPct / 100);
 
   // Risky coin: ask first ("I understand"), then start with the safety pauses relaxed.
   const [riskOpen, setRiskOpen] = useState(false);
@@ -1151,7 +1155,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
     setRiskOpen(false);
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, takeProfitUsd, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
     try {
       await api.startBot(full, botId);
       notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})${allowRisky ? " · risky mode" : ""}`);
@@ -1310,7 +1314,8 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
                   <li>Puts <b>{shown.positionPct}%</b> of the account into every trade (≈{fmtUsd(perTrade)} now); a trade that hits its exit loses part of that, usually 5–10%</li>
                 )}
                 <li>The AI writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
-                <li>Sells below the AI's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
+                <li>Sells below the AI's exit price. Once up <b>{(() => { const c = 2 * ((state?.settings.feePct ?? 1) + (state?.settings.slippagePct ?? 0.5)); return Math.max(c + 1, Math.min(shown.breakEvenAtPct, c + 1.5)).toFixed(1); })()}%</b> (your setting, or fees + 1.5% if that comes first) it locks a small profit after fees, so a winner can't turn into a loss</li>
+                {(running ? active?.takeProfitUsd : takeProfitUsd) ? <li>Sells everything once the trade is up <b>${running ? active?.takeProfitUsd : takeProfitUsd}</b> after fees</li> : null}
                 <li>Profit lock: from then on it keeps at least <b>{shown.lockPct}%</b> of the best gain, so a run that fades still ends in profit</li>
                 <li>Takes half the profit {shown.partialAtPct >= 100 ? <b>at the target</b> : <><b>{shown.partialAtPct}%</b> of the way to the target</>}, then lets the rest ride on a trailing stop sized to the coin's swings</li>
                 <li>At the AI's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
@@ -1362,12 +1367,17 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
                 <label>
                   Emergency stop if I lose (%)
                   <input type="number" value={shown.maxDrawdownPct} onChange={set("maxDrawdownPct")} disabled={running} />
-                  <small>If your {fmtUsd(startCash)} drops below {fmtUsd(floor)}, it sells everything and switches off.</small>
+                  <small>Counted from the account value when the bot starts ({fmtUsd(stopBase)}{running ? "" : " now"}). If it drops below {fmtUsd(floor)}, it sells everything and switches off.</small>
                 </label>
                 <label>
                   Protect a trade once it's up (%)
                   <input type="number" value={shown.breakEvenAtPct} onChange={set("breakEvenAtPct")} disabled={running} />
                   <small>Once a trade is up this much, the bot won't let it turn into a loss.</small>
+                </label>
+                <label>
+                  Sell everything once up ($)
+                  <input type="number" min={0} step={10} value={takeProfitUsd} onChange={(e) => setTakeProfitUsd(Math.max(0, Number(e.target.value) || 0))} disabled={running} />
+                  <small>Locks in a sure profit: once the trade is up this many dollars after fees, the bot sells all of it. 0 = off (it rides the trade with its usual exits).</small>
                 </label>
                 <label>
                   Trailing stop (%)
@@ -1866,12 +1876,26 @@ function BotLog({ state }: { state: AppState | null }) {
 }
 
 // Tabs above Auto-pilot: Bot 1, Bot 2, Bot 3 as the plan allows; each trades its own coin.
-function BotTabs({ state, limit, onOpen, children }: { state: AppState | null; limit: number; onOpen: (chain: string, pool: string) => void; children: (botId: string) => ReactNode }) {
+function BotTabs({ state, limit, onOpen, pairPool, children }: { state: AppState | null; limit: number; onOpen: (chain: string, pool: string) => void; pairPool?: string; children: (botId: string) => ReactNode }) {
   const saved = allBots(state).map((b) => b.id);
   const ids = [...new Set([...["1", "2", "3"].slice(0, Math.max(1, Math.min(3, limit))), ...saved])].sort();
   const [sel, setSel] = useState(() => localStorage.getItem("nexus-bot-tab") ?? "1");
   const current = ids.includes(sel) ? sel : "1";
   useEffect(() => localStorage.setItem("nexus-bot-tab", current), [current]);
+  // Opening a coin picks the tab: the bot already on that coin, else the first bot that's off
+  // (Bot 1, then 2, then 3). If every bot is busy, the tab stays as it is.
+  useEffect(() => {
+    if (!pairPool) return;
+    const bots = allBots(state);
+    const on = ids.find((id) => {
+      const b = bots.find((x) => x.id === id)?.bot;
+      const holds = state?.positions.some((p) => p.source === "bot" && (p.botId ?? "1") === id && p.pool === pairPool);
+      return holds || (b?.running && (b.config?.pool === pairPool || b.target?.pool === pairPool));
+    });
+    const free = ids.find((id) => !bots.find((x) => x.id === id)?.bot.running);
+    const pick = on ?? free;
+    if (pick) setSel(pick);
+  }, [pairPool]); // eslint-disable-line react-hooks/exhaustive-deps
   if (ids.length === 1) return <>{children("1")}</>;
   const live = !!allBots(state).find((x) => x.id === current)?.bot.running;
   return (
