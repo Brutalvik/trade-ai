@@ -247,7 +247,7 @@ export default function App() {
         <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`} style={{ "--chart-h": `${chartH}px` } as CSSProperties}>
           {!chartMax && <RowResizer height={chartH} onChange={setChartH} onDone={(h) => localStorage.setItem("nexus-chart-h", String(h))} />}
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
-          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
+          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? "Loading candles..." : "Search a ticker to begin"}</div>}
           <div className="legend">
             <button className="chart-size-btn" onClick={() => setChartMax((v) => !v)} aria-pressed={chartMax} title={chartMax ? "Minimize (Esc)" : "Fill the window"} aria-label={chartMax ? "Minimize chart" : "Maximize chart"}>
               {chartMax ? (
@@ -257,8 +257,6 @@ export default function App() {
               )}
               {chartMax ? "Minimize" : "Maximize"}
             </button>
-            <span><i style={{ background: "#00e5ff" }} />EMA 9</span>
-            <span><i style={{ background: "#b45cff" }} />EMA 21</span>
             {lines.filter((l, i) => l.price > 0 && lines.findIndex((x) => x.title === l.title) === i).map((l) => (
               <span key={l.title} title={LINE_HELP[l.title] ?? ""}>
                 <i className="dash" style={{ borderColor: l.color }} />
@@ -978,14 +976,16 @@ function BotTimer({ running, startedAt, stoppedAt }: { running: boolean; started
   if (running) {
     return (
       <span className="bot-timer">
-        Started {clock(startedAt)} · running <b>{fmtDuration(now - startedAt)}</b>
+        <span>Started {clock(startedAt)}</span>
+        <span>running <b>{fmtDuration(now - startedAt)}</b></span>
       </span>
     );
   }
   if (!stoppedAt || stoppedAt < startedAt) return null;
   return (
     <span className="bot-timer">
-      Stopped {clock(stoppedAt)} · ran {fmtDuration(stoppedAt - startedAt)}
+      <span>Stopped {clock(stoppedAt)}</span>
+      <span>ran <b>{fmtDuration(stoppedAt - startedAt)}</b></span>
     </span>
   );
 }
@@ -1282,16 +1282,18 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
 
       {rulesOpen && createPortal(
         <div className="modal-backdrop">
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="rules-title" onClick={(e) => e.stopPropagation()}>
+          <div className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="rules-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h2 id="rules-title">Settings{isCustom ? " · Custom" : preset ? ` · ${PRESETS[preset].label}` : ""}</h2>
               <button className="modal-close" onClick={cancelRules} aria-label="Close" title="Close">
                 ✕
               </button>
             </div>
-            <div className="modal-body rules-body">
+            <div className="modal-body settings-body">
               <p className="preset-blurb small">{isCustom ? "Your own numbers. Type them below; each box explains what it does." : PRESETS[preset!].blurb}</p>
 
+              <div className="settings-summary">
+              <div className="settings-summary-title">What the bot will do</div>
               <ul className="plan small">
                 {shown.riskPerTradePct > 0 ? (
                   <li>Sizes each trade so that hitting the AI's exit loses about <b>{shown.riskPerTradePct}%</b> of the account (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)}), never more than {fmtUsd(perTrade)} ({shown.positionPct}% of the account)</li>
@@ -1309,6 +1311,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
                 <li>Stops opening trades for the day after losing <b>{shown.dailyLossPct}%</b> in a day</li>
                 <li>Sells everything and stops if the account drops below <b>{fmtUsd(floor)}</b></li>
               </ul>
+              </div>
               <label className="check small">
                 <input type="checkbox" checked={running ? Boolean(active?.waitForHold) : waitForHold} onChange={(e) => setWaitForHold(e.target.checked)} disabled={running} />
                 <span>
@@ -1413,7 +1416,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
             <div className="modal-body">
               <p className="risk-lead">Trading <b>{pair?.symbol}</b> with the bot right now is risky:</p>
               <ul className="risk-list">{riskReasons.map((r) => <li key={r}>{r}</li>)}</ul>
-              <p>If you continue, the bot <b>will</b> buy even while the coin is falling, and won't pause after losing trades on it. It uses orders down to a <b>{cfg.riskyMinWin}% win chance</b> (your risky-mode minimum, instead of {cfg.minConfidence}%), including setups that fail the fee check. It still uses the AI's exit, the daily loss limit and the emergency stop.</p>
+              <p>If you continue, the bot <b>will</b> buy even while the coin is falling, keeps each trade to at most 25% of the account, and waits only 5 minutes after a losing trade on it. It uses orders down to a <b>{cfg.riskyMinWin}% win chance</b> (your risky-mode minimum, instead of {cfg.minConfidence}%), including setups that fail the fee check. It still uses the AI's exit, the daily loss limit and the emergency stop.</p>
               <p className="muted small">You could lose a large part of the money in each trade. This is paper trading, but treat it as practice for real money.</p>
             </div>
             <div className="modal-foot">
@@ -1581,7 +1584,7 @@ function Positions({ state, notify, refresh, onOpen }: { state: AppState | null;
     <OpenOrders state={state} notify={notify} refresh={refresh} />
     <div className="table-wrap">
       <table>
-        <thead><tr><th>Token</th><th>By</th><th>Entry</th><th>Now</th><th>P&L</th><th className="hide-sm">TP / SL</th><th className="hide-sm">Sell by</th><th /></tr></thead>
+        <thead><tr><th>Token</th><th>By</th><th title="How much money went into this trade (including fees)">Invested</th><th>Entry</th><th>Now</th><th>P&L</th><th className="hide-sm">TP / SL</th><th className="hide-sm">Sell by</th><th /></tr></thead>
         <tbody>
           {state.positions.map((p) => {
             const value = p.qty * p.lastPrice;
@@ -1590,6 +1593,7 @@ function Positions({ state, notify, refresh, onOpen }: { state: AppState | null;
               <tr key={p.id}>
                 <td><button className="link-btn token-link" onClick={() => onOpen(p.chain, p.pool)} title={`Open the ${p.symbol} chart`}><b>{p.symbol}</b></button></td>
                 <td>{p.source === "bot" ? `🤖 bot${state.bots?.length ? ` ${p.botId ?? 1}` : ""}` : "manual"}</td>
+                <td className="mono">{fmtUsd(p.costUsd)}</td>
                 <td className="mono">{fmtPrice(p.entryPrice)}</td>
                 <td className="mono">{fmtPrice(p.lastPrice)}</td>
                 <td className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)} ({fmtPct((pnl / p.costUsd) * 100)})</td>

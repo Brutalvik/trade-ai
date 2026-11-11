@@ -192,13 +192,13 @@ tr.tradeable td { background: rgba(0, 245, 160, 0.05); }
 .presets.two { grid-template-columns: 1fr 1fr; margin-bottom: 8px; }
 .label-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
 .label-row .label-sm { margin: 0 2px; }
-.rules-body .plan { margin-top: 4px; gap: 7px; font-size: 13px; }
-.rules-body .preset-blurb { font-size: 13px; margin-top: 12px; }
-.rules-body .check { margin-top: 14px; font-size: 13px; }
+.settings-body .plan { margin: 0; gap: 7px; font-size: 13px; }
+.settings-body .preset-blurb { font-size: 13px; margin: 12px 0; }
+.settings-body .check { margin-top: 14px; font-size: 13px; }
 .settings-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 18px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); font-family: Orbitron, sans-serif; font-size: 12px; letter-spacing: 1.5px; color: var(--cyan); }
 .settings-head .muted { font-family: Inter, sans-serif; letter-spacing: 0; }
-.rules-body .grid2.knobs { grid-template-columns: 1fr 1fr; gap: 12px 14px; }
-@media (max-width: 760px) { .rules-body .grid2.knobs { grid-template-columns: 1fr; } }
+.settings-body .grid2.knobs { grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+@media (max-width: 760px) { .settings-body .grid2.knobs { grid-template-columns: 1fr; } }
 .label-sm { font-size: 11px; color: var(--muted); margin: 0 2px 6px; }
 .chain-tabs.compact { padding: 0 0 4px; gap: 4px; }
 .chain-tabs.compact .chip { font-size: 11px; padding: 3px 7px; }
@@ -770,3 +770,72 @@ body.resizing-row { cursor: row-resize; user-select: none; }
   .layout > .side.right { min-height: 0; overflow-y: auto; padding-bottom: 2px; }
   .layout > .side.right > * { flex: none; }
 }
+/* Bot timer: "Started …" on one line, "running 14m 55s" on the next, both flush right, never split */
+.bot-timer { display: flex !important; flex-direction: column; align-items: flex-end; gap: 1px; white-space: nowrap !important; overflow-wrap: normal !important; }
+.bot-timer > span { white-space: nowrap; }
+
+/* ===== Chart toolbars (indicators, drawing tools, scale) ===== */
+.chart-wrap.tv { display: flex; flex-direction: column; }
+.layout .chart-panel:not(.maximized) .chart-wrap.tv { height: calc(var(--chart-h, 420px) + 72px); }
+.tv-top, .tv-bottom { display: flex; align-items: center; gap: 6px; flex: none; }
+.tv-top { padding: 2px 0 6px; border-bottom: 1px solid rgba(80, 120, 255, 0.12); }
+.tv-bottom { padding: 6px 0 0; border-top: 1px solid rgba(80, 120, 255, 0.12); font-size: 11px; }
+.tv-spacer { flex: 1; }
+.tv-sep { width: 1px; height: 18px; background: rgba(80, 120, 255, 0.18); }
+.tv-btn, .tv-icon, .tv-mini, .tv-ranges button, .tv-seg button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; color: var(--muted); font-size: 12px; font-weight: 600; padding: 5px 8px; border-radius: 8px; cursor: pointer; }
+.tv-btn:hover, .tv-icon:hover, .tv-mini:hover, .tv-ranges button:hover, .tv-seg button:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.tv-btn.on, .tv-mini.on { color: var(--cyan); background: rgba(0, 229, 255, 0.1); }
+.tv-seg { display: inline-flex; }
+.tv-seg button.on { color: var(--cyan); }
+.tv-seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+.tv-count { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: rgba(0, 229, 255, 0.18); color: var(--cyan); font-size: 10px; display: inline-grid; place-items: center; }
+.tv-menu { position: relative; }
+.tv-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.tv-menu-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 41; min-width: 220px; padding: 6px; border-radius: 12px; background: #0b1124; border: 1px solid rgba(255, 255, 255, 0.12); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); }
+.tv-menu-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.tv-menu-item:hover { background: rgba(255, 255, 255, 0.05); }
+.tv-menu-item i { width: 12px; height: 3px; border-radius: 2px; }
+.tv-body { flex: 1; min-height: 0; display: flex; }
+.tv-tools { flex: none; width: 34px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px 6px 0; border-right: 1px solid rgba(80, 120, 255, 0.12); overflow-y: auto; }
+.tv-tool { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: #8a96b4; cursor: pointer; flex: none; }
+.tv-tool:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+.tv-tool.on { color: var(--cyan); background: rgba(0, 229, 255, 0.12); }
+.tv-tool:disabled { opacity: 0.35; cursor: default; }
+.tv-tool:focus-visible, .tv-btn:focus-visible, .tv-mini:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.tv-tools-sep { width: 20px; height: 1px; background: rgba(80, 120, 255, 0.18); margin: 4px 0; flex: none; }
+.tv-area { position: relative; flex: 1; min-width: 0; }
+.tv-area > .chart { position: absolute; inset: 0; }
+.tv-area.drawing { cursor: crosshair; }
+.tv-legend { position: absolute; top: 4px; left: 8px; z-index: 3; pointer-events: none; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; line-height: 1.6; color: var(--text); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
+.tv-legend b { font-weight: 600; margin-right: 4px; }
+.tv-legend-inds { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); }
+.tv-legend-inds i { display: inline-block; width: 10px; height: 2px; margin-right: 4px; vertical-align: middle; }
+.tv-hint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 3; padding: 4px 10px; border-radius: 8px; font-size: 11px; background: rgba(4, 8, 20, 0.85); border: 1px solid rgba(0, 229, 255, 0.3); color: var(--cyan); pointer-events: none; white-space: nowrap; }
+.tv-ranges { display: flex; gap: 2px; }
+.tv-clock { font-size: 11px; }
+@media (max-width: 760px) { .tv-tools { width: 30px; } .tv-clock, .tv-bottom .tv-sep { display: none; } }
+.tv-menu-item input { width: 15px !important; height: 15px; flex: none; margin: 0; padding: 0; accent-color: var(--cyan); }
+.tv-menu-item span { flex: 1; white-space: nowrap; }
+.tv-menu-item i { flex: none; }
+
+/* ===== Bot Settings window ===== */
+.modal.settings-modal { width: min(760px, 100%); max-height: min(90vh, 900px); }
+.settings-body { display: block; padding: 4px 22px 22px; }
+.settings-summary { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0, 0, 0, 0.22); }
+.settings-summary-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.settings-body .plan li { line-height: 1.5; }
+.settings-body .check { padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0, 0, 0, 0.15); margin: 12px 0 0; }
+.settings-body .check > span { display: flex; flex-direction: column; gap: 2px; }
+.settings-body .settings-head { margin: 20px 0 10px; }
+/* Each setting: title (room for 2 lines) / input / explanation, so inputs line up across a row */
+.settings-body .grid2.knobs label { display: grid; grid-template-rows: minmax(2.8em, auto) auto 1fr; align-content: start; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255, 255, 255, 0.02); font-size: 12.5px; font-weight: 600; color: var(--text); }
+.settings-body .grid2.knobs label input { width: 100%; }
+.settings-body .grid2.knobs label small { font-weight: 400; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+.settings-body > p.small { margin-top: 10px; }
+@media (max-width: 640px) {
+  .settings-body { padding: 4px 14px 16px; }
+  .settings-body .grid2.knobs label { grid-template-rows: auto auto auto; }
+  .modal.settings-modal { max-height: 94vh; }
+  .settings-body .settings-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+}
+@media (max-width: 760px) { .tv-legend-inds { display: none; } .tv-legend { font-size: 10px; } }
