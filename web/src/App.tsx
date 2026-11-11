@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { aiText, allBots, api, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
@@ -127,7 +127,7 @@ export default function App() {
 
   useInterval(() => {
     api.state().then(setState).catch(() => {});
-  }, state?.bot.running ? 2_000 : 5_000, [state?.bot.running]); // faster while the bot trades, so buys/sells show up quickly
+  }, allBots(state).some((b) => b.bot.running) ? 2_000 : 5_000, [allBots(state).some((b) => b.bot.running)]); // faster while the bot trades, so buys/sells show up quickly
 
   // On Vercel nothing runs between requests, so while this page is open it nudges
   // the bot every 20 s (the server only does work when a step is actually due).
@@ -149,7 +149,8 @@ export default function App() {
 
   // Show the bot's last signal on the chart if it is for this pool.
   // Whichever is newer: your saved analysis of this coin, or the bot's latest plan for it.
-  const botSig = state?.lastSignal?.pool === pair?.pool ? state?.lastSignal : null;
+  const botHere = allBots(state).find((b) => b.bot.running && (b.bot.config?.pool === pair?.pool || b.bot.target?.pool === pair?.pool)) ?? allBots(state).find((b) => b.lastSignal?.pool === pair?.pool);
+  const botSig = botHere && botHere.lastSignal?.pool === pair?.pool ? botHere.lastSignal : null;
   // A plan you saved before the latest trade on this coin is outdated: every new trade
   // starts from a fresh analysis.
   const lastTradeAt = useMemo(() => Math.max(0, ...(state?.trades ?? []).filter((t) => t.pool === pair?.pool).map((t) => t.time)), [state?.trades, pair?.pool]);
@@ -167,7 +168,7 @@ export default function App() {
     if ((pair?.liquidityUsd ?? Infinity) < 50_000) reasons.push(`Liquidity is thin (${fmtBig(pair?.liquidityUsd ?? 0)}): prices can jump and fills slip.`);
     return reasons;
   }, [results, sig?.stance, botSig?.trendDown, pair?.change.h1, pair?.liquidityUsd]);
-  const botOnThisCoin = !!(state?.bot.running && state.bot.config?.pool === pair?.pool && state.bot.config?.pick === "this");
+  const botOnThisCoin = allBots(state).some((b) => b.bot.running && b.bot.config?.pool === pair?.pool && b.bot.config?.pick === "this");
   // Chart lines: the bot's open trade on this coin, otherwise Claude's standing orders.
   const orderLines = useMemo<ChartLine[]>(
     () => (state?.orders ?? []).filter((x) => x.pool === pair?.pool).map((x) => ({ price: x.price, color: x.side === "BUY" ? "#7cf7ff" : "#ffb86b", title: x.side === "BUY" ? "LIMIT BUY" : "LIMIT SELL" })),
@@ -255,8 +256,12 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running && state.bot.config ? (state.bot.config.allowRisky ? Math.min(state.bot.config.minConfidence, state.bot.config.riskyMinWin ?? 30) : state.bot.config.minConfidence) : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
-          {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={!!state?.bot.running} /> : <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
+          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />
+          {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
+            <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)}>
+              {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
+            </BotTabs>
+          )}
         </aside>
 
         <section className="panel bottom">
@@ -1001,7 +1006,7 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
   );
 }
 
-function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons = [] }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; riskReasons?: string[]; alerts?: "telegram" | "ntfy" | null }) {
+function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen, riskReasons = [] }: { botId?: string; pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; riskReasons?: string[]; alerts?: "telegram" | "ntfy" | null }) {
   const access = useAccess();
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
@@ -1125,7 +1130,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
     const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
     try {
-      await api.startBot(full);
+      await api.startBot(full, botId);
       notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})${allowRisky ? " · risky mode" : ""}`);
       refresh();
     } catch (e: any) {
@@ -1133,7 +1138,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
     }
   };
   const stop = async () => {
-    await api.stopBot();
+    await api.stopBot(botId);
     refresh();
   };
 
@@ -1427,7 +1432,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
             setRewardRule(next);
             if (running) {
               try {
-                await api.botRewardRule(next);
+                await api.botRewardRule(next, botId);
                 await refresh();
                 notify(next ? "Reward rule on" : "Reward rule off: old rules", !next);
               } catch (e: any) {
@@ -1570,7 +1575,7 @@ function Positions({ state, notify, refresh, onOpen }: { state: AppState | null;
             return (
               <tr key={p.id}>
                 <td><button className="link-btn token-link" onClick={() => onOpen(p.chain, p.pool)} title={`Open the ${p.symbol} chart`}><b>{p.symbol}</b></button></td>
-                <td>{p.source === "bot" ? "🤖 bot" : "manual"}</td>
+                <td>{p.source === "bot" ? `🤖 bot${state.bots?.length ? ` ${p.botId ?? 1}` : ""}` : "manual"}</td>
                 <td className="mono">{fmtPrice(p.entryPrice)}</td>
                 <td className="mono">{fmtPrice(p.lastPrice)}</td>
                 <td className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)} ({fmtPct((pnl / p.costUsd) * 100)})</td>
@@ -1717,7 +1722,7 @@ function Trades({ state, notify }: { state: AppState | null; notify: (m: string,
           {state.trades.slice(0, 100).map((t) => (
             <tr key={t.id}>
               <td>{fmtTime(t.time)}</td>
-              <td className={t.side === "BUY" ? "up" : "down"}>{t.side}{t.source === "bot" ? " 🤖" : ""}</td>
+              <td className={t.side === "BUY" ? "up" : "down"}>{t.side}{t.source === "bot" ? ` 🤖${t.botId && t.botId !== "1" ? t.botId : ""}` : ""}</td>
               <td>{t.symbol}</td>
               <td className="mono">{fmtPrice(t.price)}</td>
               <td>{fmtUsd(t.usd)}</td>
@@ -1732,12 +1737,70 @@ function Trades({ state, notify }: { state: AppState | null; notify: (m: string,
 }
 
 function BotLog({ state }: { state: AppState | null }) {
-  if (!state?.bot.log.length) return <p className="muted small pad">Bot hasn't run yet.</p>;
+  const bots = allBots(state);
+  const many = bots.length > 1;
+  const lines = bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id }))).sort((a, b) => b.t - a.t).slice(0, 300);
+  if (!lines.length) return <p className="muted small pad">Bot hasn't run yet.</p>;
   return (
     <div className="log">
-      {state.bot.log.map((l, i) => (
-        <div key={i} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {aiText(l.msg)}</div>
+      {lines.map((l, i) => (
+        <div key={i} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {many && <span className="bot-tag">Bot {l.bot}</span>} {aiText(l.msg)}</div>
       ))}
+    </div>
+  );
+}
+
+// Tabs above Auto-pilot: one per bot (up to the plan's limit), each trading its own coin.
+function BotTabs({ state, limit, notify, refresh, children }: { state: AppState | null; limit: number; notify: (m: string, bad?: boolean) => void; refresh: () => void; children: (botId: string) => ReactNode }) {
+  const access = useAccess();
+  const saved = allBots(state).map((b) => b.id);
+  const [drafts, setDrafts] = useState<string[]>([]); // added in this browser but not started yet
+  const ids = [...new Set([...saved, ...drafts])].sort();
+  const [sel, setSel] = useState(() => localStorage.getItem("nexus-bot-tab") ?? "1");
+  const current = ids.includes(sel) ? sel : "1";
+  useEffect(() => localStorage.setItem("nexus-bot-tab", current), [current]);
+  const max = Math.max(1, limit);
+  const add = () => {
+    if (ids.length >= max) return access.openPlans();
+    const next = ["1", "2", "3"].find((x) => !ids.includes(x));
+    if (!next) return;
+    setDrafts((d) => [...d, next]);
+    setSel(next);
+  };
+  const slot = allBots(state).find((b) => b.id === current);
+  const remove = async () => {
+    if (current === "1") return;
+    try {
+      if (saved.includes(current)) await api.removeBot(current);
+      setDrafts((d) => d.filter((x) => x !== current));
+      setSel("1");
+      refresh();
+    } catch (e: any) {
+      notify(e.message, true);
+    }
+  };
+  if (ids.length === 1 && limit <= 1) return <>{children("1")}</>;
+  return (
+    <div className="bot-tabs-wrap">
+      <div className="bot-tabs" role="tablist" aria-label="Bots">
+        {ids.map((id) => {
+          const b = allBots(state).find((x) => x.id === id)?.bot;
+          const label = b?.running ? (b.config?.pick === "auto" ? (b.target?.symbol ?? "Auto") : b.config?.symbol) : null;
+          return (
+            <button key={id} role="tab" aria-selected={current === id} className={current === id ? "on" : ""} onClick={() => setSel(id)}>
+              <span className={`dot ${b?.running ? "live" : ""}`} />
+              Bot {id}{label ? ` · ${label}` : ""}
+            </button>
+          );
+        })}
+        {ids.length < 3 && (
+          <button className="add" onClick={add} title={ids.length >= max ? `Your plan includes ${limit} bot${limit === 1 ? "" : "s"}. More bots from ${limit < 2 ? "AI Pro" : "AI Max"}.` : "Add another bot on its own coin"}>
+            {ids.length >= max ? "🔒 " : "+ "}Add bot
+          </button>
+        )}
+        {current !== "1" && !slot?.bot.running && <button className="remove" onClick={() => void remove()} title={`Remove bot ${current}`}>Remove</button>}
+      </div>
+      {children(current)}
     </div>
   );
 }

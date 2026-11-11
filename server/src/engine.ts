@@ -15,6 +15,7 @@ import { noteCommunityBuy } from "./lists.js";
 
 export type Position = {
   id: string;
+  botId?: string; // which bot manages it ("1" when missing)
   chain: string;
   pool: string;
   symbol: string;
@@ -64,6 +65,7 @@ export type Trade = {
   reachedTarget?: boolean;
   auto?: boolean; // sold automatically by "Protect this trade"
   strategy?: "newcoin";
+  botId?: string; // bot trades: which bot ("1" when missing)
 };
 
 export type BotConfig = {
@@ -172,7 +174,11 @@ type State = {
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number } | null;
+  // Extra bots (2 and 3). Bot 1 is `bot` / `lastSignal` above, so older saved states keep working.
+  bots?: BotSlot[];
 };
+type BotState = State["bot"];
+export type BotSlot = { id: string; bot: BotState; lastSignal: State["lastSignal"] };
 
 const store = createStore();
 export const storeKind = () => store.kind;
@@ -203,6 +209,8 @@ function migrate(s: State): State {
   s.bot.askNow ??= false;
   s.bot.skipNoted ??= [];
   s.orders ??= [];
+  s.bots ??= [];
+  for (const b of s.bots) b.bot = { ...fresh().bot, ...b.bot, coinStats: {}, day: null };
   // Bots started before start/stop times were saved: recover them from the log.
   // (The defaults above already filled these with null, so check for null, not undefined.)
   s.bot.startedAt ??= s.bot.log.find((l) => l.msg.startsWith("Bot started"))?.t ?? null;
@@ -275,10 +283,51 @@ export function withAccount<T>(key: string | null, fn: () => Promise<T>, access?
 }
 export const currentAccountKey = () => acct().key;
 
+// Several bots per account: each bot step runs inside one bot (botAls). `state.bot` and
+// `state.lastSignal` then mean that bot's own state; bot 1 is the original `bot` field.
+// Per-coin losing streaks and the daily loss limit stay shared by all bots of the account.
+const botAls = new AsyncLocalStorage<string>();
+export const currentBotId = () => botAls.getStore() ?? "1";
+export const withBot = <T>(id: string, fn: () => T): T => botAls.run(id, fn);
+const SHARED_BOT_KEYS = new Set(["coinStats", "day", "dailyOverride"]);
+const botViews = new WeakMap<object, BotState>();
+function slotOf(st: State, id: string): BotSlot | undefined {
+  return id === "1" ? undefined : st.bots?.find((b) => b.id === id);
+}
+function botView(st: State, slot: BotSlot): BotState {
+  let v = botViews.get(slot.bot);
+  if (!v) {
+    v = new Proxy(slot.bot, {
+      get: (t, k) => (SHARED_BOT_KEYS.has(k as string) ? (st.bot as any)[k] : (t as any)[k]),
+      set: (t, k, val) => {
+        if (SHARED_BOT_KEYS.has(k as string)) (st.bot as any)[k] = val;
+        else (t as any)[k] = val;
+        return true;
+      },
+    });
+    botViews.set(slot.bot, v);
+  }
+  return v;
+}
 const state = new Proxy({} as State, {
-  get: (_t, k) => (acct().state as any)[k],
+  get: (_t, k) => {
+    const st = acct().state;
+    if (k === "bot" || k === "lastSignal") {
+      const slot = slotOf(st, currentBotId());
+      if (slot) return k === "bot" ? botView(st, slot) : slot.lastSignal;
+    }
+    return (st as any)[k];
+  },
   set: (_t, k, v) => {
-    (acct().state as any)[k] = v;
+    const st = acct().state;
+    if (k === "bot" || k === "lastSignal") {
+      const slot = slotOf(st, currentBotId());
+      if (slot) {
+        (slot as any)[k] = v;
+        return true;
+      }
+    }
+    (st as any)[k] = v;
     return true;
   },
   has: (_t, k) => k in acct().state,
@@ -289,7 +338,10 @@ const state = new Proxy({} as State, {
 // Accounts that need watching even when nobody has the page open (bot on, protected trades,
 // limit orders). The scheduler wakes each of them.
 const ACTIVE_KEY = "active-accounts";
-const isActive = (st: State) => st.bot.running || st.positions.some((p) => p.protectPct) || (st.orders?.length ?? 0) > 0;
+export const botIds = (st: State = acct().state) => ["1", ...(st.bots ?? []).map((b) => b.id)];
+const runningIds = (st: State = acct().state) => botIds(st).filter((id) => (id === "1" ? st.bot : slotOf(st, id)!.bot).running);
+const anyBotRunning = (st: State = acct().state) => runningIds(st).length > 0;
+const isActive = (st: State) => anyBotRunning(st) || st.positions.some((p) => p.protectPct) || (st.orders?.length ?? 0) > 0;
 async function markActive(a: Account) {
   if (!a.key) return;
   const now = isActive(a.state);
@@ -470,7 +522,8 @@ export function emptyView() {
 }
 
 export function getState() {
-  return { ...state, equityNow: equity(), roundTripCostPct: roundTripCostPct(), storage: store.kind };
+  const st = acct().state;
+  return { ...st, bots: st.bots ?? [], equityNow: equity(), roundTripCostPct: roundTripCostPct(), storage: store.kind };
 }
 
 // ---------- Broker ----------
@@ -485,7 +538,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   const fillPrice = pair.priceUsd * (1 + (slippagePct + extraSlipPct) / 100);
   const qty = (usd - feeUsd - platformFeeUsd) / fillPrice;
   state.cash -= usd;
-  const existing = state.positions.find((p) => p.pool === pair.pool && p.source === source);
+  const existing = state.positions.find((p) => p.pool === pair.pool && p.source === source && (source !== "bot" || (p.botId ?? "1") === (plan?.botId ?? "1")));
   if (existing) {
     const totalQty = existing.qty + qty;
     existing.entryPrice = (existing.entryPrice * existing.qty + fillPrice * qty) / totalQty;
@@ -495,7 +548,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   } else {
     state.positions.push({ id: uid(), chain: pair.chain, pool: pair.pool, symbol: pair.symbol, qty, entryPrice: fillPrice, costUsd: usd, openedAt: Date.now(), source, lastPrice: pair.priceUsd, ...plan });
   }
-  const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, platformFeeUsd, reason, source };
+  const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, platformFeeUsd, reason, source, ...(source === "bot" ? { botId: plan?.botId ?? "1" } : {}) };
   state.trades.unshift(t);
   recTrade(t);
   noteCommunity(pair);
@@ -525,7 +578,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
     state.orders = (state.orders ?? []).filter((o) => o.positionId !== p.id); // its limit sells go with it
   }
   else p.realizedUsd = (p.realizedUsd ?? 0) + (net - costPart);
-  const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, platformFeeUsd, reason, source: p.source };
+  const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, platformFeeUsd, reason, source: p.source, ...(p.source === "bot" ? { botId: p.botId ?? "1" } : {}) };
   state.trades.unshift(t);
   recTrade(t);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES;
@@ -643,7 +696,26 @@ const isNew = (cfg: BotConfig) => cfg.pick === "newcoins";
 // price roughly 2*S/L (each side of the pool holds about half). Clamped to 0.2-10%.
 const thinSlipPct = (usd: number, liquidityUsd: number) => Math.min(10, Math.max(0.2, (200 * usd) / Math.max(liquidityUsd, 1)));
 
-export function startBot(cfg: BotConfig) {
+// Start bot `botId` ("1", "2" or "3"). Bots 2 and 3 are created on first start.
+// maxBots comes from the plan; two bots never trade the same coin.
+export function startBot(cfg: BotConfig, botId = "1", maxBots = 3) {
+  const id = ["1", "2", "3"].includes(botId) ? botId : "1";
+  const st = acct().state;
+  const others = runningIds(st).filter((x) => x !== id);
+  if (others.length + 1 > maxBots) throw new Error(maxBots <= 1 ? "Your plan includes 1 bot. Stop it first, or see Plans for more bots." : `Your plan includes ${maxBots} bots and they're all running. Stop one first, or see Plans for more.`);
+  if (cfg.pick !== "auto" && cfg.pool)
+    for (const o of others) {
+      const ob = o === "1" ? st.bot : slotOf(st, o)!.bot;
+      const busy = ob.config?.pool === cfg.pool || st.positions.some((p) => p.source === "bot" && (p.botId ?? "1") === o && p.pool === cfg.pool);
+      if (busy) throw new Error(`Bot ${o} is already trading ${cfg.symbol}. Pick another coin for this bot.`);
+    }
+  if (id !== "1" && !slotOf(st, id)) {
+    st.bots = [...(st.bots ?? []), { id, bot: { ...fresh().bot, coinStats: {}, day: null }, lastSignal: null }].sort((a, b) => a.id.localeCompare(b.id));
+  }
+  return withBot(id, () => startBotHere(cfg));
+}
+
+function startBotHere(cfg: BotConfig) {
   if (isAuto(cfg)) {
     cfg.autoChain ??= "all";
     cfg.autoCandidates = Math.min(5, Math.max(1, cfg.autoCandidates ?? 3));
@@ -683,7 +755,8 @@ export function startBot(cfg: BotConfig) {
   schedule();
 }
 
-export function stopBot(reason = "Stopped by user") {
+export function stopBot(reason = "Stopped by user", botId?: string): void {
+  if (botId && botId !== currentBotId()) return withBot(botId, () => stopBot(reason));
   if (state.bot.running) rec("bot.stop", `Bot stopped: ${reason}`, { reason });
   state.bot.running = false;
   state.bot.stoppedAt = Date.now();
@@ -692,10 +765,22 @@ export function stopBot(reason = "Stopped by user") {
   save();
 }
 
+// Remove a stopped extra bot (bots 2 and 3). Its trade history stays.
+export function removeBot(botId: string) {
+  const st = acct().state;
+  const slot = slotOf(st, botId);
+  if (!slot) throw new Error("That bot doesn't exist");
+  if (slot.bot.running) throw new Error(`Stop bot ${botId} first`);
+  if (st.positions.some((p) => p.source === "bot" && p.botId === botId)) throw new Error(`Bot ${botId} still holds a position: let it close or sell it first`);
+  st.bots = (st.bots ?? []).filter((b) => b.id !== botId);
+  save();
+  return { ok: true };
+}
+
 function schedule() {
   // Locally a single loop (bottom of this file) runs every active account every 5 s; on
   // Vercel, heartbeat / tick requests do. Run the first step right away.
-  if (!process.env.VERCEL && state.bot.running && state.bot.config) void tick();
+  if (!process.env.VERCEL && anyBotRunning()) void tick();
 }
 
 // Dashboard ping (every ~20 s while the page is open): watch for ~18 s.
@@ -768,10 +853,28 @@ const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo
 const MIN_CLAUDE_GAP_MS = 2 * 60_000; // never ask Claude more often than this, whatever happens
 const fmt = (n: number) => `$${n.toPrecision(4)}`;
 
+// Coins the account's other bots are trading or holding (so two bots never trade one coin).
+function otherBotPools() {
+  const st = acct().state;
+  const me = currentBotId();
+  const out = new Set<string>();
+  for (const id of botIds(st)) {
+    if (id === me) continue;
+    const b = id === "1" ? st.bot : slotOf(st, id)!.bot;
+    if (b.running) {
+      if (b.config?.pick !== "auto" && b.config?.pool) out.add(b.config.pool);
+      if (b.target?.pool) out.add(b.target.pool);
+    }
+  }
+  for (const p of st.positions) if (p.source === "bot" && (p.botId ?? "1") !== me) out.add(p.pool);
+  return out;
+}
+
 // Auto-pick: scan trending coins, ask Claude for a plan on the best few, keep the best plan.
 async function autoPick(cfg: BotConfig) {
   const scan = await scanOpportunities(cfg.autoChain ?? "all", roundTripCostPct(), cfg.autoMinLiquidityUsd ?? 50_000);
-  const inZone = scan.rows.filter((r) => r.plan?.verdict === "BUY ZONE" && !coinBlock(cfg, r.pair.pool, r.pair.symbol)).slice(0, cfg.autoCandidates ?? 3);
+  const taken = otherBotPools();
+  const inZone = scan.rows.filter((r) => r.plan?.verdict === "BUY ZONE" && !taken.has(r.pair.pool) && !coinBlock(cfg, r.pair.pool, r.pair.symbol)).slice(0, cfg.autoCandidates ?? 3);
   state.bot.target = null;
   state.bot.candidates = [];
   state.lastSignal = null;
@@ -940,6 +1043,10 @@ function noteKey(pos: Position, gainPct: number) {
 }
 
 export async function tick(persist = true) {
+  for (const id of runningIds()) await withBot(id, () => tickBot(persist));
+}
+
+async function tickBot(persist: boolean) {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg || acct().busy) return;
   acct().busy = true;
@@ -948,7 +1055,7 @@ export async function tick(persist = true) {
   state.bot.lastTickAt = Date.now();
   try {
     // 1. Manage an open bot position (every check, no AI cost).
-    const pos = state.positions.find((p) => p.source === "bot");
+    const pos = state.positions.find((p) => p.source === "bot" && (p.botId ?? "1") === currentBotId());
     if (pos) {
       const q = await quote(pos.chain, pos.pool, Math.max(pos.openedAt, windowStart));
       const price = q.price;
@@ -1212,6 +1319,7 @@ export async function tick(persist = true) {
         target: o.target,
         takeProfit: o.target,
         trailPct: trailFor(cfg, sig.atrPct),
+        botId: currentBotId(),
         sellBy: Date.now() + o.maxHoldMinutes * 60_000,
         predictedWinPct: o.winChancePct,
       });
@@ -1232,11 +1340,14 @@ export async function tick(persist = true) {
 
 // True while there's something to watch closely: an open bot position, a plan
 // to fetch, or standing orders waiting to fill.
-function watching() {
+function watching(): boolean {
   if (hasProtected()) return true;
+  return runningIds().some((id) => withBot(id, watchingBot));
+}
+function watchingBot() {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg) return false;
-  if (state.positions.some((p) => p.source === "bot")) return true;
+  if (state.positions.some((p) => p.source === "bot" && (p.botId ?? "1") === currentBotId())) return true;
   if (state.bot.askNow) return true;
   const sig = state.lastSignal;
   const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
@@ -1248,7 +1359,7 @@ function watching() {
 // dashboard ping keeps watch for a while). A lock stops two windows overlapping.
 // Stops early when there's nothing to watch.
 export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dashboard") {
-  const botOn = () => state.bot.running && !!state.bot.config;
+  const botOn = () => anyBotRunning();
   if (!botOn() && !hasProtected()) return { ticks: 0, reason: "bot is off" };
   const lockName = `watch:${acct().key ?? "-"}`;
   if (!(await store.lock(lockName, maxMs + 10_000))) return { ticks: 0, reason: "another window is already watching" };
@@ -1453,7 +1564,8 @@ async function checkLimitOrders() {
 // "Continue anyway": lift today's daily loss limit (until 00:00 UTC). The emergency stop
 // (account drawdown limit) still applies.
 // Turn the 1.5x reward rule on or off for the running bot (and remember it for the next start).
-export function setRewardRule(on: boolean) {
+export function setRewardRule(on: boolean, botId?: string): { ok: boolean; rewardRule: boolean } {
+  if (botId && botId !== currentBotId()) return withBot(botId, () => setRewardRule(on));
   const cfg = state.bot.config;
   if (cfg) cfg.rewardRule = on;
   rec("bot.setting", on ? "Turned the 1.5x reward rule on" : "Turned the 1.5x reward rule off (old rules: setups whose gain is smaller than the risk can be bought)", { rewardRule: on, running: state.bot.running });
@@ -1471,7 +1583,7 @@ export function overrideDailyLimit() {
     note: "The daily loss limit stops new trades after a bad day. Continuing lifts it until 00:00 UTC; the emergency stop still applies.",
   });
   state.bot.dailyOverride = today;
-  state.bot.blocked = null;
+  for (const id of botIds()) withBot(id, () => { state.bot.blocked = null; });
   log(`You lifted today's daily loss limit: the bot keeps trading until 00:00 UTC. The emergency stop still applies.`, "bad");
   save();
   return { ok: true, until: `${today}T24:00:00Z` };
@@ -1482,7 +1594,7 @@ function checkDrawdown(cfg: BotConfig) {
   const eq = equity();
   if (eq >= state.startCash * (1 - cfg.maxDrawdownPct / 100)) return false;
   for (const p of state.positions.filter((x) => x.source === "bot")) sell(p.id, p.lastPrice, 1, "Emergency stop");
-  stopBot(`Equity $${eq.toFixed(2)} fell below the ${cfg.maxDrawdownPct}% limit`);
+  for (const id of runningIds()) withBot(id, () => stopBot(`Equity $${eq.toFixed(2)} fell below the ${cfg.maxDrawdownPct}% limit`));
   alert(`🚨 Emergency stop: account $${eq.toFixed(2)} fell below your ${cfg.maxDrawdownPct}% limit. Bot positions sold and the bot is OFF.`);
   return true;
 }
@@ -1509,7 +1621,7 @@ if (!process.env.VERCEL) {
       await ensureMigrated();
       const step = async () => {
         await sync();
-        if (state.bot.running && state.bot.config) await tick(false);
+        if (anyBotRunning()) await tick(false);
         await guardProtected();
         await flush();
       };

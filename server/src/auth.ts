@@ -9,7 +9,7 @@ import type { Request, Response } from "express";
 import { createStore } from "./store.js";
 import { audit } from "./audit.js";
 import { resolvePrivyLogin } from "./privy.js";
-import { month, permissionsFor, PLANS, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
+import { botLimit, month, permissionsFor, PLANS, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 
 const store = createStore();
 const scrypt = promisify(crypto.scrypt) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
@@ -195,7 +195,7 @@ export async function setUserAccess(username: string, plan?: string, role?: stri
 export async function me(req: Request) {
   const a = await requestAuth(req);
   if (!a) return { user: null };
-  return { user: { ...pub(a.user), owner: true, permissions: permissionsFor(a.plan, a.role), usage: await tokenUsage(a.key, a.plan, a.role) } };
+  return { user: { ...pub(a.user), owner: true, permissions: permissionsFor(a.plan, a.role), botLimit: botLimit(a.plan, a.role), usage: await tokenUsage(a.key, a.plan, a.role) } };
 }
 
 export async function signUp(req: Request, res: Response) {

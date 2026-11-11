@@ -567,6 +567,7 @@ export function PlansModal({ onClose }: { onClose: () => void }) {
               <ul className="plan-features">
                 <li>{p.feePct === 0 ? "No transaction charges" : p.freeTrades > 0 ? `${p.freeTrades} trades/month free, then ${p.feePct}%` : `${p.feePct}% charge per trade`}</li>
                 <li>{p.aiTokens ? `${fmtTokens(p.aiTokens)} AI tokens/month (≈ ${analysesFor(p.aiTokens)} analyses)` : "No AI"}</li>
+                {p.bots ? <li>{p.bots === 1 ? "1 AI bot" : `${p.bots} AI bots at once, each on its own coin`}</li> : null}
                 {FEATURES.map((f) => (
                   <li key={f.perm} className={p.permissions.includes(f.perm) ? "yes" : "no"}>{p.permissions.includes(f.perm) ? "✓" : "–"} {f.label}</li>
                 ))}

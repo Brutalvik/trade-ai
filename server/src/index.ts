@@ -15,7 +15,7 @@ import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import { coinList } from "./lists.js";
-import { can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
+import { botLimit, can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
 app.use(cors());
@@ -236,13 +236,16 @@ app.post(
       return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick. See Plans to upgrade.`, upgrade: true });
     if (req.body?.allowRisky && !can(a.plan, a.role, "bot.risky"))
       return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include risky mode. See Plans to upgrade.`, upgrade: true });
-    return wrap(async (r) => engine.startBot(r.body))(req, res);
+    const { botId, ...cfg } = req.body ?? {};
+    const max = botLimit(a.plan, a.role);
+    return wrap(async () => engine.startBot(cfg, String(botId ?? "1"), max))(req, res);
   }),
 );
-app.post("/api/bot/stop", signedIn(wrap(async () => engine.stopBot())));
+app.post("/api/bot/stop", signedIn(wrap(async (req) => engine.stopBot("Stopped by user", String(req.body?.botId ?? "1")))));
+app.post("/api/bot/remove", signedIn(wrap(async (req) => engine.removeBot(String(req.body?.botId ?? "")))));
 // "Continue anyway" past today's daily loss limit (the user confirmed the risk).
 app.post("/api/bot/override-daily", needs("bot.run", wrap(async () => engine.overrideDailyLimit())));
-app.post("/api/bot/reward-rule", needs("bot.run", wrap(async (req) => engine.setRewardRule(req.body?.on !== false))));
+app.post("/api/bot/reward-rule", needs("bot.run", wrap(async (req) => engine.setRewardRule(req.body?.on !== false, String(req.body?.botId ?? "1")))));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
 // Limit orders: { side: "BUY", chain, pool, symbol, price, usd } or { side: "SELL", positionId, price, fraction }.
 app.post("/api/orders", needs("trade.limit", wrap(async (req) => engine.placeOrder(req.body ?? {}))));

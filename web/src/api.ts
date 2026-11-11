@@ -20,8 +20,8 @@ export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: numbe
 export type Signal = { stance: "BUY_NOW" | "WAIT_FOR_TRIGGER" | "AVOID"; confidence: number; riskLevel: string; reasoning: string; orders: PlanOrder[]; cancelBelow: number; cancelAbove: number; validMinutes: number };
 export type ModelResult = { model: string; ok: true; signal: Signal; ms: number } | { model: string; ok: false; error: string; ms: number };
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
-export type Position = { id: string; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
-export type Trade = { id: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
+export type Position = { id: string; botId?: string; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
+export type Trade = { id: string; botId?: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
 export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins"; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
 export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
 export type AppState = {
@@ -57,6 +57,16 @@ export type AppState = {
   orders?: LimitOrder[]; // open limit buys / sells
   signedOut?: boolean; // true = not signed in as the account owner: an empty $0 view
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean } | null;
+  bots?: BotSlot[]; // extra bots (2 and 3); bot 1 is bot / lastSignal
+};
+export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };
+// Every bot of the account, bot 1 first.
+export const allBots = (s: AppState | null): BotSlot[] => (s ? [{ id: "1", bot: s.bot, lastSignal: s.lastSignal }, ...(s.bots ?? [])] : []);
+// The account state as one bot sees it (its own bot / plan; shared cash and positions).
+export const stateForBot = (s: AppState | null, id: string): AppState | null => {
+  if (!s || id === "1") return s;
+  const b = s.bots?.find((x) => x.id === id);
+  return { ...s, bot: b?.bot ?? { ...s.bot, running: false, config: null, log: [], target: null, candidates: [], blocked: null, startedAt: null, stoppedAt: null, lastWatch: null }, lastSignal: b?.lastSignal ?? null };
 };
 export type Plan = { verdict: "BUY ZONE" | "WAIT" | "AVOID"; buyBelow: number; sellAt: number; exitBelow: number; buyBy: number; sellBy: number; netGainPct: number; why: string };
 export type ScanChain = "all" | "solana" | "base" | "ethereum" | "bsc";
@@ -70,8 +80,8 @@ export type PlanId = "free" | "member" | "starter" | "pro" | "max";
 export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.analyze" | "bot.run" | "bot.autopick" | "bot.risky" | "admin.users";
 export type Usage = { month: string; used: number; limit: number; topup?: number }; // limit -1 = unlimited; topup = extra tokens that don't expire
 export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number }[]; yearlyMonthsPaid: number };
-export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; permissions: Permission[] }; // freeTrades -1 = unlimited
-export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
+export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[] }; // freeTrades -1 = unlimited
+export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
 export type AdminUser = User & { usage: Usage };
 export type RealQuote = { requestId: string; transaction: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
 export type RealTrade = { t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: "SOL" | "USDC"; status: "Success" | "Failed"; signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; feeBps: number; error?: string };
@@ -115,7 +125,7 @@ export const api = {
   placeOrder: (b: { side: "BUY" | "SELL"; chain?: string; pool?: string; symbol?: string; price: number; usd?: number; positionId?: string; fraction?: number }) => req<LimitOrder>("/orders", b),
   cancelOrder: (id: string) => req("/orders/cancel", { id }),
   overrideDailyLimit: () => req("/bot/override-daily", {}),
-  botRewardRule: (on: boolean) => req<{ ok: boolean; rewardRule: boolean }>("/bot/reward-rule", { on }),
+  botRewardRule: (on: boolean, botId = "1") => req<{ ok: boolean; rewardRule: boolean }>("/bot/reward-rule", { on, botId }),
   signIn: (b: { login: string; password: string }) => req<{ user: User }>("/auth/signin", b),
   signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),
   signOut: () => req("/auth/signout", {}),
@@ -133,8 +143,9 @@ export const api = {
   adminUsers: () => req<AdminUser[]>("/admin/users"),
   setUserAccess: (b: { username: string; plan?: PlanId; role?: "user" | "admin" }) => req<User>("/admin/users", b),
   reset: (startCash: number) => req("/reset", { startCash }),
-  startBot: (cfg: BotConfig) => req("/bot/start", cfg),
-  stopBot: () => req("/bot/stop", {}),
+  startBot: (cfg: BotConfig, botId = "1") => req("/bot/start", { ...cfg, botId }),
+  stopBot: (botId = "1") => req("/bot/stop", { botId }),
+  removeBot: (botId: string) => req("/bot/remove", { botId }),
   heartbeat: () => req<{ ticked: boolean; running: boolean }>("/bot/heartbeat", {}),
   protect: (positionId: string, pct: number) => req("/protect", { positionId, pct }),
 };

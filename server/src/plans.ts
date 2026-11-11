@@ -27,6 +27,7 @@ export type Plan = {
   aiTokens: number; // app tokens per month (0 = no AI)
   feePct: number; // platform transaction charge per trade, % of the trade
   freeTrades: number; // trades per month with no platform charge (then feePct applies)
+  bots: number; // AI bots that can run at the same time, each on its own coin
   permissions: Permission[];
 };
 
@@ -39,27 +40,27 @@ export const PLANS: Record<PlanId, Plan> = {
   free: {
     id: "free", name: "Free", priceUsd: 0,
     blurb: "Charts, scanner and manual paper trading (buy and sell now). A small charge on each trade.",
-    aiTokens: 0, feePct: 0.5, freeTrades: 0, permissions: ["trade.manual"], // manual only: no limit orders or Protect
+    aiTokens: 0, feePct: 0.5, freeTrades: 0, bots: 0, permissions: ["trade.manual"], // manual only: no limit orders or Protect
   },
   member: {
     id: "member", name: "Member", priceUsd: 9,
     blurb: "Everything in Free plus limit orders and Protect, with 100 trades a month free of charge, then a lower rate.",
-    aiTokens: 0, feePct: 0.2, freeTrades: 100, permissions: [...TRADING],
+    aiTokens: 0, feePct: 0.2, freeTrades: 100, bots: 0, permissions: [...TRADING],
   },
   starter: {
     id: "starter", name: "AI Starter", priceUsd: 19,
     blurb: "Member benefits plus AI plans and the AI bot on one coin.",
-    aiTokens: 1_000_000, feePct: 0.1, freeTrades: 300, permissions: [...TRADING, ...AI],
+    aiTokens: 1_000_000, feePct: 0.1, freeTrades: 300, bots: 1, permissions: [...TRADING, ...AI],
   },
   pro: {
     id: "pro", name: "AI Pro", priceUsd: 49,
-    blurb: "More AI, auto-pick and risky mode. No transaction charges.",
-    aiTokens: 5_000_000, feePct: 0, freeTrades: Infinity, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
+    blurb: "More AI, 2 bots at once, auto-pick and risky mode. No transaction charges.",
+    aiTokens: 5_000_000, feePct: 0, freeTrades: Infinity, bots: 2, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
   },
   max: {
     id: "max", name: "AI Max", priceUsd: 129,
-    blurb: "The most AI for frequent analyses and longer bot runs. No transaction charges.",
-    aiTokens: 15_000_000, feePct: 0, freeTrades: Infinity, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
+    blurb: "The most AI and 3 bots at once, each on its own coin. No transaction charges.",
+    aiTokens: 15_000_000, feePct: 0, freeTrades: Infinity, bots: 3, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
   },
 };
 export const PLAN_ORDER: PlanId[] = ["free", "member", "starter", "pro", "max"];
@@ -81,6 +82,8 @@ export const permissionsFor = (plan?: string | null, role?: string | null): Perm
 export const can = (plan: string | null | undefined, role: string | null | undefined, p: Permission) => permissionsFor(plan, role).includes(p);
 // Admins aren't limited by AI tokens (they run the platform's own bot).
 export const tokenLimit = (plan?: string | null, role?: string | null) => (role === "admin" ? Infinity : planOf(plan).aiTokens);
+// How many bots can run at once (admins: the most any plan has).
+export const botLimit = (plan?: string | null, role?: string | null) => (role === "admin" ? 3 : planOf(plan).bots);
 export const month = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 7); // "2026-11"
 
 // For the plans page (JSON can't hold Infinity).
