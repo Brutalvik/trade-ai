@@ -12,7 +12,7 @@ import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
 import * as history from "./audit.js";
 import * as privy from "./privy.js";
-import { walletView } from "./wallet.js";
+import { rpcHealth, walletView } from "./wallet.js";
 import { can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
@@ -41,7 +41,7 @@ const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (r
 
 app.get(
   "/api/status",
-  wrap(async () => ({
+  wrap(async (req) => ({
     claude: hasClaude(),
     openai: hasOpenAI(),
     mode: "paper",
@@ -51,6 +51,7 @@ app.get(
     alerts: alertChannel(), // "telegram" | "ntfy" | null
     privyAppId: privy.privyAppId(), // public: the page uses it to load the wallet SDK
     activeAccounts: (await engine.activeAccounts().catch(() => [])).length, // bots / orders the scheduler keeps watching
+    solanaRpc: await rpcHealth(req.query.rpc === "1"), // "custom" (e.g. Helius) or "public"; ?rpc=1 also pings it
     // Only when storage isn't working: names (not values) of database settings the server can see.
     ...(engine.storeKind() === "temp" ? { storageEnvNames: storageEnvNames() } : {}),
   })),

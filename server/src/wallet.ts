@@ -97,3 +97,19 @@ export async function walletView(address: string, fresh = false): Promise<Wallet
   cache.set(address, { at: Date.now(), view });
   return view;
 }
+
+// Which Solana connection the server uses, and (on request) whether it answers. Never returns the URL.
+let lastHealth: { at: number; v: Record<string, unknown> } | null = null;
+export async function rpcHealth(check: boolean) {
+  const kind = process.env.SOLANA_RPC_URL?.trim() ? "custom" : "public";
+  if (!check) return { kind };
+  if (lastHealth && Date.now() - lastHealth.at < 30_000) return lastHealth.v; // at most one ping per 30s
+  const t0 = Date.now();
+  try {
+    await rpc<number>("getSlot", [{ commitment: "confirmed" }]);
+    lastHealth = { at: Date.now(), v: { kind, ok: true, ms: Date.now() - t0 } };
+  } catch (e: any) {
+    lastHealth = { at: Date.now(), v: { kind, ok: false, error: String(e?.message ?? e).slice(0, 120) } };
+  }
+  return lastHealth.v;
+}
