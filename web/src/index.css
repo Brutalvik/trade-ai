@@ -309,4 +309,6 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .copy-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 2px 4px; border-radius: 6px; color: var(--muted); cursor: pointer; transition: color 0.15s, background 0.15s; }
 .copy-btn:hover { color: var(--cyan, #00e5ff); background: rgba(0, 229, 255, 0.08); }
 .copy-btn.done { color: var(--up); }
-.copy-btn .copied { font-size: 10px; }
+.copy-btn { position: relative; }
+.copy-btn::after { content: attr(data-tip); position: absolute; top: 50%; left: calc(100% + 6px); transform: translate(-4px, -50%); padding: 3px 8px; border-radius: 6px; background: #0b1324; border: 1px solid rgba(0, 229, 255, 0.35); color: #e6f7ff; font-size: 11px; font-family: inherit; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.12s, transform 0.12s; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); z-index: 20; }
+.copy-btn:hover::after, .copy-btn:focus-visible::after, .copy-btn.done::after { opacity: 1; transform: translate(0, -50%); }
