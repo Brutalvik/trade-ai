@@ -303,3 +303,10 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
   .levels { grid-template-columns: 1fr; }
   .levels div { flex-direction: row; justify-content: space-between; align-items: center; gap: 8px; }
 }
+
+/* Copy contract address */
+.addr-line { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.copy-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 2px 4px; border-radius: 6px; color: var(--muted); cursor: pointer; transition: color 0.15s, background 0.15s; }
+.copy-btn:hover { color: var(--cyan, #00e5ff); background: rgba(0, 229, 255, 0.08); }
+.copy-btn.done { color: var(--up); }
+.copy-btn .copied { font-size: 10px; }

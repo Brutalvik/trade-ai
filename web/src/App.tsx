@@ -263,6 +263,36 @@ function TopBar({ status, state, onSelect }: { status: Status | null; state: App
   );
 }
 
+// Copies the full contract (token) address; shows a check mark for a moment.
+function CopyButton({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Older browsers / no permission: fall back to a hidden text box.
+      const t = document.createElement("textarea");
+      t.value = text;
+      document.body.appendChild(t);
+      t.select();
+      document.execCommand("copy");
+      t.remove();
+    }
+    setDone(true);
+    setTimeout(() => setDone(false), 1500);
+  };
+  return (
+    <button className={`copy-btn ${done ? "done" : ""}`} onClick={copy} title={done ? "Copied" : "Copy contract address"} aria-label={done ? "Copied" : "Copy contract address"}>
+      {done ? (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+      ) : (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+      )}
+      {done && <span className="copied">Copied</span>}
+    </button>
+  );
+}
+
 function PairHeader({ pair, tf, setTf }: { pair: PairInfo | null; tf: Timeframe; setTf: (t: Timeframe) => void }) {
   if (!pair) return <div className="pair-head" />;
   return (
@@ -271,7 +301,10 @@ function PairHeader({ pair, tf, setTf }: { pair: PairInfo | null; tf: Timeframe;
         {pair.imageUrl && <img src={pair.imageUrl} alt="" />}
         <div>
           <h2>{pair.symbol} <span className="muted small">{pair.name}</span></h2>
-          <div className="muted small mono">{pair.chain} · {pair.dex} · {pair.pool.slice(0, 6)}…{pair.pool.slice(-4)}</div>
+          <div className="muted small mono addr-line">
+            {pair.chain} · {pair.dex} · <span title={pair.tokenAddress || pair.pool}>{(pair.tokenAddress || pair.pool).slice(0, 6)}…{(pair.tokenAddress || pair.pool).slice(-4)}</span>
+            <CopyButton text={pair.tokenAddress || pair.pool} />
+          </div>
         </div>
         <div className="price">
           <b className="mono">{fmtPrice(pair.priceUsd)}</b>
