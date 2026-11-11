@@ -1264,7 +1264,10 @@ async function checkLimitOrders() {
           alert(`⚠️ Limit buy on ${o.symbol} cancelled: not enough cash.`);
           continue;
         }
-        const t = buy({ ...q.pair, priceUsd: Math.min(o.price, q.price) }, usd, "manual", `Limit buy at ${fmt(o.price)}`);
+        // A limit buy never pays more than the limit: slippage only applies while the price
+        // (plus slippage) is still under it. Fill = min(limit, live price + slippage).
+        const slip = state.settings.slippagePct / 100;
+        const t = buy({ ...q.pair, priceUsd: Math.min(o.price / (1 + slip), q.price) }, usd, "manual", `Limit buy at ${fmt(o.price)}`);
         t.auto = true;
         log(`LIMIT BUY ${o.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (your limit ${fmt(o.price)}).`, "good");
         alert(`🟢 Limit buy filled: ${o.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)}. Account $${equity().toFixed(2)}.`);
@@ -1277,7 +1280,9 @@ async function checkLimitOrders() {
         }
         if (q.high >= o.price) {
           state.orders = state.orders.filter((x) => x.id !== o.id);
-          const t = sell(p.id, Math.max(o.price, q.price), o.fraction ?? 1, `Limit sell at ${fmt(o.price)}`);
+          // A limit sell never gets less than the limit: fill = max(limit, live price - slippage).
+          const slip = (state.settings.slippagePct + (p.extraSlipPct ?? 0)) / 100;
+          const t = sell(p.id, Math.max(o.price / (1 - slip), q.price), o.fraction ?? 1, `Limit sell at ${fmt(o.price)}`);
           t.auto = true;
           log(`LIMIT SELL ${o.symbol} ${Math.round((o.fraction ?? 1) * 100)}% @ ${fmt(t.price)} (your limit ${fmt(o.price)}). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
           alert(`${t.pnlUsd! >= 0 ? "✅" : "🔻"} Limit sell filled: ${o.symbol} @ ${fmt(t.price)}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}. Account $${equity().toFixed(2)}.`);
