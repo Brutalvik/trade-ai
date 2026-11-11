@@ -258,7 +258,7 @@ export default function App() {
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
-            <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)}>
+            <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)}>
               {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
             </BotTabs>
           )}
@@ -1750,36 +1750,14 @@ function BotLog({ state }: { state: AppState | null }) {
   );
 }
 
-// Tabs above Auto-pilot: one per bot (up to the plan's limit), each trading its own coin.
-function BotTabs({ state, limit, notify, refresh, children }: { state: AppState | null; limit: number; notify: (m: string, bad?: boolean) => void; refresh: () => void; children: (botId: string) => ReactNode }) {
-  const access = useAccess();
+// Tabs above Auto-pilot: Bot 1, Bot 2, Bot 3 as the plan allows; each trades its own coin.
+function BotTabs({ state, limit, children }: { state: AppState | null; limit: number; children: (botId: string) => ReactNode }) {
   const saved = allBots(state).map((b) => b.id);
-  const [drafts, setDrafts] = useState<string[]>([]); // added in this browser but not started yet
-  const ids = [...new Set([...saved, ...drafts])].sort();
+  const ids = [...new Set([...["1", "2", "3"].slice(0, Math.max(1, Math.min(3, limit))), ...saved])].sort();
   const [sel, setSel] = useState(() => localStorage.getItem("nexus-bot-tab") ?? "1");
   const current = ids.includes(sel) ? sel : "1";
   useEffect(() => localStorage.setItem("nexus-bot-tab", current), [current]);
-  const max = Math.max(1, limit);
-  const add = () => {
-    if (ids.length >= max) return access.openPlans();
-    const next = ["1", "2", "3"].find((x) => !ids.includes(x));
-    if (!next) return;
-    setDrafts((d) => [...d, next]);
-    setSel(next);
-  };
-  const slot = allBots(state).find((b) => b.id === current);
-  const remove = async () => {
-    if (current === "1") return;
-    try {
-      if (saved.includes(current)) await api.removeBot(current);
-      setDrafts((d) => d.filter((x) => x !== current));
-      setSel("1");
-      refresh();
-    } catch (e: any) {
-      notify(e.message, true);
-    }
-  };
-  if (ids.length === 1 && limit <= 1) return <>{children("1")}</>;
+  if (ids.length === 1) return <>{children("1")}</>;
   return (
     <div className="bot-tabs-wrap">
       <div className="bot-tabs" role="tablist" aria-label="Bots">
@@ -1787,18 +1765,12 @@ function BotTabs({ state, limit, notify, refresh, children }: { state: AppState 
           const b = allBots(state).find((x) => x.id === id)?.bot;
           const label = b?.running ? (b.config?.pick === "auto" ? (b.target?.symbol ?? "Auto") : b.config?.symbol) : null;
           return (
-            <button key={id} role="tab" aria-selected={current === id} className={current === id ? "on" : ""} onClick={() => setSel(id)}>
+            <button key={id} role="tab" aria-selected={current === id} className={current === id ? "on" : ""} onClick={() => setSel(id)} title={b?.running ? `Bot ${id} is running` : `Bot ${id} is off`}>
               <span className={`dot ${b?.running ? "live" : ""}`} />
               Bot {id}{label ? ` · ${label}` : ""}
             </button>
           );
         })}
-        {ids.length < 3 && (
-          <button className="add" onClick={add} title={ids.length >= max ? `Your plan includes ${limit} bot${limit === 1 ? "" : "s"}. More bots from ${limit < 2 ? "AI Pro" : "AI Max"}.` : "Add another bot on its own coin"}>
-            {ids.length >= max ? "🔒 " : "+ "}Add bot
-          </button>
-        )}
-        {current !== "1" && !slot?.bot.running && <button className="remove" onClick={() => void remove()} title={`Remove bot ${current}`}>Remove</button>}
       </div>
       {children(current)}
     </div>
