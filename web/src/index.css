@@ -660,3 +660,42 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .available { font-size: 12px; white-space: nowrap; text-align: right; overflow: hidden; text-overflow: ellipsis; }
 .available b { font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--text); }
 button.available { background: none; border: 0; padding: 0; cursor: pointer; }
+
+/* ===== Collapsible, resizable coin-list panel ===== */
+.layout { grid-template-columns: var(--list-w, 300px) minmax(0, 1fr) 360px; }
+.layout.list-collapsed { grid-template-columns: 44px minmax(0, 1fr) 360px; }
+.coin-top { display: flex; align-items: flex-start; gap: 6px; }
+.coin-top .coin-chips { flex: 1; min-width: 0; }
+.panel-toggle { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex: none; width: 34px; height: 34px; padding: 0; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--text); cursor: pointer; }
+.panel-toggle:hover { background: rgba(255, 255, 255, 0.1); }
+.panel-toggle:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.panel-toggle-label { display: none; }
+/* Small tooltip, like fomo's */
+[data-tip]:hover::after, [data-tip]:focus-visible::after { content: attr(data-tip); position: absolute; left: calc(100% + 8px); top: 50%; transform: translateY(-50%); white-space: nowrap; padding: 5px 9px; border-radius: 8px; background: #1a2033; border: 1px solid rgba(255, 255, 255, 0.14); color: var(--text); font-size: 12px; font-weight: 500; z-index: 30; pointer-events: none; }
+.coin-top .panel-toggle[data-tip]:hover::after { left: auto; right: 0; top: calc(100% + 6px); transform: none; }
+.coin-side.collapsed { position: sticky; top: 76px; height: auto; padding: 0; background: none; border: 0; box-shadow: none; }
+.coin-side.collapsed .panel-toggle { width: 40px; height: 40px; }
+/* The drag handle sits on the list's right edge, in the gap between the columns */
+.list-resizer { position: absolute; top: 0; bottom: 0; right: -12px; width: 10px; display: grid; place-items: center; cursor: col-resize; touch-action: none; z-index: 5; }
+.list-resizer span { width: 5px; height: 46px; border-radius: 999px; background: rgba(255, 255, 255, 0.22); transition: background 0.15s, height 0.15s; }
+.list-resizer:hover span, .list-resizer:focus-visible span { background: var(--cyan); height: 64px; }
+.list-resizer:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
+
+/* Thin scrollbar under Positions / Trade history tables so they can scroll sideways */
+.panel.bottom .table-wrap { overflow-x: auto; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.25) transparent; }
+.panel.bottom .table-wrap::-webkit-scrollbar { display: block; height: 4px; }
+.panel.bottom .table-wrap::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.25); border-radius: 999px; }
+.panel.bottom .table-wrap::-webkit-scrollbar-track { background: transparent; }
+
+@media (max-width: 1180px) {
+  .layout, .layout.list-collapsed { grid-template-columns: minmax(0, 1fr) 340px; }
+  .list-resizer { display: none; }
+  .coin-side.collapsed { position: static; }
+  .coin-side.collapsed .panel-toggle { width: auto; height: 38px; padding: 0 14px; }
+  .coin-side.collapsed .panel-toggle-label { display: inline; }
+  .coin-side.collapsed .panel-toggle[data-tip]::after { display: none; }
+}
+@media (max-width: 760px) {
+  .layout, .layout.list-collapsed { grid-template-columns: 1fr; }
+}

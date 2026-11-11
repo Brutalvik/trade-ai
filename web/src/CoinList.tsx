@@ -1,5 +1,5 @@
 // Left sidebar: Solana coin lists (Crypto, Trending, Most held, Graduated, Bonding, Community).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, fmtBig, fmtPrice, type ListCoin, type ListKind, type PairInfo } from "./api";
 
 const KINDS: { id: ListKind; label: string; hint: string }[] = [
@@ -21,7 +21,7 @@ function Price({ p }: { p: number }) {
 }
 const fmtCount = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n));
 
-export function CoinList({ onSelect, selectedMint, notify }: { onSelect: (p: PairInfo) => void; selectedMint?: string; notify: (m: string, bad?: boolean) => void }) {
+export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSelect: (p: PairInfo) => void; selectedMint?: string; notify: (m: string, bad?: boolean) => void; onCollapse: () => void }) {
   const [kind, setKind] = useState<ListKind>(() => (KINDS.some((k) => k.id === localStorage.getItem(LS)) ? (localStorage.getItem(LS) as ListKind) : "crypto"));
   const [lists, setLists] = useState<Partial<Record<ListKind, ListCoin[]>>>({});
   const [err, setErr] = useState("");
@@ -56,10 +56,13 @@ export function CoinList({ onSelect, selectedMint, notify }: { onSelect: (p: Pai
   const meta = KINDS.find((k) => k.id === kind)!;
   return (
     <div className="coin-side-inner">
-      <div className="coin-chips" role="tablist" aria-label="Coin lists">
-        {KINDS.map((k) => (
-          <button key={k.id} role="tab" aria-selected={kind === k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)} title={k.hint}>{k.label}</button>
-        ))}
+      <div className="coin-top">
+        <div className="coin-chips" role="tablist" aria-label="Coin lists">
+          {KINDS.map((k) => (
+            <button key={k.id} role="tab" aria-selected={kind === k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)} title={k.hint}>{k.label}</button>
+          ))}
+        </div>
+        <button className="panel-toggle" onClick={onCollapse} data-tip="Collapse panel" aria-label="Collapse coin lists"><Chevrons dir="left" /></button>
       </div>
       <p className="muted tiny coin-hint">{meta.hint}</p>
       <div className="coin-rows">
@@ -86,6 +89,60 @@ export function CoinList({ onSelect, selectedMint, notify }: { onSelect: (p: Pai
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+export function Chevrons({ dir }: { dir: "left" | "right" }) {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {dir === "left" ? <path d="M11 17l-5-5 5-5M18 17l-5-5 5-5" /> : <path d="M13 17l5-5-5-5M6 17l5-5-5-5" />}
+    </svg>
+  );
+}
+
+// Drag handle on the list's right edge: drag to resize the list (the middle column takes the rest).
+export const LIST_MIN = 240;
+export const LIST_MAX = 520;
+export function ListResizer({ width, onChange, onDone }: { width: number; onChange: (w: number) => void; onDone: (w: number) => void }) {
+  const drag = useRef<{ x: number; w: number; last: number } | null>(null);
+  const clamp = (w: number) => Math.max(LIST_MIN, Math.min(LIST_MAX, Math.round(w)));
+  return (
+    <div
+      className="list-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize coin lists"
+      aria-valuemin={LIST_MIN}
+      aria-valuemax={LIST_MAX}
+      aria-valuenow={width}
+      tabIndex={0}
+      title="Drag to resize"
+      onPointerDown={(e) => {
+        drag.current = { x: e.clientX, w: width, last: width };
+        e.currentTarget.setPointerCapture(e.pointerId);
+        document.body.classList.add("resizing");
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        const w = clamp(drag.current.w + e.clientX - drag.current.x);
+        drag.current.last = w;
+        onChange(w);
+      }}
+      onPointerUp={() => {
+        if (drag.current) onDone(drag.current.last);
+        drag.current = null;
+        document.body.classList.remove("resizing");
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        const w = clamp(width + (e.key === "ArrowRight" ? 20 : -20));
+        onChange(w);
+        onDone(w);
+      }}
+    >
+      <span />
     </div>
   );
 }

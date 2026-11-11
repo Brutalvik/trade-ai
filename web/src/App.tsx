@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
 import { WalletButton } from "./Wallet";
-import { CoinList } from "./CoinList";
+import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
 import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
@@ -78,6 +78,13 @@ export default function App() {
   useEffect(() => { if (state) saveState(state); }, [state]);
   // Chart maximize: fills the window; Esc (or the button) brings it back.
   const [chartMax, setChartMax] = useState(false);
+  // Left coin-list panel: collapsible and resizable (both remembered).
+  const [listCollapsed, setListCollapsed] = useState(() => localStorage.getItem("nexus-list-collapsed") === "1");
+  const [listW, setListW] = useState(() => Math.max(LIST_MIN, Math.min(LIST_MAX, Number(localStorage.getItem("nexus-list-w")) || 300)));
+  const collapseList = (v: boolean) => {
+    setListCollapsed(v);
+    localStorage.setItem("nexus-list-collapsed", v ? "1" : "0");
+  };
   useEffect(() => {
     if (!chartMax) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setChartMax(false);
@@ -207,10 +214,20 @@ export default function App() {
         </div>
       )}
 
-      <main className="layout">
-        <aside className="panel coin-side" aria-label="Coin lists">
-          <CoinList onSelect={selectPair} selectedMint={pair?.tokenAddress} notify={notify} />
-        </aside>
+      <main className={`layout ${listCollapsed ? "list-collapsed" : ""}`} style={{ "--list-w": `${listW}px` } as CSSProperties}>
+        {listCollapsed ? (
+          <aside className="coin-side collapsed" aria-label="Coin lists (collapsed)">
+            <button className="panel-toggle" onClick={() => collapseList(false)} data-tip="Expand panel" aria-label="Expand coin lists">
+              <Chevrons dir="right" />
+              <span className="panel-toggle-label">Coin lists</span>
+            </button>
+          </aside>
+        ) : (
+          <aside className="panel coin-side" aria-label="Coin lists">
+            <CoinList onSelect={selectPair} selectedMint={pair?.tokenAddress} notify={notify} onCollapse={() => collapseList(true)} />
+            <ListResizer width={listW} onChange={setListW} onDone={(w) => localStorage.setItem("nexus-list-w", String(w))} />
+          </aside>
+        )}
 
         <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`}>
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
