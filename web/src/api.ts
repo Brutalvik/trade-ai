@@ -54,6 +54,7 @@ export type AppState = {
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
   storage: Status["storage"];
+  signedOut?: boolean; // true = not signed in as the account owner: an empty $0 view
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean } | null;
 };
 export type Plan = { verdict: "BUY ZONE" | "WAIT" | "AVOID"; buyBelow: number; sellAt: number; exitBelow: number; buyBy: number; sellBy: number; netGainPct: number; why: string };
@@ -61,7 +62,9 @@ export type ScanChain = "all" | "solana" | "base" | "ethereum" | "bsc";
 export type NewCoinRisk = "LOW" | "MEDIUM" | "HIGH" | "REJECTED";
 export type NewCoin = { pair: PairInfo; ageMin: number; risk: NewCoinRisk; reasons: string[]; safetyChecked: boolean; buyShare: number | null; momentum: "UP" | "FLAT" | "DOWN"; tradeable: boolean; why: string };
 export type ScanResult = { source: "trending" | "boosted"; chain: ScanChain; rows: { pair: PairInfo; snap: Snapshot | null; plan: Plan | null }[] };
-export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null };
+// Older saved logs, trades and plans may still name the model; show "AI" instead.
+export const aiText = (s: string) => s.replace(/\bClaude plan: /g, "AI plan: ").replace(/\bClaude \([^)]*\)/g, "AI").replace(/\bClaude's\b/g, "the AI's").replace(/\bClaude\b/g, "AI");
+export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean };
 export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus };
 
 async function req<T>(path: string, body?: unknown): Promise<T> {

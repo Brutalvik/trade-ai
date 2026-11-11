@@ -375,3 +375,5 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .warn-btn:hover::after, .warn-btn:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
 .pred-big { font-size: 15px; margin: 12px 0 4px !important; color: var(--text); }
 .pred-big b { color: var(--amber, #ffc857); }
+
+.banner.signed-out { border-color: rgba(0, 229, 255, 0.4); background: rgba(0, 229, 255, 0.06); color: var(--text); }

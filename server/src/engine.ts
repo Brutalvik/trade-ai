@@ -257,6 +257,12 @@ function recordEquity() {
   state.equity = state.equity.slice(-2000);
 }
 
+// What a signed-out visitor (or another login) sees: an empty $0 paper account.
+export function emptyView() {
+  const f = fresh(0);
+  return { ...f, settings: state.settings, equityNow: 0, roundTripCostPct: roundTripCostPct(), storage: store.kind, signedOut: true };
+}
+
 export function getState() {
   return { ...state, equityNow: equity(), roundTripCostPct: roundTripCostPct(), storage: store.kind };
 }
@@ -412,7 +418,7 @@ export function startBot(cfg: BotConfig) {
     isNew(cfg)
       ? `Bot started in NEW COINS mode (${cfg.newChain ?? "solana"}): ${cfg.newCoinPct ?? 3}% per coin, stop -${cfg.newStopPct ?? 15}%, half at +${cfg.newTakePct ?? 30}%, max ${cfg.newMaxPerDay ?? 5} buys a day. Cash $${state.cash.toFixed(2)}.`
       : isAuto(cfg)
-      ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round Claude checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
+      ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round the AI checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
       : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.`,
     "good",
   );
@@ -508,7 +514,7 @@ async function autoPick(cfg: BotConfig) {
     log(`Scanned ${scan.rows.length} trending coins: none in the buy zone right now.`);
     return;
   }
-  log(`Asking Claude for plans on ${inZone.map((r) => r.pair.symbol).join(", ")}...`);
+  log(`Asking the AI for plans on ${inZone.map((r) => r.pair.symbol).join(", ")}...`);
   let best: { pair: PairInfo; result: Awaited<ReturnType<typeof runAnalysis>> } | null = null;
   const usableOrders = (c: Consensus) => c.orders.filter((o) => o.winChancePct >= cfg.minConfidence);
   const rank = (c: Consensus) => (c.stance === "BUY_NOW" ? 1000 : 0) + Math.max(...usableOrders(c).map((o) => o.evPct));
@@ -527,13 +533,13 @@ async function autoPick(cfg: BotConfig) {
   const summary = state.bot.candidates.map((c) => `${c.symbol} ${c.action}${c.confidence ? ` ${c.confidence}%` : ""}`).join(", ");
   state.lastSignal = null;
   if (!best) {
-    log(`Claude: ${summary}. No usable plan yet.`);
+    log(`AI: ${summary}. No usable plan yet.`);
     return;
   }
   const { pair, result } = best;
   state.bot.target = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, chosenAt: Date.now() };
   state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus };
-  log(`Auto-pick chose ${pair.symbol}. Claude: ${summary}. ${result.consensus.note}`, "good");
+  log(`Auto-pick chose ${pair.symbol}. AI: ${summary}. ${result.consensus.note}`, "good");
 }
 
 // Why Claude should be asked now (or null). Event-driven, plus a slow backup timer.
@@ -609,7 +615,7 @@ function buyFillPrice(o: CheckedOrder, q: Quote) {
   return o.kind === "buy_breakout" ? Math.max(o.triggerPrice, q.price) : Math.min(o.triggerPrice, q.price);
 }
 
-// New coins mode: one fast, rule-based step (no Claude). Picks the best young coin that
+// New coins mode: one fast, rule-based step (no AI). Picks the best young coin that
 // passes the rug-risk checks and entry rules, buys a small amount at the live price.
 const unpriceable = new Map<string, number>(); // pool -> skip until (no live price available yet)
 
@@ -745,7 +751,7 @@ export async function tick(persist = true) {
         } else cs.losses = 0;
         log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
         alert(`${t.pnlUsd! >= 0 ? "✅" : "🔻"} Sold ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}. Account $${equity().toFixed(2)}.`);
-        // Ask Claude for a fresh plan right away.
+        // Ask AI for a fresh plan right away.
         state.lastSignal = null;
         state.bot.armedSince = [];
         state.bot.askNow = true;
@@ -780,7 +786,7 @@ export async function tick(persist = true) {
     const planSince = () => Math.max(windowStart, state.lastSignal?.at ?? 0);
     let q = tgt ? await quote(tgt.chain, tgt.pool, planSince()) : null;
 
-    // 3. Ask Claude only when something calls for it (never more than once per 2 min).
+    // 3. Ask AI only when something calls for it (never more than once per 2 min).
     const why = claudeDue(cfg, q?.price ?? null);
     if (why && Date.now() - state.bot.lastAnalysisAt >= MIN_CLAUDE_GAP_MS) {
       // Save "asked Claude at ..." BEFORE the slow, paid call, so no other
@@ -789,14 +795,14 @@ export async function tick(persist = true) {
       state.bot.askNow = false;
       state.bot.armedSince = [];
       state.bot.skipNoted = [];
-      log(`Asking Claude for a new plan (${why})...`);
+      log(`Asking the AI for a new plan (${why})...`);
       save();
       await flush();
       if (isAuto(cfg)) {
         await autoPick(cfg);
       } else {
         const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf);
-        for (const f of results) if (!f.ok) log(`Claude failed: ${f.error}`, "bad");
+        for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
       }
       const t2 = isAuto(cfg) ? state.bot.target : tgt;
@@ -827,7 +833,7 @@ export async function tick(persist = true) {
       if (o.winChancePct < cfg.minConfidence) {
         if (triggerMet(o, q) && !state.bot.skipNoted[i]) {
           state.bot.skipNoted[i] = true;
-          log(`${t3.symbol} reached the ${label} (touched ${fmt(o.kind === "buy_breakout" ? q.high : q.low)}), but Claude gives it only a ${o.winChancePct}% win chance, below your ${cfg.minConfidence}% minimum. Not buying.`);
+          log(`${t3.symbol} reached the ${label} (touched ${fmt(o.kind === "buy_breakout" ? q.high : q.low)}), but the AI gives it only a ${o.winChancePct}% win chance, below your ${cfg.minConfidence}% minimum. Not buying.`);
         }
         continue;
       }
@@ -857,7 +863,7 @@ export async function tick(persist = true) {
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
       // Fill like a real order at the trigger price (or better/worse, see buyFillPrice).
-      const t = buy({ ...pair, priceUsd: buyFillPrice(o, q) }, usd, "bot", `Claude plan: ${label}`, {
+      const t = buy({ ...pair, priceUsd: buyFillPrice(o, q) }, usd, "bot", `AI plan: ${label}`, {
         stopLoss: o.stopLoss,
         target: o.target,
         takeProfit: o.target,

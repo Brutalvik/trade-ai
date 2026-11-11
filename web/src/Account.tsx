@@ -115,7 +115,7 @@ function Avatar({ user, size }: { user: User; size: number }) {
   );
 }
 
-export function AccountButton({ notify }: { notify: (m: string, bad?: boolean) => void }) {
+export function AccountButton({ notify, onChange }: { notify: (m: string, bad?: boolean) => void; onChange: () => void }) {
   const [user, setUser] = useState<User | null | undefined>(undefined); // undefined = still checking
   const [open, setOpen] = useState<"auth" | "profile" | null>(null);
   useEffect(() => {
@@ -131,13 +131,13 @@ export function AccountButton({ notify }: { notify: (m: string, bad?: boolean) =
       ) : (
         <button className="btn ghost signin-btn" onClick={() => setOpen("auth")}>Sign in</button>
       )}
-      {open === "auth" && <AuthModal onClose={() => setOpen(null)} onDone={(u) => { setUser(u); setOpen(null); notify(`Welcome, ${u.firstName}!`); }} />}
+      {open === "auth" && <AuthModal onClose={() => setOpen(null)} onDone={(u) => { setUser(u); setOpen(null); onChange(); notify(u.owner ? `Welcome, ${u.firstName}! Your paper account is loaded.` : `Welcome, ${u.firstName}!`); }} />}
       {open === "profile" && user && (
         <ProfileModal
           user={user}
           notify={notify}
           onClose={() => setOpen(null)}
-          onSignedOut={() => { setUser(null); setOpen(null); notify("Signed out."); }}
+          onSignedOut={() => { setUser(null); setOpen(null); onChange(); notify("Signed out. Your paper account is hidden until you sign in again."); }}
         />
       )}
     </>
@@ -233,6 +233,7 @@ function ProfileModal({ user, onClose, onSignedOut, notify }: { user: User; onCl
         <div><dt>Name</dt><dd>{user.firstName} {user.lastName} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Email</dt><dd>{user.email}</dd></div>
         <div><dt>Member since</dt><dd>{new Date(user.createdAt).toLocaleDateString()}</dd></div>
+        <div><dt>Paper account</dt><dd>{user.owner ? "Yours" : "Not linked to this login"}</dd></div>
       </dl>
       {!resetting ? (
         <button className="btn ghost" onClick={() => setResetting(true)}>Reset password</button>

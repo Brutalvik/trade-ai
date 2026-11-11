@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fmtPrice, fmtUsd, type AppState, type Trade } from "./api";
+import { aiText, fmtPrice, fmtUsd, type AppState, type Trade } from "./api";
 import { playTradeSound } from "./sounds";
 
 type Note = { id: string; trade?: Trade; pick?: { symbol: string; chain: string; pool: string; detail: string } };
@@ -29,7 +29,7 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
     lastPick.current = key;
     const orders = state.lastSignal?.pool === tgt!.pool ? state.lastSignal.consensus.orders : [];
     const best = orders.slice().sort((a, b) => b.winChancePct - a.winChancePct)[0];
-    const detail = best ? `Claude's best order: ${best.kind === "buy_dip" ? "buy the dip" : best.kind === "buy_breakout" ? "buy the breakout" : "buy now"} at ${fmtPrice(best.triggerPrice)} (${best.winChancePct}% win chance)` : "Waiting for Claude's plan";
+    const detail = best ? `The AI's best order: ${best.kind === "buy_dip" ? "buy the dip" : best.kind === "buy_breakout" ? "buy the breakout" : "buy now"} at ${fmtPrice(best.triggerPrice)} (${best.winChancePct}% win chance)` : "Waiting for the AI's plan";
     const id = `pick-${key}`;
     setNotes((n) => [{ id, pick: { symbol: tgt!.symbol, chain: tgt!.chain, pool: tgt!.pool, detail } }, ...n].slice(0, 4));
     setTimeout(() => dismiss(id), SHOW_MS);
@@ -38,6 +38,10 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
   useEffect(() => {
     if (!state) return;
     const botTrades = state.trades.filter((t) => t.source === "bot" || t.auto); // bot trades + protected sells
+    if (state.signedOut) {
+      seen.current = null; // signed out: start fresh after signing back in (no flood of old trades)
+      return;
+    }
     if (!seen.current) {
       seen.current = new Set(botTrades.map((t) => t.id)); // first load: remember, don't announce
       return;
@@ -97,7 +101,7 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
                 </>
               )}
             </div>
-            <div className="muted tiny">{t.reason.replace(/^Claude plan: /, "Claude's order: ")} · {new Date(t.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
+            <div className="muted tiny">{aiText(t.reason).replace(/^AI plan: /, "AI order: ")} · {new Date(t.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
           </div>
         );
       })}

@@ -130,8 +130,8 @@ async function askClaude(prompt: string): Promise<Plan> {
     system: SYSTEM,
     messages: [{ role: "user", content: prompt }],
   });
-  if (res.stop_reason === "refusal") throw new Error("Claude declined this request");
-  if (!res.parsed_output) throw new Error(`Claude returned no parseable signal (${res.stop_reason})`);
+  if (res.stop_reason === "refusal") throw new Error("The AI declined this request");
+  if (!res.parsed_output) throw new Error(`The AI returned no parseable signal (${res.stop_reason})`);
   return res.parsed_output;
 }
 
@@ -159,9 +159,9 @@ async function timed(model: string, fn: () => Promise<Plan>): Promise<ModelResul
 export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "") {
   const prompt = buildPrompt(pair, frames, costPct, context);
   const jobs: Promise<ModelResult>[] = [];
-  if (hasClaude()) jobs.push(timed(`Claude (${CLAUDE_MODEL})`, () => askClaude(prompt)));
+  if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt)));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
-  if (!jobs.length) throw new Error("Claude is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
+  if (!jobs.length) throw new Error("AI is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
   const results = await Promise.all(jobs);
   return { results, consensus: combine(results, costPct, pair.priceUsd) };
 }
@@ -237,7 +237,7 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   let note =
     stance === "AVOID"
       ? plan.stance === "AVOID"
-        ? "Claude says stay out for now."
+        ? "The AI says stay out for now."
         : `No order passed the fee/risk check (${dropped.join("; ")}).`
       : `Standing orders: ${kept.map(describe).join(" or ")}.`;
   if (kept.length && dropped.length) note += ` Dropped: ${dropped.join("; ")}.`;

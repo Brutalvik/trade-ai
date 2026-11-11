@@ -94,11 +94,28 @@ async function sessionUser(req: Request): Promise<User | null> {
   }
 }
 
+// ---------- Paper account owner ----------
+// The paper account and bot belong to one login. OWNER_USERNAME (Vercel setting) picks it;
+// without it, the first account to sign in after this was added claims it, once.
+async function ownerName(claimFor?: User | null) {
+  const fromEnv = process.env.OWNER_USERNAME?.trim().toLowerCase();
+  if (fromEnv) return fromEnv;
+  if (claimFor) await store.kvSet("owner", claimFor.username.toLowerCase(), { nx: true });
+  return (await store.kvGet<string>("owner")) ?? null;
+}
+
+// True if this request comes from the signed-in owner of the paper account.
+export async function isOwner(req: Request) {
+  const u = await sessionUser(req);
+  return !!u && (await ownerName(u)) === u.username.toLowerCase();
+}
+
 // ---------- Routes ----------
 
 export async function me(req: Request) {
   const u = await sessionUser(req);
-  return { user: u ? pub(u) : null };
+  const owner = u ? (await ownerName(u)) === u.username.toLowerCase() : false;
+  return { user: u ? { ...pub(u), owner } : null };
 }
 
 export async function signUp(req: Request, res: Response) {
@@ -119,7 +136,7 @@ export async function signUp(req: Request, res: Response) {
     throw new Error("An account with that email already exists");
   }
   await setSession(res, user);
-  return { user: pub(user) };
+  return { user: { ...pub(user), owner: (await ownerName(user)) === user.username.toLowerCase() } };
 }
 
 export async function signIn(req: Request, res: Response) {
@@ -138,7 +155,7 @@ export async function signIn(req: Request, res: Response) {
   }
   await store.kvDel(failKey);
   await setSession(res, user);
-  return { user: pub(user) };
+  return { user: { ...pub(user), owner: (await ownerName(user)) === user.username.toLowerCase() } };
 }
 
 export async function signOut(_req: Request, res: Response) {

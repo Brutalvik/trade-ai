@@ -44,7 +44,7 @@ function TermsModal({ onClose }: { onClose: () => void }) {
           <p className="muted small">Last updated {LAST_UPDATED}</p>
 
           <h3>1. What this app is</h3>
-          <p>NEXUS//TRADE is an experimental tool that shows crypto market data, asks an AI model (Claude) for trading plans, and runs a bot that follows those plans. By using it you agree to these terms.</p>
+          <p>NEXUS//TRADE is an experimental tool that shows crypto market data, asks an AI model for trading plans, and runs a bot that follows those plans. By using it you agree to these terms.</p>
 
           <h3>2. Paper trading only</h3>
           <p>All trades in this app are simulated ("paper trading"). No real money or crypto is bought, sold or held. Simulated fees and slippage are estimates; real results would differ.</p>
@@ -56,7 +56,7 @@ function TermsModal({ onClose }: { onClose: () => void }) {
           <p>Crypto, especially small "memecoin" tokens, is extremely risky. Prices can drop to zero within minutes, tokens can be scams ("rug pulls"), and stop-losses may sell well below their set price in fast markets. Past or simulated performance does not predict future results. Never trade money you can't afford to lose.</p>
 
           <h3>5. Data and AI</h3>
-          <p>Prices and charts come from third-party sources (such as CoinMarketCap, GeckoTerminal, DexScreener, Coinbase and OKX) and may be delayed, incomplete or wrong. AI responses come from Anthropic's Claude and may contain errors. The app may be unavailable or behave unexpectedly.</p>
+          <p>Prices and charts come from third-party sources (such as CoinMarketCap, GeckoTerminal, DexScreener, Coinbase and OKX) and may be delayed, incomplete or wrong. AI responses come from a third-party AI model and may contain errors. The app may be unavailable or behave unexpectedly.</p>
 
           <h3>6. Costs</h3>
           <p>Using the AI features calls paid APIs on the account whose keys are configured. You are responsible for those costs and for any limits you set with the providers.</p>

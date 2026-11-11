@@ -66,11 +66,21 @@ app.get("/api/scan", wrap(async (req) => scanOpportunities(String(req.query.chai
 // New coins: young pools with a rug-risk score (Solana via RugCheck, Base via honeypot.is).
 app.get("/api/newcoins", wrap(async (req) => scanNewCoins(String(req.query.chain ?? "solana") as NewCoinChain)));
 
-app.post("/api/analyze", wrap(async (req) => engine.runAnalysis(req.body.chain, req.body.pool, req.body.tf ?? "5m")));
+// The paper account belongs to the signed-in owner: everyone else sees $0 and can't trade.
+const ownerOnly = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
+  if (!(await auth.isOwner(req).catch(() => false))) {
+    res.status(401).json({ error: "Sign in to use your paper account." });
+    return;
+  }
+  return fn(req, res);
+};
+
+app.post("/api/analyze", ownerOnly(wrap(async (req) => engine.runAnalysis(req.body.chain, req.body.pool, req.body.tf ?? "5m"))));
 
 app.get(
   "/api/state",
-  wrap(async () => {
+  wrap(async (req) => {
+    if (!(await auth.isOwner(req).catch(() => false))) return engine.emptyView();
     await engine.refreshPositionPrices();
     return engine.getState();
   }),
@@ -78,15 +88,15 @@ app.get(
 
 app.post(
   "/api/trade",
-  wrap(async (req) => {
+  ownerOnly(wrap(async (req) => {
     const { side, chain, pool, usd, positionId, fraction } = req.body;
     const pair = await getPair(chain, pool);
     if (side === "BUY") return engine.buy(pair, Number(usd), "manual", "Manual buy");
     return engine.sell(positionId, pair.priceUsd, Number(fraction ?? 1), "Manual sell");
-  }),
+  })),
 );
 
-app.post("/api/settings", wrap(async (req) => engine.updateSettings(req.body)));
+app.post("/api/settings", ownerOnly(wrap(async (req) => engine.updateSettings(req.body))));
 
 // Accounts (don't touch the trading state, so no sync/flush needed).
 const authRoute = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
@@ -103,11 +113,11 @@ app.post("/api/auth/signup", authRoute(auth.signUp));
 app.post("/api/auth/signin", authRoute(auth.signIn));
 app.post("/api/auth/signout", authRoute(auth.signOut));
 app.post("/api/auth/password", authRoute(auth.changePassword));
-app.post("/api/reset", wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10))));
-app.post("/api/bot/start", wrap(async (req) => engine.startBot(req.body)));
-app.post("/api/bot/stop", wrap(async () => engine.stopBot()));
+app.post("/api/reset", ownerOnly(wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10)))));
+app.post("/api/bot/start", ownerOnly(wrap(async (req) => engine.startBot(req.body))));
+app.post("/api/bot/stop", ownerOnly(wrap(async () => engine.stopBot())));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
-app.post("/api/protect", wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0))));
+app.post("/api/protect", ownerOnly(wrap(async (req) => engine.protectPosition(String(req.body.positionId), Number(req.body.pct ?? 0)))));
 
 // While the dashboard is open it pings this every ~20 s. It only runs a bot step
 // if one is due, and Claude is only asked on the bot's own schedule, so extra

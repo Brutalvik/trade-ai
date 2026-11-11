@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
+import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { AccountButton, SettingsButton } from "./Account";
@@ -145,6 +145,11 @@ export default function App() {
       <TopBar status={status} state={state} onSelect={selectPair} notify={notify} refresh={() => api.state().then(setState)} />
       <BotTradeNotifications state={state} onOpen={openPool} />
       <UpdateBanner serverCommit={status?.commit} />
+      {state?.signedOut && (
+        <div className="banner signed-out">
+          <b>You're signed out.</b> Your paper account, trades and bot are hidden. Sign in (top right) to see them and trade.
+        </div>
+      )}
       {status?.storage === "temp" && (
         <div className="banner">
           <b>The bot can't stay on yet.</b> This server has nowhere permanent to save the bot and your paper account, so they reset. Add the free Upstash Redis database in Vercel (Storage tab), then redeploy. Steps are in the README.
@@ -273,14 +278,14 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
         <SettingsButton alerts={status?.alerts ?? null} continuous={!!state?.settings.continuous} onSaved={refresh} notify={notify} />
         <SoundToggle />
         <span className="badge paper">PAPER MODE</span>
-        <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="Claude API key">Claude</span>
+        <span className={`ai-dot ${status?.claude ? "on" : ""}`} title="AI key">AI</span>
         {status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
         <div className="equity">
           <small>EQUITY</small>
           <b>{fmtUsd(eq)}</b>
           <small className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</small>
         </div>
-        <AccountButton notify={notify} />
+        <AccountButton notify={notify} onChange={refresh} />
       </div>
     </header>
   );
@@ -407,15 +412,15 @@ function PredictionInfo({ pct }: { pct: number }) {
               <button className="chip" onClick={() => setOpen(false)} aria-label="Close">✕</button>
             </div>
             <div className="modal-body">
-              <p className="pred-big"><b>{pct}%</b> means Claude expects this to work about <b>{wins} times out of 10</b>, and not about {10 - wins} times out of 10.</p>
+              <p className="pred-big"><b>{pct}%</b> means the AI expects this to work about <b>{wins} times out of 10</b>, and not about {10 - wins} times out of 10.</p>
               <h3>A prediction, not a promise</h3>
-              <p>Claude reads the charts (5-second, 5-minute, hourly and daily candles) and estimates the chance the price reaches the target before it hits the exit. Any single trade either wins or loses: the percentage only shows up over many trades. Memecoins move fast, and Claude can be wrong.</p>
+              <p>The AI reads the charts (5-second, 5-minute, hourly and daily candles) and estimates the chance the price reaches the target before it hits the exit. Any single trade either wins or loses: the percentage only shows up over many trades. Memecoins move fast, and the AI can be wrong.</p>
               <h3>Why trade below 50%?</h3>
               <p>Because a win is bigger than a loss. For example, at 45% with +12% on a win and −7.4% on a loss, the average is about +1.3% per trade after fees. The bot skips any order whose average comes out negative, and any order below your minimum win chance (Safe 55%, Balanced 45%, Aggressive 40%).</p>
               <h3>Expect losing streaks</h3>
               <p>At around 40%, three losses in a row happen about 1 time in 5. Keep the risk per trade at a level you're comfortable losing several times.</p>
               <h3>Check if the predictions hold up</h3>
-              <p>After 20–30 bot trades, open <b>Trade history → Track record</b>: it compares Claude's predicted win chance with how often trades really won. If real results are clearly lower, raise the minimum win chance.</p>
+              <p>After 20–30 bot trades, open <b>Trade history → Track record</b>: it compares the AI's predicted win chance with how often trades really won. If real results are clearly lower, raise the minimum win chance.</p>
             </div>
             <div className="modal-foot">
               <button className="btn buy" onClick={() => setOpen(false)}>Got it</button>
@@ -442,7 +447,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
     const kind = !sig || sig.stance !== "AVOID"
       ? null
       : sig.note.startsWith("No order passed")
-        ? { label: "No profit after fees", tone: "hold", text: `Claude found trades, but none make money after the ~${cost.toFixed(1)}% fees and slippage per trade.` }
+        ? { label: "No profit after fees", tone: "hold", text: `The AI found trades, but none make money after the ~${cost.toFixed(1)}% fees and slippage per trade.` }
         : risk === "EXTREME" || risk === "HIGH"
           ? { label: "Too risky right now", tone: "sell", text: "" }
           : { label: "No clear edge", tone: "hold", text: `The coin may be fine, but its moves are too small or unclear to beat the ~${cost.toFixed(1)}% cost of a trade.` };
@@ -474,7 +479,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
     setLoading(true);
     try {
       onResult(await api.analyze(pair.chain, pair.pool, tf));
-      if (auto) notify(`${pair.symbol}: the old plan ran out, so Claude made a new one`);
+      if (auto) notify(`${pair.symbol}: the old plan ran out, so the AI made a new one`);
     } catch (e: any) {
       if (!auto) notify(e.message, true);
     } finally {
@@ -506,7 +511,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         <span>AI SIGNAL</span>
         <span className="title-actions">
           {sig && (explain.why || sig.note) && (
-            <button className={`info-btn ${glow ? "glow" : ""}`} onClick={openInfo} aria-label="Why Claude decided this" title="Why Claude decided this">
+            <button className={`info-btn ${glow ? "glow" : ""}`} onClick={openInfo} aria-label="Why the AI decided this" title="Why the AI decided this">
               i
             </button>
           )}
@@ -517,7 +522,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         <div className="modal-backdrop" onClick={() => setInfoOpen(false)}>
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="why-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h2 id="why-title">Why Claude says {STANCE_LABEL[sig.stance ?? "AVOID"]}</h2>
+              <h2 id="why-title">Why the AI says {STANCE_LABEL[sig.stance ?? "AVOID"]}</h2>
               <button className="chip" onClick={() => setInfoOpen(false)} aria-label="Close">✕</button>
             </div>
             <div className="modal-body why-body">
@@ -527,19 +532,19 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
                 {explain.risk && <span className="muted tiny">Risk: {explain.risk}</span>}
               </div>
               {explain.kind?.text && <p>{explain.kind.text}</p>}
-              {explain.why && <p><b>Claude:</b> {explain.why}</p>}
-              {sig.note && <p className="muted">{sig.note}</p>}
+              {explain.why && <p><b>AI:</b> {aiText(explain.why)}</p>}
+              {sig.note && <p className="muted">{aiText(sig.note)}</p>}
             </div>
           </div>
         </div>,
         document.body,
       )}
-      {!hasAI && <p className="muted small">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> to enable Claude analysis.</p>}
+      {!hasAI && <p className="muted small">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> to enable AI analysis.</p>}
       {sig ? (
         <>
           {analyzedAt && (
             <p className="muted tiny">
-              {loading ? "Claude is making a new plan…" : `Analyzed ${fmtAgo(analyzedAt)} · kept until you press Analyze again${stale ? ` (re-checking: ${stale})` : ", or until it can no longer play out"}`}
+              {loading ? "The AI is making a new plan…" : `Analyzed ${fmtAgo(analyzedAt)} · kept until you press Analyze again${stale ? ` (re-checking: ${stale})` : ", or until it can no longer play out"}`}
             </p>
           )}
           <div className={`verdict ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>
@@ -554,7 +559,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
                 <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
               ))}
               <div className="muted tiny">
-                Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then Claude makes a new one.
+                Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then the AI makes a new one.
               </div>
             </div>
           )}
@@ -568,7 +573,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
             {results?.map((r) => (
               <details key={r.model} className="model">
                 <summary>
-                  <span>{r.model}</span>
+                  <span>{aiText(r.model)}</span>
                   {r.ok ? <span className={`tag ${r.signal.stance === "BUY_NOW" ? "buy" : r.signal.stance === "AVOID" ? "sell" : "hold"}`}>{STANCE_LABEL[r.signal.stance]} {r.signal.confidence}%</span> : <span className="tag sell">ERROR</span>}
                 </summary>
                 {r.ok ? <p className="small">{r.signal.reasoning} <span className="muted">Risk: {r.signal.riskLevel}. {(r.ms / 1000).toFixed(1)}s</span></p> : <p className="small down">{r.error}</p>}
@@ -577,7 +582,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
         </>
       ) : (
-        <p className="muted small">Press Analyze to get Claude's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
+        <p className="muted small">Press Analyze to get the AI's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
       )}
     </div>
   );
@@ -762,7 +767,7 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
         </label>
       </div>
       <p className="small">
-        A buy plus a sell costs about <b>{roundTrip.toFixed(1)}%</b>. A trade has to gain more than that just to break even, so lower costs mean Claude finds more trades worth taking.
+        A buy plus a sell costs about <b>{roundTrip.toFixed(1)}%</b>. A trade has to gain more than that just to break even, so lower costs mean the AI finds more trades worth taking.
       </p>
     </>
   );
@@ -915,7 +920,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             ))}
           </div>
           <p className="preset-blurb small">
-            Fast, rule-based (no Claude): buys young coins that pass the rug checks (Low or Medium risk), are 20+ min old with $25K+ liquidity and more buyers than sellers. Tiny positions ({cfg.newCoinPct}% each), stop -{cfg.newStopPct}%, sells half at +{cfg.newTakePct}% then trails, sells within {cfg.newMaxMin} min, max {cfg.newMaxPerDay} a day. Very high risk: paper only.
+            Fast, rule-based (no AI): buys young coins that pass the rug checks (Low or Medium risk), are 20+ min old with $25K+ liquidity and more buyers than sellers. Tiny positions ({cfg.newCoinPct}% each), stop -{cfg.newStopPct}%, sells half at +{cfg.newTakePct}% then trails, sells within {cfg.newMaxMin} min, max {cfg.newMaxPerDay} a day. Very high risk: paper only.
           </p>
         </>
       )}
@@ -926,7 +931,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
               <button key={t.id} className={`chip ${shownChain === t.id ? "on" : ""}`} onClick={() => setAutoChain(t.id)} disabled={running}>{t.label}</button>
             ))}
           </div>
-          <p className="preset-blurb small">Each round it scans trending coins, asks Claude about the top 3 in the buy zone (3 paid calls), and buys the one Claude is most sure about. Skips coins with under $50K liquidity.</p>
+          <p className="preset-blurb small">Each round it scans trending coins, asks the AI about the top 3 in the buy zone (3 paid calls), and buys the one the AI is most sure about. Skips coins with under $50K liquidity.</p>
         </>
       )}
 
@@ -947,7 +952,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
             </div>
           ) : plan && planOrders.length > 0 && !planOrders.some((o) => o.winChancePct >= (active?.minConfidence ?? 0)) ? (
             <div className="muted">
-              Claude's best order for <b>{plan.symbol}</b> has a {Math.max(...planOrders.map((o) => o.winChancePct))}% win chance, below your {active?.minConfidence}% minimum, so none will be used. Next plan by {fmtTime(Math.min(plan.consensus.expiresAt, (state?.bot.lastAnalysisAt ?? 0) + (active?.analyzeEverySec ?? 1800) * 1000))}, sooner if the market moves.
+              The AI's best order for <b>{plan.symbol}</b> has a {Math.max(...planOrders.map((o) => o.winChancePct))}% win chance, below your {active?.minConfidence}% minimum, so none will be used. Next plan by {fmtTime(Math.min(plan.consensus.expiresAt, (state?.bot.lastAnalysisAt ?? 0) + (active?.analyzeEverySec ?? 1800) * 1000))}, sooner if the market moves.
             </div>
           ) : plan && planOrders.length > 0 ? (
             <div>
@@ -958,18 +963,18 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                   {describeOrder(o, active?.waitForHold)} · {o.winChancePct}% win chance{o.winChancePct < (active?.minConfidence ?? 0) ? " (below your minimum)" : ""}
                 </div>
               ))}
-              <div className="muted tiny">Plan cancels at {fmtTime(plan.consensus.expiresAt)} or if the price leaves its range; then Claude makes a new one.</div>
+              <div className="muted tiny">Plan cancels at {fmtTime(plan.consensus.expiresAt)} or if the price leaves its range; then the AI makes a new one.</div>
               <button className="chip" onClick={() => onOpen(active?.pick === "auto" ? (target?.chain ?? "solana") : active!.chain, plan.pool)}>View</button>
             </div>
           ) : (
             <div className="muted">
-              {state?.bot.lastAnalysisAt ? `Claude's last plan (${fmtTime(state.bot.lastAnalysisAt)}): no orders worth placing. It will be asked again by ${fmtTime(state.bot.lastAnalysisAt + (active?.analyzeEverySec ?? 1800) * 1000)}, sooner if the market moves.` : "Starting up: getting Claude's first plan."}
+              {state?.bot.lastAnalysisAt ? `The AI's last plan (${fmtTime(state.bot.lastAnalysisAt)}): no orders worth placing. It will be asked again by ${fmtTime(state.bot.lastAnalysisAt + (active?.analyzeEverySec ?? 1800) * 1000)}, sooner if the market moves.` : "Starting up: getting the AI's first plan."}
             </div>
           )}
           {candidates.length > 0 && !botPos && (
             <div className="cands">
               {candidates.map((c) => (
-                <span key={c.pool} className={`tag ${c.action === "BUY" ? "buy" : c.action === "ERROR" ? "sell" : "hold"}`} title={c.note}>
+                <span key={c.pool} className={`tag ${c.action === "BUY" ? "buy" : c.action === "ERROR" ? "sell" : "hold"}`} title={aiText(c.note ?? "")}>
                   {c.symbol} {c.action}{c.confidence ? ` ${c.confidence}%` : ""}
                 </span>
               ))}
@@ -1006,11 +1011,11 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
               <p className="preset-blurb small">{isCustom ? "Your own numbers. Type them below; each box explains what it does." : PRESETS[preset!].blurb}</p>
 
               <ul className="plan small">
-                <li>Sizes each trade so that hitting Claude's exit loses about <b>{shown.riskPerTradePct}%</b> of the account (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)}), never more than {fmtUsd(perTrade)} ({shown.positionPct}% of cash)</li>
-                <li>Claude writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
-                <li>Sells below Claude's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
-                <li>At Claude's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
-                <li>Asks Claude again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
+                <li>Sizes each trade so that hitting the AI's exit loses about <b>{shown.riskPerTradePct}%</b> of the account (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)}), never more than {fmtUsd(perTrade)} ({shown.positionPct}% of cash)</li>
+                <li>The AI writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
+                <li>Sells below the AI's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
+                <li>At the AI's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
+                <li>Asks the AI again after each trade or when the plan expires (backup check every {shown.analyzeMin} min)</li>
                 <li>No dip buys while a coin is falling (down more than <b>{shown.maxDrop1hPct}%</b> in an hour, or a 1-hour downtrend)</li>
                 <li>After a losing trade, waits <b>{shown.cooldownMin} min</b> before re-buying that coin; skips it for the day after 2 losses in a row</li>
                 <li>Stops opening trades for the day after losing <b>{shown.dailyLossPct}%</b> in a day</li>
@@ -1020,7 +1025,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 <input type="checkbox" checked={running ? Boolean(active?.waitForHold) : waitForHold} onChange={(e) => setWaitForHold(e.target.checked)} disabled={running} />
                 <span>
                   Wait for the price to hold before buying
-                  <span className="muted tiny"> · Off: buys the instant a trigger price is hit. On: waits the few seconds Claude suggests, so it doesn't buy into a spike or a crash that's still going. Sells are always instant.</span>
+                  <span className="muted tiny"> · Off: buys the instant a trigger price is hit. On: waits the few seconds the AI suggests, so it doesn't buy into a spike or a crash that's still going. Sells are always instant.</span>
                 </span>
               </label>
 
@@ -1032,7 +1037,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 <label>
                   Risk per trade (% of account)
                   <input type="number" step="0.5" value={shown.riskPerTradePct} onChange={set("riskPerTradePct")} disabled={running} />
-                  <small>How much one losing trade should cost. The bot sizes each trade from Claude's exit price so that hitting it loses about this much (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)} now). Smaller = survives losing streaks.</small>
+                  <small>How much one losing trade should cost. The bot sizes each trade from the AI's exit price so that hitting it loses about this much (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)} now). Smaller = survives losing streaks.</small>
                 </label>
                 <label>
                   Max money per trade (% of cash)
@@ -1042,12 +1047,12 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 <label>
                   Minimum win chance (%)
                   <input type="number" value={shown.minConfidence} onChange={set("minConfidence")} disabled={running} />
-                  <small>For each order, Claude estimates the chance it reaches its target before its exit price. Orders below this aren't used. Every order must also make money on average after fees. Higher = fewer, safer trades.</small>
+                  <small>For each order, the AI estimates the chance it reaches its target before its exit price. Orders below this aren't used. Every order must also make money on average after fees. Higher = fewer, safer trades.</small>
                 </label>
                 <label>
                   Backup re-check (minutes)
                   <input type="number" value={shown.analyzeMin} onChange={set("analyzeMin")} disabled={running} />
-                  <small>Claude is asked after every trade and whenever its plan expires or the price leaves its range. This is the longest it waits otherwise. Each ask costs a few cents.</small>
+                  <small>The AI is asked after every trade and whenever its plan expires or the price leaves its range. This is the longest it waits otherwise. Each ask costs a few cents.</small>
                 </label>
                 <label>
                   Emergency stop if I lose (%)
@@ -1062,7 +1067,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 <label>
                   Trailing stop (%)
                   <input type="number" value={shown.trailPct} onChange={set("trailPct")} disabled={running} />
-                  <small>After Claude's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
+                  <small>After the AI's target is reached, it keeps holding while the price climbs and sells if it falls this much from its highest point.</small>
                 </label>
                 <label>
                   Skip dips if it fell more than (% in 1 hour)
@@ -1113,7 +1118,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         <button className="btn buy wide" onClick={start} disabled={mode === "this" && !pair}>{mode === "newcoins" ? `START NEW COINS BOT (${newChain === "solana" ? "Solana" : "Base"})` : mode === "auto" ? "START AUTO-PICK BOT" : `START BOT ON ${pair?.symbol ?? "…"}`}</button>
       )}
       <p className="muted small run-mode-hint">{state?.settings.continuous ? "Trades continuously until you stop it." : "Stops by itself after one profitable trade."} Change this in Settings (wrench, top right).</p>
-      <p className="muted small">{mode === "newcoins" ? "New coins mode does not call Claude: it follows fixed safety and exit rules, so it is free to run." : multi ? "Each AI check calls Claude and ChatGPT (a few cents). The bot buys only when both agree and reward beats risk after fees." : "Claude is in charge. Each check is a paid Claude call (a few cents), and it only buys when reward beats risk after fees."}</p>
+      <p className="muted small">{mode === "newcoins" ? "New coins mode does not call the AI: it follows fixed safety and exit rules, so it is free to run." : multi ? "Each AI check calls two AI models (a few cents). The bot buys only when both agree and reward beats risk after fees." : "The AI is in charge. Each check is a paid the AI call (a few cents), and it only buys when reward beats risk after fees."}</p>
     </div>
   );
 }
@@ -1200,7 +1205,7 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
         {data?.source === "boosted" ? (
           <span className="warn">Trending data is busy, so this list shows tokens <b>promoted (paid) on DexScreener</b>. Be extra careful.</span>
         ) : (
-          <span>Top trending coins with a quick plan from their live trading stats (free, no AI). Click <b>Ask Claude</b> for a proper plan before buying.</span>
+          <span>Top trending coins with a quick plan from their live trading stats (free, no AI). Click <b>Ask AI</b> for a proper plan before buying.</span>
         )}
       </div>
       {err && <p className="down small pad">{err}</p>}
@@ -1237,7 +1242,7 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
                   <td className={`hide-sm ${pair.change.h24 >= 0 ? "up" : "down"}`}>{fmtPct(pair.change.h24)}</td>
                   <td title={plan?.why}>
                     {a && a !== "loading" ? (
-                      <span className={`tag ${a.stance === "BUY_NOW" ? "buy" : a.stance === "AVOID" ? "sell" : "hold"}`}>Claude: {STANCE_LABEL[a.stance ?? "AVOID"]} {a.confidence}%</span>
+                      <span className={`tag ${a.stance === "BUY_NOW" ? "buy" : a.stance === "AVOID" ? "sell" : "hold"}`}>AI: {STANCE_LABEL[a.stance ?? "AVOID"]} {a.confidence}%</span>
                     ) : (
                       <span className={`tag ${go ? "buy" : plan?.verdict === "AVOID" ? "sell" : "hold"}`}>{plan?.verdict ?? "DATA BUSY"}</span>
                     )}
@@ -1258,10 +1263,10 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
                       <td className="hide-sm small">buy by {fmtTime(plan.buyBy)}<br />sell by {fmtTime(plan.sellBy)}</td>
                     </>
                   ) : (
-                    <td colSpan={4} className="muted small">{a && a !== "loading" ? "Claude: no orders worth placing now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask Claude." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}</td>
+                    <td colSpan={4} className="muted small">{a && a !== "loading" ? "AI: no orders worth placing now." : !plan ? "Chart data is busy. Rescan in a minute, or Ask AI." : plan.verdict === "AVOID" ? "Don't buy." : "Wait for a clearer setup."}</td>
                   )}
                   <td onClick={(e) => e.stopPropagation()}>
-                    <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask Claude"}</button>
+                    <button className="chip" disabled={a === "loading"} onClick={() => askClaude(pair)}>{a === "loading" ? "Asking…" : "Ask AI"}</button>
                   </td>
                 </tr>
               );
@@ -1290,8 +1295,8 @@ const LINE_HELP: Record<string, string> = {
   TARGET: "Profit target: at this price the bot starts trailing the high to lock in gains.",
   "TRAILING STOP": "Follows the price up; sells if it falls back to this line.",
   "PROTECT STOP": "Your manual trade sells if the price falls back to this line.",
-  "BUY BELOW": "Claude's standing order: the bot buys if the price dips to this line.",
-  "BUY ABOVE": "Claude's standing order: the bot buys if the price breaks above this line.",
+  "BUY BELOW": "The AI's standing order: the bot buys if the price dips to this line.",
+  "BUY ABOVE": "The AI's standing order: the bot buys if the price breaks above this line.",
 };
 
 const RISK_TONE: Record<string, string> = { LOW: "buy", MEDIUM: "hold", HIGH: "sell", REJECTED: "sell" };
@@ -1413,20 +1418,20 @@ function TrackRecord({ state }: { state: AppState | null }) {
   const profitable = sells.filter((t) => (t.pnlUsd ?? 0) > 0).length;
   return (
     <div className="track">
-      <div className="track-title">Claude's track record</div>
+      <div className="track-title">AI track record</div>
       <div className="track-grid">
         <div><small>Bot trades</small><b>{sells.length}</b></div>
         <div><small>Profitable</small><b>{profitable} of {sells.length}</b></div>
         <div><small>Bot P&amp;L</small><b className={pnl >= 0 ? "up" : "down"}>{pnl >= 0 ? "+" : ""}{fmtUsd(pnl)}</b></div>
-        <div><small>Claude predicted</small><b>{avgPred === null ? "–" : `${avgPred.toFixed(0)}% win`}</b></div>
+        <div><small>AI predicted</small><b>{avgPred === null ? "–" : `${avgPred.toFixed(0)}% win`}</b></div>
         <div><small>Actually reached target</small><b>{hitRate === null ? "–" : `${hitRate.toFixed(0)}%`}</b></div>
       </div>
       <p className="muted tiny">
         {scored.length < 20
-          ? `Only ${scored.length} scored trade${scored.length === 1 ? "" : "s"} so far: too few to judge. After 20–30, compare "predicted" with "actually reached": if the real rate stays well below the prediction, Claude's odds are too optimistic for this market.`
+          ? `Only ${scored.length} scored trade${scored.length === 1 ? "" : "s"} so far: too few to judge. After 20–30, compare "predicted" with "actually reached": if the real rate stays well below the prediction, the AI's odds are too optimistic for this market.`
           : avgPred !== null && hitRate !== null && hitRate < avgPred - 10
-            ? "Claude's odds have been too optimistic: real results are clearly below its predictions. Raise the minimum win chance or trade less."
-            : "Real results are close to Claude's predictions so far."}
+            ? "The AI's odds have been too optimistic: real results are clearly below its predictions. Raise the minimum win chance or trade less."
+            : "Real results are close to the AI's predictions so far."}
       </p>
       {newCoinsBlock}
     </div>
@@ -1453,7 +1458,7 @@ function Trades({ state }: { state: AppState | null }) {
               <td className="mono">{fmtPrice(t.price)}</td>
               <td>{fmtUsd(t.usd)}</td>
               <td className={t.pnlUsd == null ? "" : t.pnlUsd >= 0 ? "up" : "down"}>{t.pnlUsd == null ? "–" : fmtUsd(t.pnlUsd)}</td>
-              <td className="hide-sm muted">{t.reason}</td>
+              <td className="hide-sm muted">{aiText(t.reason)}</td>
             </tr>
           ))}
         </tbody>
@@ -1467,7 +1472,7 @@ function BotLog({ state }: { state: AppState | null }) {
   return (
     <div className="log">
       {state.bot.log.map((l, i) => (
-        <div key={i} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {l.msg}</div>
+        <div key={i} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {aiText(l.msg)}</div>
       ))}
     </div>
   );
