@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { aiText, api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { RulesPage } from "./Rules";
 import { WalletButton } from "./Wallet";
 import { CoinList } from "./CoinList";
+import { RealTradePanel, solscanTx } from "./RealTrade";
 import { AccessCtx, AccountButton, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
@@ -235,7 +236,7 @@ export default function App() {
         </section>
 
         <aside className="side right">
-          {me?.tradeMode === "real" ? <RealModeNotice what="trade" /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
+          {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running && state.bot.config ? (state.bot.config.allowRisky ? Math.min(state.bot.config.minConfidence, state.bot.config.riskyMinWin ?? 30) : state.bot.config.minConfidence) : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={!!state?.bot.running} /> : <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
         </aside>
@@ -254,7 +255,7 @@ export default function App() {
               <GoalLadder state={state} />
             </>
           )}
-          {tab === "trades" && <Trades state={state} />}
+          {tab === "trades" && (me?.tradeMode === "real" ? <RealTrades /> : <Trades state={state} />)}
           {tab === "log" && <BotLog state={state} />}
         </section>
       </main>
@@ -1624,6 +1625,42 @@ function BotLog({ state }: { state: AppState | null }) {
 
 // Real mode: trading and the bot with your own wallet aren't switched on yet, so nothing
 // pretends to trade real money. The paper bot (if on) keeps running in the background.
+// Real mode's Trade history: swaps from your own wallet, each with its Solscan link.
+function RealTrades() {
+  const [rows, setRows] = useState<RealTrade[] | null>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    const load = () => api.realTrades().then(setRows).catch((e) => setErr(e.message));
+    load();
+    const id = setInterval(load, 30_000);
+    return () => clearInterval(id);
+  }, []);
+  if (err) return <p className="down small pad">{err}</p>;
+  if (!rows) return <p className="muted small pad">Loading…</p>;
+  if (!rows.length) return <p className="muted small pad">No real trades yet.</p>;
+  const amt = (n: number) => (n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n >= 1 ? n.toFixed(4) : n.toPrecision(4));
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Side</th><th>Token</th><th>Paid</th><th>Got</th><th>Status</th><th /></tr></thead>
+        <tbody>
+          {rows.map((t, i) => (
+            <tr key={(t.signature ?? "") + i}>
+              <td>{fmtTime(t.t)}</td>
+              <td className={t.side === "BUY" ? "up" : "down"}>{t.side}</td>
+              <td>{t.symbol}</td>
+              <td className="mono">{amt(t.inAmount)} {t.inSymbol}</td>
+              <td className="mono">{t.status === "Success" ? `${amt(t.outAmount)} ${t.outSymbol}` : "–"}</td>
+              <td className={t.status === "Success" ? "up" : "down"} title={t.error}>{t.status === "Success" ? "Done" : "Failed"}</td>
+              <td>{t.signature && <a href={solscanTx(t.signature)} target="_blank" rel="noreferrer">Solscan ↗</a>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function RealModeNotice({ what, botRunning }: { what: "trade" | "bot"; botRunning?: boolean }) {
   return (
     <section className="panel real-notice">
