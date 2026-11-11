@@ -673,7 +673,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
         ) : (
           <span className="title-actions">
-            {access.can("ai.analyze") ? (
+            {!sig && botOnThisCoin ? null : access.can("ai.analyze") ? (
               <button className="btn ghost" onClick={() => run()} disabled={!pair || !hasAI}>{sig ? "Analyze again" : "Analyze"}</button>
             ) : (
               <LockChip label="AI plans" />
@@ -751,8 +751,11 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         </>
       ) : (
         <>
-          {botOnThisCoin && <p className="small fresh-wait">The bot is getting a fresh AI plan for its next trade…</p>}
-          <p className="muted small">Press Analyze to get the AI's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
+          {botOnThisCoin ? (
+            <BotPlanning symbol={pair?.symbol ?? ""} icon={pair?.imageUrl} />
+          ) : (
+            <p className="muted small">Press Analyze to get the AI's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
+          )}
         </>
       )}
     </div>
@@ -2042,6 +2045,39 @@ function ChartLoading({ symbol }: { symbol: string; icon?: string }) {
 }
 
 // What the AI is doing, shown in turn while it analyzes.
+// While the bot fetches its next AI plan: the coin sits in a glowing core, three tilted orbits
+// spin around it, sparks of chart data stream inward, and a pulse ripples out when a step finishes.
+const PLAN_STEPS = ["Reading every timeframe", "Spotting chart patterns", "Checking the trade journal", "Weighing risk against reward", "Placing the orders"];
+function BotPlanning({ symbol, icon }: { symbol: string; icon?: string }) {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = window.setInterval(() => setT(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const step = Math.min(PLAN_STEPS.length - 1, Math.floor(t / 3));
+  return (
+    <div className="bot-planning" role="status" aria-live="polite" aria-label={`The bot is getting a fresh AI plan for ${symbol}`}>
+      <div className="bp-stage" aria-hidden="true">
+        <span className="bp-ripple" key={step} />
+        <span className="bp-orbit o1"><i /></span>
+        <span className="bp-orbit o2"><i /></span>
+        <span className="bp-orbit o3"><i /></span>
+        {Array.from({ length: 8 }, (_, i) => <span key={i} className="bp-spark" style={{ "--a": `${i * 45}deg`, "--d": `${(i % 4) * 0.35}s` } as CSSProperties} />)}
+        <span className="bp-core">{icon ? <img src={icon} alt="" /> : <b>{symbol.slice(0, 1)}</b>}</span>
+      </div>
+      <div className="bp-text">
+        <span className="bp-title">Planning the next trade</span>
+        <span className="bp-step" key={step}>{PLAN_STEPS[step]}…</span>
+        <span className="bp-dots">
+          {PLAN_STEPS.map((s, i) => <i key={s} className={i < step ? "done" : i === step ? "now" : ""} />)}
+          <em>{t}s</em>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 const AI_STEPS = ["Reading candles…", "Checking volume…", "Spotting the trend…", "Weighing risk…", "Writing the plan…"];
 
 // Signed out: a clearly labelled example of what the AI panel shows, with a sign-in button.

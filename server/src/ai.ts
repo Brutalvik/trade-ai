@@ -135,14 +135,14 @@ ${context ? `\n${context}\n` : ""}
 Write your trading plan (standing orders) for roughly the next few hours.`;
 }
 
-async function askClaude(prompt: string, model = CLAUDE_MODEL): Promise<{ plan: Plan; tokens: number }> {
+async function askClaude(prompt: string, model = CLAUDE_MODEL, effort: "low" | "medium" | "high" = "high"): Promise<{ plan: Plan; tokens: number }> {
   anthropic ??= new Anthropic();
   const res = await anthropic.beta.messages.parse({
     model,
     max_tokens: 16000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default", // if a safety classifier declines, retry on a fallback model
-    output_config: { effort: "high", format: betaZodOutputFormat(PlanSchema) },
+    output_config: { effort, format: betaZodOutputFormat(PlanSchema) },
     system: SYSTEM,
     messages: [{ role: "user", content: prompt }],
   });
@@ -179,7 +179,8 @@ async function timed(model: string, fn: () => Promise<{ plan: Plan; tokens: numb
 export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string) {
   const prompt = buildPrompt(pair, frames, costPct, context);
   const jobs: Promise<ModelResult>[] = [];
-  if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt, model)));
+  // The bot's own re-plans (model given) use medium effort so a new plan arrives quickly.
+  if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt, model, model ? "medium" : "high")));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
   if (!jobs.length) throw new Error("AI is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
   const results = await Promise.all(jobs);

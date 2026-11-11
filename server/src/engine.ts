@@ -629,20 +629,23 @@ const PLAN_FRAMES: { tf: Timeframe; label: string; show: number }[] = [
 async function loadFrames(chain: string, pool: string, pair: PairInfo, only?: Timeframe[]) {
   // One timeframe at a time (CoinMarketCap allows ~1 request/second); skip any that fail,
   // e.g. no daily candles yet for a brand-new coin.
-  const frames: Frame[] = [];
-  for (const f of PLAN_FRAMES.filter((x) => !only || only.includes(x.tf))) {
-    // Try twice: a free data source can briefly refuse (rate limit); don't silently drop a timeframe.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const candles = await getCandles(chain, pool, f.tf, 300, pair);
-        if (candles.length) frames.push({ ...f, candles, snap: snapshot(candles) });
-        break;
-      } catch {
-        if (attempt === 0) await new Promise((r) => setTimeout(r, 2000));
+  const wanted = PLAN_FRAMES.filter((x) => !only || only.includes(x.tf));
+  const got = await Promise.all(
+    wanted.map(async (f, i): Promise<Frame | null> => {
+      await new Promise((r) => setTimeout(r, i * 250));
+      // Try twice: a free data source can briefly refuse (rate limit); don't silently drop a timeframe.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const candles = await getCandles(chain, pool, f.tf, 300, pair);
+          return candles.length ? { ...f, candles, snap: snapshot(candles) } : null;
+        } catch {
+          if (attempt === 0) await new Promise((r) => setTimeout(r, 1200));
+        }
       }
-    }
-  }
-  return frames;
+      return null;
+    }),
+  );
+  return got.filter((f): f is Frame => f !== null);
 }
 
 export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean } = {}) {
