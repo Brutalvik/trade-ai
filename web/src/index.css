@@ -945,3 +945,4 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .ai-working-text { letter-spacing: 0 !important; text-transform: none !important; font-size: 12.5px !important; color: var(--cyan) !important; }
 .ai-candles i { display: block; flex: none; height: 5px; }
 .ai-working { font-family: Inter, system-ui, sans-serif; }
+.modal-body ul { padding-left: 18px; margin: 0 0 8px; display: flex; flex-direction: column; gap: 4px; }
