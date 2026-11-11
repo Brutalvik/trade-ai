@@ -97,6 +97,7 @@ export type BotConfig = {
   // false = wait for the price to hold past the trigger for the order's confirmSeconds.
   // Anything else (default) = buy the instant the trigger price is hit.
   waitForHold?: boolean;
+  rewardRule?: boolean; // only buy when the gain after fees is >= 1.5x the loss (default on; off = the old rules)
   // Safety rules (defaults apply when missing, including bots started before they existed).
   cooldownMin?: number; // after a losing trade, don't re-buy that coin for this long (default 30)
   dailyLossPct?: number; // stop opening trades for the rest of the UTC day after losing this % (default 10)
@@ -1166,7 +1167,7 @@ export async function tick(persist = true) {
       }
       // Reward must clearly beat risk after fees (1.5x), in every mode: a coin-flip with
       // equal-sized wins and losses loses money once fees are paid.
-      if (o.netRiskPct > 0 && o.netRewardPct < MIN_REWARD_RISK * o.netRiskPct) {
+      if (cfg.rewardRule !== false && o.netRiskPct > 0 && o.netRewardPct < MIN_REWARD_RISK * o.netRiskPct) {
         if (triggerMet(o, q))
           noteOnce(`rr:${sig.at}:${i}`, `${t3.symbol} reached the ${label}, but after fees it could gain ${o.netRewardPct.toFixed(1)}% vs lose ${o.netRiskPct.toFixed(1)}%: less than ${MIN_REWARD_RISK}x the risk. Not buying.`);
         continue;
@@ -1451,6 +1452,17 @@ async function checkLimitOrders() {
 
 // "Continue anyway": lift today's daily loss limit (until 00:00 UTC). The emergency stop
 // (account drawdown limit) still applies.
+// Turn the 1.5x reward rule on or off for the running bot (and remember it for the next start).
+export function setRewardRule(on: boolean) {
+  const cfg = state.bot.config;
+  if (cfg) cfg.rewardRule = on;
+  rec("bot.setting", on ? "Turned the 1.5x reward rule on" : "Turned the 1.5x reward rule off (old rules: setups whose gain is smaller than the risk can be bought)", { rewardRule: on, running: state.bot.running });
+  if (state.bot.running)
+    log(on ? "Reward rule on: the bot only buys when the gain after fees is at least 1.5x the possible loss." : "Reward rule off: back to the old rules. Setups whose gain is smaller than the risk can be bought (in risky mode, even ones that fail the fee check).", on ? "good" : "bad");
+  save();
+  return { ok: true, rewardRule: on };
+}
+
 export function overrideDailyLimit() {
   const today = utcDay();
   rec("consent.daily_limit", `Accepted "I understand, continue today": lifted the daily loss limit until 00:00 UTC`, {

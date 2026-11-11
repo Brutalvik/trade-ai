@@ -88,7 +88,7 @@ export function RulesPage({ presets, plans, onClose }: { presets: Record<string,
             <h2>1. How a trade happens</h2>
             <ol>
               <li><b>The AI writes a plan</b> for the coin: whether to buy, at what price, where to exit if wrong, and where to take profit.</li>
-              <li><b>The app checks every order</b> in the plan against fees and risk, and against your minimum win chance. The bot only buys when the possible gain after fees is at least <b>1.5x</b> the possible loss.</li>
+              <li><b>The app checks every order</b> in the plan against fees and risk, and against your minimum win chance. The bot only buys when the possible gain after fees is at least <b>1.5x</b> the possible loss. You can switch this rule off in Auto-pilot (<i>Gain must be 1.5× the risk</i>) to go back to the old rules, even while the bot runs.</li>
               <li><b>The bot watches the price every 5 seconds</b> and buys the moment an order's trigger is reached, if the safety rules allow it.</li>
               <li><b>It manages the trade</b> until it sells: stop-loss, break-even, profit lock, taking half early, a trailing stop past the target, and a time limit.</li>
               <li><b>After the trade</b> it waits for a fresh AI plan before buying again, and applies the cool-down and daily limits.</li>

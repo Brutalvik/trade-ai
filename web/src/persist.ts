@@ -6,7 +6,7 @@
 import type { Analysis, AppState, Candle, PairInfo, ScanResult, Timeframe } from "./api";
 
 // The bot panel's choices (preset numbers, mode, chains), kept across refreshes.
-export type SavedBotSettings = { cfg?: Record<string, number>; custom?: boolean; mode?: "this" | "auto" | "newcoins"; newChain?: "solana" | "base"; autoChain?: string; waitForHold?: boolean };
+export type SavedBotSettings = { cfg?: Record<string, number>; custom?: boolean; mode?: "this" | "auto" | "newcoins"; newChain?: "solana" | "base"; autoChain?: string; waitForHold?: boolean; rewardRule?: boolean };
 
 // One saved Claude analysis per coin (only what the page shows, not the raw data sent).
 export type SavedAnalysis = { at: number; results: Analysis["results"]; consensus: Analysis["consensus"] };

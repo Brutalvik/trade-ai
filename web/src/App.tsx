@@ -1012,6 +1012,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
   const [newChain, setNewChain] = useState<"solana" | "base">(savedBot.newChain ?? "solana");
   const [autoChain, setAutoChain] = useState<ScanChain>((savedBot.autoChain as ScanChain) ?? "all");
   const [waitForHold, setWaitForHold] = useState(savedBot.waitForHold ?? false);
+  const [rewardRule, setRewardRule] = useState(savedBot.rewardRule ?? true); // 1.5x reward rule (off = old rules)
   const [rulesOpen, setRulesOpen] = useState(false);
   // Changes in the popup are drafts: Confirm keeps them, Cancel / ✕ / Escape / clicking outside undoes them.
   const [snap, setSnap] = useState<{ cfg: typeof cfg; custom: boolean; waitForHold: boolean } | null>(null);
@@ -1066,7 +1067,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
   };
   // "Custom" shows the input boxes; picking a preset goes back to the summary view.
   const [custom, setCustom] = useState(savedBot.custom ?? false);
-  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold } }), [cfg, custom, mode, newChain, autoChain, waitForHold]);
+  useEffect(() => saveUi({ bot: { cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule } }), [cfg, custom, mode, newChain, autoChain, waitForHold, rewardRule]);
   const pick = (p: PresetKey) => {
     setCustom(false);
     setCfg({ ...cfg, ...Object.fromEntries(KNOBS.map((n) => [n, PRESETS[p][n]])) });
@@ -1089,6 +1090,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
       if (a.newChain) setNewChain(a.newChain);
       if (a.autoChain) setAutoChain(a.autoChain);
       setWaitForHold(!!a.waitForHold);
+      setRewardRule(a.rewardRule !== false);
     }
   }, [running, active]); // eslint-disable-line react-hooks/exhaustive-deps
   const preset = matchPreset(shown);
@@ -1120,7 +1122,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
     setRiskOpen(false);
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, riskyMinWin: cfg.riskyMinWin, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, rewardRule, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky, riskReasons: allowRisky ? riskReasons : undefined };
     try {
       await api.startBot(full);
       notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})${allowRisky ? " · risky mode" : ""}`);
@@ -1406,6 +1408,33 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons
         </div>,
         document.body,
       )}
+      <label className="rule-switch" title="New rule: the bot only buys when the possible gain after fees is at least 1.5 times the possible loss. Off = the old rules, which also buy setups whose gain is smaller than the risk.">
+        <span>
+          <b>Gain must be 1.5× the risk</b>
+          <span className="muted tiny">{(running ? active?.rewardRule !== false : rewardRule) ? "On: skips setups where the loss could outweigh the gain." : "Off (old rules): may buy setups whose gain is smaller than the risk."}</span>
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={running ? active?.rewardRule !== false : rewardRule}
+          className={`mini-switch ${(running ? active?.rewardRule !== false : rewardRule) ? "on" : ""}`}
+          onClick={async () => {
+            const next = !(running ? active?.rewardRule !== false : rewardRule);
+            setRewardRule(next);
+            if (running) {
+              try {
+                await api.botRewardRule(next);
+                await refresh();
+                notify(next ? "Reward rule on" : "Reward rule off: old rules", !next);
+              } catch (e: any) {
+                notify(e.message, true);
+              }
+            }
+          }}
+        >
+          <span />
+        </button>
+      </label>
       {running && active?.allowRisky && <div className="risky-pill">⚠ Risky mode: buys while falling · max 25% per trade · 5-min cool-down</div>}
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>

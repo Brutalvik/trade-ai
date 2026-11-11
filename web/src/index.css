@@ -701,3 +701,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; position: sticky; left: 0; }
 .export-btns { display: inline-flex; gap: 6px; }
+/* Auto-pilot: 1.5x reward rule switch */
+.rule-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0, 0, 0, 0.2); cursor: pointer; }
+.rule-switch > span { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.mini-switch { position: relative; flex: none; width: 40px; height: 22px; padding: 0; border-radius: 999px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.08); cursor: pointer; transition: background 0.2s, border-color 0.2s; }
+.mini-switch span { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #8a96b4; transition: transform 0.2s, background 0.2s; }
+.mini-switch.on { background: rgba(0, 245, 160, 0.18); border-color: rgba(0, 245, 160, 0.5); }
+.mini-switch.on span { transform: translateX(18px); background: var(--green, #00f5a0); }
+.mini-switch:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }

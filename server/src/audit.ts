@@ -13,6 +13,7 @@ export type AuditType =
   | "bot.start"
   | "bot.stop"
   | "bot.pause" // a safety rule paused the bot (daily loss limit, ...)
+  | "bot.setting" // a bot rule switched while it runs
   | "ai.analysis" // an AI analysis: model, tokens
   | "order.place"
   | "order.cancel"
