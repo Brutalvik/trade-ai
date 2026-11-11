@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
-import { saveChart, saveScan, saveState, saveUi, savedChart, savedScan, savedState, savedUi } from "./persist";
+import { saveAnalysis, saveChart, saveScan, saveState, saveUi, savedAnalysis, savedChart, savedScan, savedState, savedUi, type SavedAnalysis } from "./persist";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -36,7 +36,10 @@ export default function App() {
     return c ? { source: c.source, note: "" } : null;
   });
   const [state, setState] = useState<AppState | null>(() => savedState() ?? null);
-  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  // Claude's last plan for the coin on screen: kept per coin, so coming back to a coin shows it
+  // again without paying for a new analysis.
+  const [analysis, setAnalysis] = useState<SavedAnalysis | null>(() => { const p = savedUi().pair; return (p && savedAnalysis(p.pool)) || null; });
+  const gotAnalysis = useCallback((a: Analysis) => setAnalysis(saveAnalysis(a.pair.pool, a)), []);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
   const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log">(() => (savedUi().tab as "scanner" | "newcoins" | "positions" | "trades" | "log") ?? "scanner");
   useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
@@ -89,12 +92,16 @@ export default function App() {
     const c = savedChart(p.pool, tf); // show a recently seen chart instantly if we have it
     setCandles(c?.candles ?? []);
     setSource(c ? { source: c.source, note: "" } : null);
-    setAnalysis(null);
+    setAnalysis(savedAnalysis(p.pool) ?? null);
   };
 
   // Show the bot's last signal on the chart if it is for this pool.
-  const sig = analysis?.consensus ?? (state?.lastSignal?.pool === pair?.pool ? state?.lastSignal?.consensus : undefined);
-  const results = analysis?.results ?? (state?.lastSignal?.pool === pair?.pool ? state?.lastSignal?.results : undefined);
+  // Whichever is newer: your saved analysis of this coin, or the bot's latest plan for it.
+  const botSig = state?.lastSignal?.pool === pair?.pool ? state?.lastSignal : null;
+  const shownPlan = analysis && (!botSig || analysis.at >= botSig.at) ? analysis : botSig;
+  const sig = shownPlan?.consensus;
+  const results = shownPlan?.results;
+  const botOnThisCoin = !!(state?.bot.running && state.bot.config?.pool === pair?.pool && state.bot.config?.pick === "this");
   // Chart lines: the bot's open trade on this coin, otherwise Claude's standing orders.
   const lines = useMemo<ChartLine[]>(() => {
     const guarded = state?.positions.find((p) => p.pool === pair?.pool && p.source === "manual" && p.protectPct && p.peak);
@@ -148,7 +155,7 @@ export default function App() {
         </section>
 
         <aside className="side">
-          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={setAnalysis} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running ? state.bot.config?.minConfidence : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
+          <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} analyzedAt={shownPlan?.at} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={state?.bot.running ? state.bot.config?.minConfidence : undefined} botWaitForHold={state?.bot.running ? state?.bot.config?.waitForHold : undefined} />
           <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />
         </aside>
 
@@ -313,8 +320,13 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
   );
 }
 
-function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
-  const { pair, tf, sig, results, cost, onResult, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
+const fmtAgo = (t: number) => {
+  const m = Math.round((Date.now() - t) / 60_000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+};
+
+function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; analyzedAt?: number; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
+  const { pair, tf, sig, results, cost, onResult, price, botOnThisCoin, analyzedAt, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   const [loading, setLoading] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [glow, setGlow] = useState(false);
@@ -354,17 +366,37 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
     return () => window.removeEventListener("keydown", onKey);
   }, [infoOpen]);
 
-  const run = async () => {
+  const run = async (auto = false) => {
     if (!pair) return;
     setLoading(true);
     try {
       onResult(await api.analyze(pair.chain, pair.pool, tf));
+      if (auto) notify(`${pair.symbol}: the old plan ran out, so Claude made a new one`);
     } catch (e: any) {
-      notify(e.message, true);
+      if (!auto) notify(e.message, true);
     } finally {
       setLoading(false);
     }
   };
+
+  // The saved plan stays until you press Analyze, unless it can no longer play out:
+  // its time ran out, or the price left the range where its orders make sense.
+  // Then Claude is asked again automatically (only for the coin on screen, at most every
+  // 3 minutes per coin; the bot re-plans its own coin, so that one is left to the bot).
+  const stale = (() => {
+    if (!sig || !price) return "";
+    if (Date.now() > sig.expiresAt) return "the plan's time ran out";
+    if (sig.cancelBelow > 0 && price < sig.cancelBelow) return "the price fell below the plan's range";
+    if (sig.cancelAbove > 0 && price > sig.cancelAbove) return "the price rose above the plan's range";
+    return "";
+  })();
+  const lastAuto = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (!stale || !pair || !hasAI || loading || botOnThisCoin) return;
+    if (Date.now() - (lastAuto.current[pair.pool] ?? 0) < 180_000) return;
+    lastAuto.current[pair.pool] = Date.now();
+    run(true);
+  }, [stale, pair?.pool, hasAI, botOnThisCoin]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="panel">
       <div className="panel-title">
@@ -375,7 +407,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               i
             </button>
           )}
-          <button className="btn ghost" onClick={run} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : "Analyze"}</button>
+          <button className="btn ghost" onClick={() => run()} disabled={!pair || loading || !hasAI}>{loading ? "Analyzing…" : sig ? "Analyze again" : "Analyze"}</button>
         </span>
       </div>
       {infoOpen && sig && createPortal(
@@ -402,6 +434,11 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
       {!hasAI && <p className="muted small">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> to enable Claude analysis.</p>}
       {sig ? (
         <>
+          {analyzedAt && (
+            <p className="muted tiny">
+              {loading ? "Claude is making a new plan…" : `Analyzed ${fmtAgo(analyzedAt)} · kept until you press Analyze again${stale ? ` (re-checking: ${stale})` : ", or until it can no longer play out"}`}
+            </p>
+          )}
           <div className={`verdict ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>
             <span>{STANCE_LABEL[sig.stance ?? "AVOID"]}</span>
             <div className="conf"><div style={{ width: `${sig.confidence}%` }} /></div>
@@ -1026,6 +1063,7 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
     setAi((m) => ({ ...m, [p.pool]: "loading" }));
     try {
       const r = await api.analyze(p.chain, p.pool, tf);
+      saveAnalysis(p.pool, r); // opening this coin later shows the same plan, no new call
       setAi((m) => ({ ...m, [p.pool]: r.consensus }));
     } catch (e: any) {
       setAi((m) => {
