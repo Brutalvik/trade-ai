@@ -5,6 +5,7 @@ import { hasClaude, hasOpenAI } from "./ai.js";
 import { getCandlesWithSource, getPair, searchPairs, type Timeframe } from "./data.js";
 import * as engine from "./engine.js";
 import { scanOpportunities } from "./scan.js";
+import { scanNewCoins, type NewCoinChain } from "./newcoins.js";
 import { storageEnvNames } from "./store.js";
 import { alertChannel } from "./alerts.js";
 import { waitUntil } from "@vercel/functions";
@@ -57,6 +58,9 @@ app.get(
 
 // Opportunity scanner (logic in scan.ts, shared with the bot's auto-pick mode).
 app.get("/api/scan", wrap(async (req) => scanOpportunities(String(req.query.chain ?? "all"), engine.roundTripCostPct())));
+
+// New coins: young pools with a rug-risk score (Solana via RugCheck, Base via honeypot.is).
+app.get("/api/newcoins", wrap(async (req) => scanNewCoins(String(req.query.chain ?? "solana") as NewCoinChain)));
 
 app.post("/api/analyze", wrap(async (req) => engine.runAnalysis(req.body.chain, req.body.pool, req.body.tf ?? "5m")));
 

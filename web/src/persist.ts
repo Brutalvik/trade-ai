@@ -7,7 +7,7 @@ import type { AppState, Candle, PairInfo, ScanResult, Timeframe } from "./api";
 
 const KEY = "nexus-v1";
 type Saved = {
-  ui: { pair?: PairInfo; tf?: Timeframe; tab?: string; scanChain?: string };
+  ui: { pair?: PairInfo; tf?: Timeframe; tab?: string; scanChain?: string; newChain?: string };
   state?: AppState;
   charts: { key: string; candles: Candle[]; source: string }[]; // most recent first, max 3
   scans: Record<string, ScanResult>;

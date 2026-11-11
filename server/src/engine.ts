@@ -7,6 +7,7 @@ import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
+import { scanNewCoins } from "./newcoins.js";
 
 export type Position = {
   id: string;
@@ -31,6 +32,9 @@ export type Position = {
   // highest point since protection was switched on. Checked every 5 s, bot running or not.
   protectPct?: number;
   protectSince?: number;
+  strategy?: "newcoin"; // opened by the New coins mode (separate rules and scorecard)
+  partialDone?: boolean; // new coins: half already sold at the first target
+  extraSlipPct?: number; // extra slippage for thin liquidity, applied on the way out too
 };
 
 export type Trade = {
@@ -51,6 +55,7 @@ export type Trade = {
   predictedWinPct?: number;
   reachedTarget?: boolean;
   auto?: boolean; // sold automatically by "Protect this trade"
+  strategy?: "newcoin";
 };
 
 export type BotConfig = {
@@ -66,7 +71,15 @@ export type BotConfig = {
   breakEvenAtPct: number; // move stop to break-even once up this much
   goalUsd: number;
   // "this" = trade the coin above; "auto" = pick the best coin from Opportunities each round.
-  pick?: "this" | "auto";
+  pick?: "this" | "auto" | "newcoins";
+  // New coins mode (fast, rule-based, no Claude): young coins that pass the rug-risk checks.
+  newChain?: "solana" | "base";
+  newCoinPct?: number; // % of the account per new coin (default 3)
+  newStopPct?: number; // stop-loss below the buy price (default 15)
+  newTakePct?: number; // sell half at this gain (default 30)
+  newTrailPct?: number; // then trail the rest this far below its high (default 10)
+  newMaxMin?: number; // sell after this many minutes (default 45)
+  newMaxPerDay?: number; // at most this many new-coin buys per UTC day (default 5)
   autoChain?: string; // all | solana | base | ethereum | bsc
   autoCandidates?: number; // how many top coins Claude checks per round
   autoMinLiquidityUsd?: number; // skip thin coins in auto mode
@@ -247,13 +260,13 @@ export function getState() {
 
 // ---------- Broker ----------
 
-export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reason: string, plan?: Partial<Position>) {
+export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reason: string, plan?: Partial<Position>, extraSlipPct = 0) {
   if (!(usd > 0)) throw new Error("Amount must be positive");
   if (usd > state.cash + 1e-9) throw new Error(`Not enough cash ($${state.cash.toFixed(2)} available)`);
   if (!(pair.priceUsd > 0)) throw new Error("No live price for this token");
   const { feePct, slippagePct } = state.settings;
   const feeUsd = usd * (feePct / 100);
-  const fillPrice = pair.priceUsd * (1 + slippagePct / 100);
+  const fillPrice = pair.priceUsd * (1 + (slippagePct + extraSlipPct) / 100);
   const qty = (usd - feeUsd) / fillPrice;
   state.cash -= usd;
   const existing = state.positions.find((p) => p.pool === pair.pool && p.source === source);
@@ -280,7 +293,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
   const f = Math.min(1, Math.max(0.01, fraction));
   const { feePct, slippagePct } = state.settings;
   const qty = p.qty * f;
-  const fillPrice = price * (1 - slippagePct / 100);
+  const fillPrice = price * (1 - (slippagePct + (p.extraSlipPct ?? 0)) / 100);
   const gross = qty * fillPrice;
   const feeUsd = gross * (feePct / 100);
   const net = gross - feeUsd;
@@ -364,6 +377,10 @@ let timer: NodeJS.Timeout | null = null;
 let busy = false;
 
 const isAuto = (cfg: BotConfig) => cfg.pick === "auto";
+const isNew = (cfg: BotConfig) => cfg.pick === "newcoins";
+// Extra slippage on thin liquidity: buying size S from a pool with liquidity L moves the
+// price roughly 2*S/L (each side of the pool holds about half). Clamped to 0.2-10%.
+const thinSlipPct = (usd: number, liquidityUsd: number) => Math.min(10, Math.max(0.2, (200 * usd) / Math.max(liquidityUsd, 1)));
 
 export function startBot(cfg: BotConfig) {
   if (isAuto(cfg)) {
@@ -383,7 +400,9 @@ export function startBot(cfg: BotConfig) {
   state.bot.stoppedAt = null;
   cfg.trailPct = clampNum(cfg.trailPct ?? 3, 0.5, 30);
   log(
-    isAuto(cfg)
+    isNew(cfg)
+      ? `Bot started in NEW COINS mode (${cfg.newChain ?? "solana"}): ${cfg.newCoinPct ?? 3}% per coin, stop -${cfg.newStopPct ?? 15}%, half at +${cfg.newTakePct ?? 30}%, max ${cfg.newMaxPerDay ?? 5} buys a day. Cash $${state.cash.toFixed(2)}.`
+      : isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round Claude checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
       : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.`,
     "good",
@@ -571,6 +590,57 @@ function buyFillPrice(o: CheckedOrder, q: Quote) {
   return o.kind === "buy_breakout" ? Math.max(o.triggerPrice, q.price) : Math.min(o.triggerPrice, q.price);
 }
 
+// New coins mode: one fast, rule-based step (no Claude). Picks the best young coin that
+// passes the rug-risk checks and entry rules, buys a small amount at the live price.
+const unpriceable = new Map<string, number>(); // pool -> skip until (no live price available yet)
+
+async function newCoinsStep(cfg: BotConfig) {
+  const today = utcDay();
+  const boughtToday = state.trades.filter((t) => t.strategy === "newcoin" && t.side === "BUY" && utcDay(t.time) === today).length;
+  const maxPerDay = cfg.newMaxPerDay ?? 5;
+  if (boughtToday >= maxPerDay) return setBlocked(`new-coin limit reached (${boughtToday} buys today, max ${maxPerDay}); resumes at 00:00 UTC`, `newcap:${today}`);
+  setBlocked(null);
+  const list = await scanNewCoins(cfg.newChain ?? "solana"); // cached 60 s
+  for (const [pool, until] of unpriceable) if (until < Date.now()) unpriceable.delete(pool);
+  // One shot per coin per day: never re-buy a new coin the bot already traded today
+  // (after a win that would be chasing the pump; after a loss, repeating the mistake).
+  const tradedToday = new Set(state.trades.filter((t) => t.strategy === "newcoin" && utcDay(t.time) === today).map((t) => t.pool));
+  const pick = list.find((c) => c.tradeable && !tradedToday.has(c.pair.pool) && !unpriceable.has(c.pair.pool) && !coinBlock(cfg, c.pair.pool, c.pair.symbol) && !state.positions.some((p) => p.pool === c.pair.pool));
+  if (!pick) {
+    state.bot.target = null;
+    return;
+  }
+  state.bot.target = { chain: pick.pair.chain, pool: pick.pair.pool, symbol: pick.pair.symbol, chosenAt: Date.now() };
+  let q: Quote;
+  try {
+    q = await quote(pick.pair.chain, pick.pair.pool, Date.now() - 10_000);
+    if (!(q.price > 0)) throw new Error("no price");
+  } catch {
+    unpriceable.set(pick.pair.pool, Date.now() + 30 * 60_000); // not listed for live prices yet: skip it for a while
+    return;
+  }
+  const usd = Math.floor(Math.min((equity() * (cfg.newCoinPct ?? 3)) / 100, state.cash) * 100) / 100;
+  if (usd < 1) {
+    noteOnce(`newcash:${today}`, "New coins: not enough cash for another position.", "bad");
+    return;
+  }
+  const slip = thinSlipPct(usd, pick.pair.liquidityUsd);
+  const stopPct = cfg.newStopPct ?? 15, takePct = cfg.newTakePct ?? 30;
+  const t = buy({ ...q.pair, priceUsd: q.price }, usd, "bot", `New coin (${pick.risk} risk, ${pick.ageMin} min old)`, {
+    stopLoss: q.price * (1 - stopPct / 100),
+    target: q.price * (1 + takePct / 100),
+    takeProfit: q.price * (1 + takePct / 100),
+    trailPct: cfg.newTrailPct ?? 10,
+    sellBy: Date.now() + (cfg.newMaxMin ?? 45) * 60_000,
+    strategy: "newcoin",
+    extraSlipPct: slip,
+  }, slip);
+  t.strategy = "newcoin";
+  const msg = `NEW COIN BUY ${pick.pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${pick.risk} risk, ${pick.ageMin} min old, liquidity $${Math.round(pick.pair.liquidityUsd / 1000)}K, +${slip.toFixed(1)}% thin-liquidity slippage). Stop -${stopPct}%, half at +${takePct}%, sells within ${cfg.newMaxMin ?? 45} min.`;
+  log(msg, "good");
+  alert(`🚀 ${msg}`);
+}
+
 export async function tick(persist = true) {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg || busy) return;
@@ -589,13 +659,25 @@ export async function tick(persist = true) {
       if (checkDrawdown(cfg)) return;
       const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
       const cost = roundTripCostPct();
-      // Lock in a no-loss exit once the trade is far enough in profit.
-      if (gainPct >= Math.max(cfg.breakEvenAtPct, cost * 1.5)) {
+      // Lock in a no-loss exit once the trade is far enough in profit
+      // (new coins swing too hard for this: only after their half-profit sale).
+      if (gainPct >= Math.max(cfg.breakEvenAtPct, cost * 1.5) && (pos.strategy !== "newcoin" || pos.partialDone)) {
         const be = pos.entryPrice * (1 + cost / 100);
         if (!pos.stopLoss || pos.stopLoss < be) {
           pos.stopLoss = be;
           log(`${pos.symbol} up ${gainPct.toFixed(1)}%: stop moved to break-even after fees (${fmt(be)}).`, "good");
         }
+      }
+      // New coins: at the first target sell half (like a limit order), then trail the rest.
+      if (pos.strategy === "newcoin" && !pos.partialDone && pos.target && q.high >= pos.target) {
+        const t = sell(pos.id, Math.max(pos.target, price), 0.5, `New coin: half sold at +${cfg.newTakePct ?? 30}%`);
+        t.strategy = "newcoin";
+        pos.partialDone = true;
+        pos.trailing = true;
+        pos.peak = q.high;
+        log(`${pos.symbol}: sold half @ ${fmt(t.price)} (P&L +$${t.pnlUsd!.toFixed(2)}); trailing the rest ${pos.trailPct}% below its high.`, "good");
+        alert(`🚀 ${pos.symbol}: sold half @ ${fmt(t.price)}, +$${t.pnlUsd!.toFixed(2)}. Riding the rest.`);
+        return;
       }
       // At the target, don't sell yet: ride it with a trailing stop.
       const trail = pos.trailPct ?? cfg.trailPct ?? 3;
@@ -632,6 +714,7 @@ export async function tick(persist = true) {
       }
       if (reason) {
         const t = sell(pos.id, sellAt, 1, reason);
+        if (pos.strategy) t.strategy = pos.strategy;
         t.predictedWinPct = pos.predictedWinPct;
         t.reachedTarget = Boolean(pos.trailing); // trailing only starts once the target was reached
         const cs = (state.bot.coinStats[pos.pool] ??= { losses: 0, lastLossAt: 0, lossDay: utcDay() });
@@ -658,6 +741,7 @@ export async function tick(persist = true) {
     // 2. Safety rules: daily loss limit for the whole account, cool-down per coin.
     const daily = dailyBlock(cfg);
     if (daily) return setBlocked(daily, `daily:${utcDay()}`);
+    if (isNew(cfg)) return await newCoinsStep(cfg);
     if (isAuto(cfg) && state.bot.target && coinBlock(cfg, state.bot.target.pool, state.bot.target.symbol)) {
       state.bot.target = null; // pick another coin
       state.lastSignal = null;

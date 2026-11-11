@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type ScanResult, type Status, type Timeframe } from "./api";
+import { api, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type NewCoin, type Position, type ScanResult, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
@@ -38,7 +38,7 @@ export default function App() {
   const [state, setState] = useState<AppState | null>(() => savedState() ?? null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
-  const [tab, setTab] = useState<"scanner" | "positions" | "trades" | "log">(() => (savedUi().tab as "scanner" | "positions" | "trades" | "log") ?? "scanner");
+  const [tab, setTab] = useState<"scanner" | "newcoins" | "positions" | "trades" | "log">(() => (savedUi().tab as "scanner" | "newcoins" | "positions" | "trades" | "log") ?? "scanner");
   useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
   useEffect(() => { if (state) saveState(state); }, [state]);
 
@@ -161,13 +161,14 @@ export default function App() {
 
         <section className="panel bottom">
           <div className="tabs">
-            {(["scanner", "positions", "trades", "log"] as const).map((t) => (
+            {(["scanner", "newcoins", "positions", "trades", "log"] as const).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {t === "scanner" ? "⚡ Opportunities" : t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
+                {t === "scanner" ? "⚡ Opportunities" : t === "newcoins" ? "🚀 New coins" : t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Bot log"}
               </button>
             ))}
           </div>
           {tab === "scanner" && <Scanner onSelect={selectPair} notify={notify} tf={tf} />}
+          {tab === "newcoins" && <NewCoins onSelect={selectPair} />}
           {tab === "positions" && <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {tab === "trades" && <Trades state={state} />}
           {tab === "log" && <BotLog state={state} />}
@@ -537,14 +538,15 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   );
 }
 
-type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number; riskPerTradePct: number };
+type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number; riskPerTradePct: number; newCoinPct: number; newStopPct: number; newTakePct: number; newTrailPct: number; newMaxMin: number; newMaxPerDay: number };
+const NEW_COIN_DEFAULTS = { newCoinPct: 3, newStopPct: 15, newTakePct: 30, newTrailPct: 10, newMaxMin: 45, newMaxPerDay: 5 };
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
-  safe: { label: "Safe", blurb: "Risks 1% of the account per trade, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7, riskPerTradePct: 1 },
-  balanced: { label: "Balanced", blurb: "Risks 1.5% of the account per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10, riskPerTradePct: 1.5 },
-  aggressive: { label: "Aggressive", blurb: "Risks 3% per trade, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15, riskPerTradePct: 3 },
+  safe: { label: "Safe", blurb: "Risks 1% of the account per trade, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7, riskPerTradePct: 1, ...NEW_COIN_DEFAULTS },
+  balanced: { label: "Balanced", blurb: "Risks 1.5% of the account per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10, riskPerTradePct: 1.5, ...NEW_COIN_DEFAULTS },
+  aggressive: { label: "Aggressive", blurb: "Risks 3% per trade, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15, riskPerTradePct: 3, ...NEW_COIN_DEFAULTS },
 };
 type PresetKey = keyof typeof PRESETS;
-const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct", "riskPerTradePct"];
+const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct", "riskPerTradePct", "newCoinPct", "newStopPct", "newTakePct", "newTrailPct", "newMaxMin", "newMaxPerDay"];
 const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
 
 // "Started 2:33:51 PM · running 12m 05s" (ticks every second), or "Stopped … · ran …".
@@ -631,7 +633,8 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
 function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = null }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; alerts?: "telegram" | "ntfy" | null }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
-  const [mode, setMode] = useState<"this" | "auto">("this");
+  const [mode, setMode] = useState<"this" | "auto" | "newcoins">("this");
+  const [newChain, setNewChain] = useState<"solana" | "base">("solana");
   const [autoChain, setAutoChain] = useState<ScanChain>("all");
   const [waitForHold, setWaitForHold] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -695,7 +698,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
 
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
-    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, goalUsd: active.goalUsd } : cfg;
+    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, newCoinPct: active.newCoinPct ?? 3, newStopPct: active.newStopPct ?? 15, newTakePct: active.newTakePct ?? 30, newTrailPct: active.newTrailPct ?? 10, newMaxMin: active.newMaxMin ?? 45, newMaxPerDay: active.newMaxPerDay ?? 5, goalUsd: active.goalUsd } : cfg;
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
@@ -705,10 +708,10 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
   const start = async () => {
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct };
     try {
       await api.startBot(full);
-      notify(mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
+      notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
       refresh();
     } catch (e: any) {
       notify(e.message, true);
@@ -724,7 +727,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
       <div className="panel-title">
         <span>AUTO-PILOT</span>
         <div className="pulse-wrap">
-          <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "auto" ? (target ? `AUTO-PICK → ${target.symbol}` : "AUTO-PICK · SCANNING") : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
+          <span className={`pulse ${running ? "on" : ""}`}>{running ? (active?.pick === "newcoins" ? (target ? `NEW COINS → ${target.symbol}` : `NEW COINS · ${(active.newChain ?? "solana").toUpperCase()}`) : active?.pick === "auto" ? (target ? `AUTO-PICK → ${target.symbol}` : "AUTO-PICK · SCANNING") : `RUNNING · ${active?.symbol} ${active?.tf}`) : "IDLE"}</span>
           <BotTimer running={running} startedAt={state?.bot.startedAt ?? null} stoppedAt={state?.bot.stoppedAt ?? null} />
           {running && state?.bot.lastWatch && <LastCheck at={state.bot.lastWatch.at} by={state.bot.lastWatch.by} />}
         </div>
@@ -736,14 +739,29 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
           ⓘ How it trades
         </button>
       </div>
-      <div className="presets two" role="radiogroup" aria-label="What to trade">
+      <div className="presets three" role="radiogroup" aria-label="What to trade">
         <button role="radio" aria-checked={shownMode === "this"} className={`preset balanced ${shownMode === "this" ? "on" : ""}`} onClick={() => setMode("this")} disabled={running}>
           {running && shownMode === "this" ? active?.symbol : `This coin${pair ? ` (${pair.symbol})` : ""}`}
         </button>
         <button role="radio" aria-checked={shownMode === "auto"} className={`preset safe ${shownMode === "auto" ? "on" : ""}`} onClick={() => setMode("auto")} disabled={running}>
-          Auto-pick best coin
+          Auto-pick
+        </button>
+        <button role="radio" aria-checked={shownMode === "newcoins"} className={`preset aggressive ${shownMode === "newcoins" ? "on" : ""}`} onClick={() => setMode("newcoins")} disabled={running}>
+          🚀 New coins
         </button>
       </div>
+      {shownMode === "newcoins" && (
+        <>
+          <div className="chain-tabs compact">
+            {(["solana", "base"] as const).map((c) => (
+              <button key={c} className={`chip ${(running ? active?.newChain ?? "solana" : newChain) === c ? "on" : ""}`} onClick={() => setNewChain(c)} disabled={running}>{c === "solana" ? "Solana" : "Base"}</button>
+            ))}
+          </div>
+          <p className="preset-blurb small">
+            Fast, rule-based (no Claude): buys young coins that pass the rug checks (Low or Medium risk), are 20+ min old with $25K+ liquidity and more buyers than sellers. Tiny positions ({cfg.newCoinPct}% each), stop -{cfg.newStopPct}%, sells half at +{cfg.newTakePct}% then trails, sells within {cfg.newMaxMin} min, max {cfg.newMaxPerDay} a day. Very high risk: paper only.
+          </p>
+        </>
+      )}
       {shownMode === "auto" && (
         <>
           <div className="chain-tabs compact">
@@ -910,6 +928,18 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
                   <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
                 </label>
               </div>
+              <div className="settings-head">
+                <span>New coins mode</span>
+                <span className="muted tiny">Used when the bot trades 🚀 New coins</span>
+              </div>
+              <div className="grid2 knobs">
+                <label>Money per new coin (% of account)<input type="number" step="0.5" value={shown.newCoinPct} onChange={set("newCoinPct")} disabled={running} /><small>Keep this small: many new coins go to zero.</small></label>
+                <label>Stop-loss (%)<input type="number" value={shown.newStopPct} onChange={set("newStopPct")} disabled={running} /><small>Sell if it falls this far below the buy price.</small></label>
+                <label>Sell half at (+%)<input type="number" value={shown.newTakePct} onChange={set("newTakePct")} disabled={running} /><small>Lock in half the position at this gain, then ride the rest.</small></label>
+                <label>Then trail by (%)<input type="number" value={shown.newTrailPct} onChange={set("newTrailPct")} disabled={running} /><small>The rest sells if it falls this far from its high.</small></label>
+                <label>Sell within (minutes)<input type="number" value={shown.newMaxMin} onChange={set("newMaxMin")} disabled={running} /><small>New-coin moves fade fast; this caps how long it holds.</small></label>
+                <label>Max new coins per day<input type="number" value={shown.newMaxPerDay} onChange={set("newMaxPerDay")} disabled={running} /><small>Each coin is traded at most once a day.</small></label>
+              </div>
               <TradingCosts fee={feeDraft} slip={slipDraft} setFee={setFeeDraft} setSlip={setSlipDraft} />
               <div className="settings-head">
                 <span>Phone alerts</span>
@@ -932,9 +962,9 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = nu
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (
-        <button className="btn buy wide" onClick={start} disabled={mode === "this" && !pair}>{mode === "auto" ? "START AUTO-PICK BOT" : `START BOT ON ${pair?.symbol ?? "…"}`}</button>
+        <button className="btn buy wide" onClick={start} disabled={mode === "this" && !pair}>{mode === "newcoins" ? `START NEW COINS BOT (${newChain === "solana" ? "Solana" : "Base"})` : mode === "auto" ? "START AUTO-PICK BOT" : `START BOT ON ${pair?.symbol ?? "…"}`}</button>
       )}
-      <p className="muted small">{multi ? "Each AI check calls Claude and ChatGPT (a few cents). The bot buys only when both agree and reward beats risk after fees." : "Claude is in charge. Each check is a paid Claude call (a few cents), and it only buys when reward beats risk after fees."}</p>
+      <p className="muted small">{mode === "newcoins" ? "New coins mode does not call Claude: it follows fixed safety and exit rules, so it is free to run." : multi ? "Each AI check calls Claude and ChatGPT (a few cents). The bot buys only when both agree and reward beats risk after fees." : "Claude is in charge. Each check is a paid Claude call (a few cents), and it only buys when reward beats risk after fees."}</p>
     </div>
   );
 }
@@ -1094,6 +1124,66 @@ function Scanner({ onSelect, notify, tf }: { onSelect: (p: PairInfo) => void; no
   );
 }
 
+const RISK_TONE: Record<string, string> = { LOW: "buy", MEDIUM: "hold", HIGH: "sell", REJECTED: "sell" };
+
+function NewCoins({ onSelect }: { onSelect: (p: PairInfo) => void }) {
+  const [chain, setChain] = useState<"solana" | "base">(() => (savedUi().newChain as "solana" | "base") ?? "solana");
+  const [list, setList] = useState<NewCoin[] | null>(null);
+  const [err, setErr] = useState("");
+  const [showRejected, setShowRejected] = useState(false);
+  const load = (c = chain) => {
+    saveUi({ newChain: c });
+    setList(null);
+    setErr("");
+    api.newcoins(c).then(setList).catch((e) => setErr(e.message));
+  };
+  useEffect(() => load(chain), [chain]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = (list ?? []).filter((c) => showRejected || c.risk !== "REJECTED");
+  const rejected = (list ?? []).filter((c) => c.risk === "REJECTED").length;
+  return (
+    <div className="table-wrap">
+      <div className="chain-tabs">
+        {(["solana", "base"] as const).map((c) => (
+          <button key={c} className={`chip ${chain === c ? "on" : ""}`} onClick={() => setChain(c)}>{c === "solana" ? "Solana" : "Base"}</button>
+        ))}
+        <button className="chip" onClick={() => load()}>↻ Rescan</button>
+        {rejected > 0 && <button className="chip" onClick={() => setShowRejected((v) => !v)}>{showRejected ? "Hide" : "Show"} {rejected} rejected</button>}
+      </div>
+      <div className="scan-head muted small">
+        Coins from minutes to 3 days old, checked for rug-pull signs ({chain === "solana" ? "RugCheck" : "honeypot.is"}). Rejected and High-risk coins are never bought by the bot. Very high risk: most new coins fail.
+      </div>
+      {err && <p className="down small pad">{err}</p>}
+      {!list && !err && <p className="muted small pad">Scanning new coins and running safety checks…</p>}
+      {list && !shown.length && <p className="muted small pad">No new coins worth showing right now.</p>}
+      {shown.length > 0 && (
+        <table className="scan">
+          <thead>
+            <tr><th>Coin</th><th>Age</th><th>Liquidity</th><th className="hide-sm">Price</th><th>1h</th><th className="hide-sm">Buys</th><th>Risk</th><th>Why</th><th /></tr>
+          </thead>
+          <tbody>
+            {shown.map((c) => (
+              <tr key={c.pair.pool} onClick={() => onSelect(c.pair)} className={c.tradeable ? "tradeable" : ""}>
+                <td><b>{c.pair.symbol}</b><div className="muted tiny">{c.pair.dex}</div></td>
+                <td>{c.ageMin < 60 ? `${c.ageMin}m` : c.ageMin < 1440 ? `${Math.round(c.ageMin / 60)}h` : `${Math.round(c.ageMin / 1440)}d`}</td>
+                <td>{fmtBig(c.pair.liquidityUsd)}</td>
+                <td className="mono hide-sm">{fmtPrice(c.pair.priceUsd)}</td>
+                <td className={c.pair.change.h1 >= 0 ? "up" : "down"}>{fmtPct(c.pair.change.h1)}</td>
+                <td className="hide-sm">{c.buyShare === null ? "–" : `${Math.round(c.buyShare * 100)}%`}</td>
+                <td>
+                  <span className={`tag ${RISK_TONE[c.risk]}`}>{c.risk}</span>
+                  {c.tradeable && <div className="tiny up">fits entry rules</div>}
+                </td>
+                <td className="why small">{c.reasons.length ? c.reasons.slice(0, 3).join(" · ") : "No red flags found"}</td>
+                <td><button className="chip">Open →</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function Positions({ state, notify, refresh }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
   if (!state?.positions.length) return <p className="muted small pad">No open positions.</p>;
   return (
@@ -1128,8 +1218,24 @@ function Positions({ state, notify, refresh }: { state: AppState | null; notify:
 
 // Claude's track record: predicted win chance vs how often bot trades actually reached the target.
 function TrackRecord({ state }: { state: AppState | null }) {
-  const sells = (state?.trades ?? []).filter((t) => t.source === "bot" && t.side === "SELL");
-  if (!sells.length) return null;
+  const allSells = (state?.trades ?? []).filter((t) => t.source === "bot" && t.side === "SELL");
+  if (!allSells.length) return null;
+  const sells = allSells.filter((t) => t.strategy !== "newcoin");
+  const newSells = allSells.filter((t) => t.strategy === "newcoin");
+  const newPnl = newSells.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+  const newCoinsBlock = newSells.length > 0 && (
+    <>
+      <div className="track-title" style={{ marginTop: 12 }}>🚀 New coins scorecard</div>
+      <div className="track-grid">
+        <div><small>Sells</small><b>{newSells.length}</b></div>
+        <div><small>Profitable</small><b>{newSells.filter((t) => (t.pnlUsd ?? 0) > 0).length} of {newSells.length}</b></div>
+        <div><small>New-coin P&amp;L</small><b className={newPnl >= 0 ? "up" : "down"}>{newPnl >= 0 ? "+" : ""}{fmtUsd(newPnl)}</b></div>
+        <div><small>Coins traded</small><b>{new Set(newSells.map((t) => t.pool)).size}</b></div>
+      </div>
+      <p className="muted tiny">Judge new-coin trading on 100+ trades: a few lucky wins mean little when many new coins go to zero.</p>
+    </>
+  );
+  if (!sells.length) return <div className="track">{newCoinsBlock}</div>;
   const scored = sells.filter((t) => typeof t.predictedWinPct === "number");
   const pnl = sells.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
   const avgPred = scored.length ? scored.reduce((a, t) => a + t.predictedWinPct!, 0) / scored.length : null;
@@ -1152,6 +1258,7 @@ function TrackRecord({ state }: { state: AppState | null }) {
             ? "Claude's odds have been too optimistic: real results are clearly below its predictions. Raise the minimum win chance or trade less."
             : "Real results are close to Claude's predictions so far."}
       </p>
+      {newCoinsBlock}
     </div>
   );
 }

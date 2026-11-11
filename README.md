@@ -23,6 +23,15 @@ An AI-assisted crypto trading dashboard. Claude analyzes a token's live candles 
 - **Growth ladder**: progress from $10 toward $15 / $20 / $100 / $1,000
 - Responsive layout: desktop, tablet and phone
 
+## New coins mode
+
+A fast, rule-based mode (no Claude calls) for young coins on Solana or Base:
+
+- **Scanner** (the 🚀 New coins tab): pools from minutes to 3 days old, each given a rug-risk level (LOW / MEDIUM / HIGH / REJECTED) with reasons. Solana uses RugCheck (mint/freeze authority, creator rug history, holder concentration, locked liquidity); Base uses honeypot.is (can you sell, buy/sell tax).
+- **Entry rules:** only LOW or MEDIUM risk, at least 20 minutes old, $25K+ liquidity, 55%+ of last-hour trades are buys, price rising.
+- **Exits:** 3% of the account per coin, stop -15%, sell half at +30% then trail the rest 10%, sell within 45 minutes, max 5 buys a day, each coin once a day. All adjustable in "How it trades".
+- Thin-liquidity slippage is simulated on both the buy and the sell, and new-coin trades get their own scorecard in Trade history.
+
 ## Architecture
 
 ```

@@ -21,6 +21,7 @@ export type PairInfo = {
   sells1h?: number;
   liquidityUsd: number;
   marketCap: number;
+  createdAt?: number; // when the pool was created (unix ms), for new-coin age checks
   imageUrl?: string;
   dex?: string;
 };
@@ -80,7 +81,7 @@ async function fetchJson(url: string, opts: FetchOpts = {}): Promise<unknown> {
   return res.json();
 }
 
-async function cachedJson<T>(url: string, ttlMs: number, opts: FetchOpts = {}): Promise<T> {
+export async function cachedJson<T>(url: string, ttlMs: number, opts: FetchOpts = {}): Promise<T> {
   const { allowStale = true } = opts;
   const hit = cache.get(url);
   if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
@@ -130,6 +131,7 @@ function fromDexScreener(p: any): PairInfo {
     sells1h: num(p.txns?.h1?.sells),
     liquidityUsd: num(p.liquidity?.usd),
     marketCap: num(p.marketCap ?? p.fdv),
+    createdAt: p.pairCreatedAt ? Number(p.pairCreatedAt) : undefined,
     imageUrl: p.info?.imageUrl,
     dex: p.dexId,
   };
@@ -369,6 +371,7 @@ function fromGeckoPool(d: any): PairInfo | null {
     liquidityUsd: num(a.reserve_in_usd),
     marketCap: num(a.market_cap_usd ?? a.fdv_usd),
     dex: d.relationships?.dex?.data?.id,
+    createdAt: a.pool_created_at ? Date.parse(a.pool_created_at) : undefined,
   };
 }
 
@@ -392,6 +395,27 @@ async function boostedPairs(chain: string): Promise<PairInfo[]> {
     out.push(...best.values());
   }
   return out.sort((a, b) => b.volume24h - a.volume24h);
+}
+
+// Young pools for the New coins scanner: the newest pools plus trending pools that are
+// less than maxAgeH hours old ("second wave": survived the launch, still active).
+export async function getNewPools(chain: "solana" | "base", maxAgeH = 72): Promise<PairInfo[]> {
+  const net = GT_NETWORK[chain];
+  const urls = [
+    `https://api.geckoterminal.com/api/v2/networks/${net}/new_pools?page=1`,
+    `https://api.geckoterminal.com/api/v2/networks/${net}/trending_pools?page=1&duration=1h`,
+  ];
+  const lists = await Promise.all(urls.map((u) => cachedJson<any>(u, 60_000, { retries: 0 }).catch(() => ({ data: [] }))));
+  const seen = new Set<string>();
+  const out: PairInfo[] = [];
+  for (const d of lists.flatMap((l) => l.data ?? [])) {
+    const p = fromGeckoPool(d);
+    if (!p || !p.createdAt || seen.has(p.tokenAddress)) continue;
+    if (Date.now() - p.createdAt > maxAgeH * 3_600_000) continue;
+    seen.add(p.tokenAddress);
+    out.push(rememberToken(p));
+  }
+  return out;
 }
 
 export async function getTrending(chain = "solana"): Promise<{ pairs: PairInfo[]; source: "trending" | "boosted" }> {
