@@ -251,7 +251,7 @@ export default function App() {
           </div>
           {tab === "positions" && (
             <>
-              <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} />
+              <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} />
               <GoalLadder state={state} />
             </>
           )}
@@ -1501,7 +1501,7 @@ function OpenOrders({ state, notify, refresh }: { state: AppState | null; notify
   );
 }
 
-function Positions({ state, notify, refresh }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
+function Positions({ state, notify, refresh, onOpen }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; onOpen: (chain: string, pool: string) => void }) {
   if (!state?.positions.length) return <><p className="muted small pad">No open positions.</p><OpenOrders state={state} notify={notify} refresh={refresh} /></>;
   return (
     <>
@@ -1515,7 +1515,7 @@ function Positions({ state, notify, refresh }: { state: AppState | null; notify:
             const pnl = value - p.costUsd;
             return (
               <tr key={p.id}>
-                <td><b>{p.symbol}</b></td>
+                <td><button className="link-btn token-link" onClick={() => onOpen(p.chain, p.pool)} title={`Open the ${p.symbol} chart`}><b>{p.symbol}</b></button></td>
                 <td>{p.source === "bot" ? "🤖 bot" : "manual"}</td>
                 <td className="mono">{fmtPrice(p.entryPrice)}</td>
                 <td className="mono">{fmtPrice(p.lastPrice)}</td>

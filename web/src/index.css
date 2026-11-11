@@ -651,3 +651,5 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .real-done.ok { background: rgba(0, 245, 160, 0.08); border: 1px solid rgba(0, 245, 160, 0.35); }
 .real-done.bad { background: rgba(255, 61, 113, 0.08); border: 1px solid rgba(255, 61, 113, 0.4); }
 .real-done a { color: var(--cyan); }
+.token-link { color: var(--text); text-decoration: none; padding: 0; }
+.token-link:hover b { color: var(--cyan); text-decoration: underline; text-underline-offset: 3px; }
