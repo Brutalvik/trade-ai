@@ -119,6 +119,9 @@ type State = {
     armedSince: (number | null)[];
     // Set after a trade closes, so Claude is asked for a new plan right away.
     askNow: boolean;
+    // Plans made before this time are not used: set when the bot starts and when a trade
+    // closes, so every new trade starts from a fresh AI analysis.
+    freshAfter?: number;
     // Orders whose trigger was reached but that were skipped (logged once per plan).
     skipNoted: boolean[];
     startedAt: number | null; // when the bot was last started (unix ms)
@@ -411,6 +414,7 @@ export function startBot(cfg: BotConfig) {
   state.bot.candidates = [];
   state.bot.armedSince = [];
   state.bot.askNow = false;
+  state.bot.freshAfter = Date.now(); // never reuse a plan from before this start
   state.bot.startedAt = Date.now();
   state.bot.stoppedAt = null;
   cfg.trailPct = clampNum(cfg.trailPct ?? 3, 0.5, 30);
@@ -751,8 +755,9 @@ export async function tick(persist = true) {
         } else cs.losses = 0;
         log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
         alert(`${t.pnlUsd! >= 0 ? "✅" : "🔻"} Sold ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}. Account $${equity().toFixed(2)}.`);
-        // Ask AI for a fresh plan right away.
+        // Ask for a fresh plan right away; no new trade until it arrives.
         state.lastSignal = null;
+        state.bot.freshAfter = Date.now();
         state.bot.armedSince = [];
         state.bot.askNow = true;
         if (isAuto(cfg)) state.bot.target = null;
@@ -788,10 +793,12 @@ export async function tick(persist = true) {
 
     // 3. Ask AI only when something calls for it (never more than once per 2 min).
     const why = claudeDue(cfg, q?.price ?? null);
+    let askedAt = 0;
     if (why && Date.now() - state.bot.lastAnalysisAt >= MIN_CLAUDE_GAP_MS) {
       // Save "asked Claude at ..." BEFORE the slow, paid call, so no other
       // request or server decides a check is due and asks again meanwhile.
       state.bot.lastAnalysisAt = Date.now();
+      askedAt = state.bot.lastAnalysisAt;
       state.bot.askNow = false;
       state.bot.armedSince = [];
       state.bot.skipNoted = [];
@@ -807,12 +814,20 @@ export async function tick(persist = true) {
       }
       const t2 = isAuto(cfg) ? state.bot.target : tgt;
       q = t2 ? await quote(t2.chain, t2.pool, planSince()) : null;
+    } else if (why) {
+      // A new plan is due but the AI was asked less than 2 minutes ago: wait for it
+      // rather than trade on the old plan.
+      const waitS = Math.ceil((state.bot.lastAnalysisAt + MIN_CLAUDE_GAP_MS - Date.now()) / 1000);
+      noteOnce(`wait:${state.bot.lastAnalysisAt}`, `Waiting for a fresh AI plan before the next trade (${why}); asking in about ${waitS}s.`);
+      return;
     }
 
     // 4. Carry out the plan's standing orders, checked every 5 seconds.
     const sig = state.lastSignal;
     const t3 = isAuto(cfg) ? state.bot.target : tgt;
     if (!q || !t3 || !sig || sig.pool !== t3.pool) return;
+    // Only trade on a plan made after the bot started / the last trade closed / this ask.
+    if (sig.at < Math.max(state.bot.freshAfter ?? 0, askedAt)) return;
     const pair = q.pair;
     const c = sig.consensus;
     if (!c.orders.length || Date.now() > c.expiresAt) return;

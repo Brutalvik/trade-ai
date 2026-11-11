@@ -111,7 +111,11 @@ export default function App() {
   // Show the bot's last signal on the chart if it is for this pool.
   // Whichever is newer: your saved analysis of this coin, or the bot's latest plan for it.
   const botSig = state?.lastSignal?.pool === pair?.pool ? state?.lastSignal : null;
-  const shownPlan = analysis && (!botSig || analysis.at >= botSig.at) ? analysis : botSig;
+  // A plan you saved before the latest trade on this coin is outdated: every new trade
+  // starts from a fresh analysis.
+  const lastTradeAt = useMemo(() => Math.max(0, ...(state?.trades ?? []).filter((t) => t.pool === pair?.pool).map((t) => t.time)), [state?.trades, pair?.pool]);
+  const savedPlan = analysis && analysis.at >= lastTradeAt ? analysis : null;
+  const shownPlan = savedPlan && (!botSig || savedPlan.at >= botSig.at) ? savedPlan : botSig;
   const sig = shownPlan?.consensus;
   const results = shownPlan?.results;
   const botOnThisCoin = !!(state?.bot.running && state.bot.config?.pool === pair?.pool && state.bot.config?.pick === "this");
@@ -529,10 +533,10 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               <div className="why-kind">
                 <span className={`tag ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>{STANCE_LABEL[sig.stance ?? "AVOID"]} · {sig.confidence}%</span>
                 {explain.kind && <span className={`tag ${explain.kind.tone}`}>{explain.kind.label}</span>}
-                {explain.risk && <span className="muted tiny">Risk: {explain.risk}</span>}
+                {explain.risk && <span className={`risk-tag ${String(explain.risk).toLowerCase()}`}>Risk: {explain.risk}</span>}
               </div>
               {explain.kind?.text && <p>{explain.kind.text}</p>}
-              {explain.why && <p><b>AI:</b> {aiText(explain.why)}</p>}
+              {explain.why && <p>{aiText(explain.why)}</p>}
               {sig.note && <p className="muted">{aiText(sig.note)}</p>}
             </div>
           </div>
@@ -566,7 +570,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           {explain.kind && (
             <div className="why-kind">
               <span className={`tag ${explain.kind.tone}`}>{explain.kind.label}</span>
-              {explain.risk && <span className="muted tiny">Risk: {explain.risk}</span>}
+              {explain.risk && <span className={`risk-tag ${String(explain.risk).toLowerCase()}`}>Risk: {explain.risk}</span>}
             </div>
           )}
           <div className="models">
@@ -582,7 +586,10 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
         </>
       ) : (
-        <p className="muted small">Press Analyze to get the AI's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
+        <>
+          {botOnThisCoin && <p className="small fresh-wait">The bot is getting a fresh AI plan for its next trade…</p>}
+          <p className="muted small">Press Analyze to get the AI's plan: standing orders (buy now, buy the dip, or buy the breakout) with exit prices and targets. {multi ? "Both models must agree on the plan." : "Orders only count if the gain clearly beats the risk after fees."}</p>
+        </>
       )}
     </div>
   );
