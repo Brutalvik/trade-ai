@@ -38,12 +38,12 @@ export const APP_TOKENS_PER_API_TOKEN = 10;
 export const PLANS: Record<PlanId, Plan> = {
   free: {
     id: "free", name: "Free", priceUsd: 0,
-    blurb: "Charts, scanner and paper trading. A small charge on each trade.",
-    aiTokens: 0, feePct: 0.5, freeTrades: 0, permissions: [...TRADING],
+    blurb: "Charts, scanner and manual paper trading (buy and sell now). A small charge on each trade.",
+    aiTokens: 0, feePct: 0.5, freeTrades: 0, permissions: ["trade.manual"], // manual only: no limit orders or Protect
   },
   member: {
     id: "member", name: "Member", priceUsd: 9,
-    blurb: "Everything in Free, with 100 trades a month free of charge, then a lower rate.",
+    blurb: "Everything in Free plus limit orders and Protect, with 100 trades a month free of charge, then a lower rate.",
     aiTokens: 0, feePct: 0.2, freeTrades: 100, permissions: [...TRADING],
   },
   starter: {

@@ -698,8 +698,10 @@ function FeeLine({ state }: { state: AppState | null }) {
 }
 
 function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
+  const access = useAccess();
   const [tab, setTab] = useState<"buy" | "sell">("buy");
   const [kind, setKind] = useState<"market" | "limit">("market");
+  useEffect(() => { if (kind === "limit" && !access.can("trade.limit")) setKind("market"); }, [kind, access]);
   const [usd, setUsd] = useState("5");
   const [limitPrice, setLimitPrice] = useState("");
   const [sellShare, setSellShare] = useState(1);
@@ -775,13 +777,15 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
             <button className="chip" onClick={() => cancel(pending.id)}>Cancel</button>
           </div>
           <p className="muted tiny">Waiting: {pending.side === "BUY" ? "buys" : "sells"} automatically when the price {pending.side === "BUY" ? "falls" : "rises"} to {fmtPrice(pending.price)} (live {fmtPrice(live)}).</p>
-          {tab === "sell" && pos && <ProtectControl pos={pos} notify={notify} refresh={refresh} />}
+          {tab === "sell" && pos && (access.can("trade.protect") ? <ProtectControl pos={pos} notify={notify} refresh={refresh} /> : <LockChip label="Protect this trade" plan="Member" />)}
         </>
       ) : (
         <>
       <div className="kind-toggle" role="radiogroup" aria-label="Order type">
         <button role="radio" aria-checked={kind === "market"} className={kind === "market" ? "on" : ""} onClick={() => setKind("market")}>Now</button>
-        <button role="radio" aria-checked={kind === "limit"} className={kind === "limit" ? "on" : ""} onClick={() => setKind("limit")}>At a price (limit)</button>
+        <button role="radio" aria-checked={kind === "limit"} className={kind === "limit" ? "on" : ""} onClick={() => (access.can("trade.limit") ? setKind("limit") : access.openPlans())} title={access.can("trade.limit") ? undefined : "Limit orders are included from the Member plan"}>
+          {!access.can("trade.limit") && "🔒 "}At a price (limit)
+        </button>
       </div>
 
       {tab === "buy" ? (
@@ -820,7 +824,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
           ) : (
             <button className="btn sell wide" onClick={limitSell} disabled={!(lp > 0)}>SET LIMIT SELL</button>
           )}
-          <ProtectControl pos={pos} notify={notify} refresh={refresh} />
+          {access.can("trade.protect") ? <ProtectControl pos={pos} notify={notify} refresh={refresh} /> : <LockChip label="Protect this trade" plan="Member" />}
         </>
       )}
         </>

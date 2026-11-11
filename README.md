@@ -34,8 +34,8 @@ Every feature checks a permission; a user's permissions come from their plan plu
 
 | Plan | Price | Transaction charge | AI tokens / month | Includes |
 |---|---|---|---|---|
-| Free | $0 | 0.5% per trade | none | paper trading, limit orders, Protect |
-| Member | $9 | 100 trades free/month, then 0.2% | none | Free + lower charges |
+| Free | $0 | 0.5% per trade | none | manual paper trading only (buy / sell now) |
+| Member | $9 | 100 trades free/month, then 0.2% | none | + limit orders, Protect, lower charges |
 | AI Starter | $19 | 300 free, then 0.1% | 1M (about 7 analyses) | + AI plans, AI bot on a coin |
 | AI Pro | $49 | none | 5M (about 35) | + auto-pick, risky mode |
 | AI Max | $129 | none | 15M (about 100) | same, more AI |
