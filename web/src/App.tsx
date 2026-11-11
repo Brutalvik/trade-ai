@@ -793,7 +793,6 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
 
   return (
     <div className="panel">
-      <div className="panel-title"><span>MANUAL TRADE</span><span className="muted small">cash {fmtUsd(cash)}</span></div>
       <div className="trade-tabs" role="tablist">
         <button role="tab" aria-selected={tab === "buy"} className={`buy ${tab === "buy" ? "on" : ""}`} onClick={() => setTab("buy")}>Buy</button>
         <button role="tab" aria-selected={tab === "sell"} className={`sell ${tab === "sell" ? "on" : ""}`} onClick={() => setTab("sell")}>Sell{pos ? "" : ""}</button>
@@ -818,11 +817,14 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
         </>
       ) : (
         <>
+      <div className="order-row">
       <div className="kind-toggle" role="radiogroup" aria-label="Order type">
-        <button role="radio" aria-checked={kind === "market"} className={kind === "market" ? "on" : ""} onClick={() => setKind("market")}>Now</button>
+        <button role="radio" aria-checked={kind === "market"} className={kind === "market" ? "on" : ""} onClick={() => setKind("market")} title="Buy or sell now at the current price">Market</button>
         <button role="radio" aria-checked={kind === "limit"} className={kind === "limit" ? "on" : ""} onClick={() => (access.can("trade.limit") ? setKind("limit") : access.openPlans())} title={access.can("trade.limit") ? undefined : "Limit orders are included from the Member plan"}>
-          {!access.can("trade.limit") && "🔒 "}At a price (limit)
+          {!access.can("trade.limit") && "🔒 "}Limit
         </button>
+      </div>
+      <span className="available"><span className="muted">Available</span> <b>{tab === "buy" ? fmtUsd(cash) : pos ? `${pos.qty.toPrecision(4)} ${pos.symbol}` : "0"}</b></span>
       </div>
 
       {tab === "buy" ? (

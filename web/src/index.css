@@ -654,3 +654,9 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .token-link { color: var(--text); text-decoration: none; padding: 0; }
 .token-link:hover b { color: var(--cyan); text-decoration: underline; text-underline-offset: 3px; }
 .price-zeros { font-size: 0.72em; vertical-align: -0.25em; margin: 0 1px; }
+/* Order type (Market / Limit) with what's available on the right */
+.order-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.order-row .kind-toggle { margin-bottom: 0; }
+.available { font-size: 12px; white-space: nowrap; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.available b { font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--text); }
+button.available { background: none; border: 0; padding: 0; cursor: pointer; }

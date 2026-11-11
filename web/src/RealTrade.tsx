@@ -25,10 +25,9 @@ export function RealTradePanel({ pair, notify }: { pair: PairInfo | null; notify
   return <RealTradeForm pair={pair} notify={notify} />;
 }
 
-function RealShell({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
+function RealShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="panel real-trade">
-      <div className="panel-title"><span>TRADE</span>{right}</div>
       {children}
     </div>
   );
@@ -106,7 +105,7 @@ function RealTradeForm({ pair, notify }: { pair: PairInfo; notify: (m: string, b
   };
 
   return (
-    <RealShell right={<button className="link-btn small" onClick={() => void loadWallet(true)} title="Refresh balances">{wallet ? `${fmtUsd(wallet.totalUsd)} in wallet` : "…"}</button>}>
+    <RealShell>
       <div className="trade-tabs" role="tablist">
         <button role="tab" aria-selected={tab === "buy"} className={`buy ${tab === "buy" ? "on" : ""}`} onClick={() => setTab("buy")}>Buy</button>
         <button role="tab" aria-selected={tab === "sell"} className={`sell ${tab === "sell" ? "on" : ""}`} onClick={() => setTab("sell")}>Sell</button>
@@ -114,12 +113,18 @@ function RealTradeForm({ pair, notify }: { pair: PairInfo; notify: (m: string, b
 
       {!quote ? (
         <>
-          <div className="kind-toggle" role="radiogroup" aria-label={tab === "buy" ? "Pay with" : "Receive"}>
-            {(["SOL", "USDC"] as const).map((p) => (
-              <button key={p} role="radio" aria-checked={pay === p} className={pay === p ? "on" : ""} onClick={() => setPay(p)}>
-                {tab === "buy" ? "Pay with" : "Get"} {p}
-              </button>
-            ))}
+          <div className="order-row">
+            <div className="kind-toggle" role="radiogroup" aria-label={tab === "buy" ? "Pay with" : "Receive"}>
+              {(["SOL", "USDC"] as const).map((p) => (
+                <button key={p} role="radio" aria-checked={pay === p} className={pay === p ? "on" : ""} onClick={() => setPay(p)} title={tab === "buy" ? `Pay with ${p}` : `Get ${p} back`}>
+                  {p}
+                </button>
+              ))}
+            </div>
+            <button className="available link-btn" onClick={() => void loadWallet(true)} title="Refresh balances">
+              <span className="muted">Available</span>{" "}
+              <b>{tab === "buy" ? (payBal ? `${fmtAmt(payBal.amount)} ${pay}` : `0 ${pay}`) : tokenH ? `${fmtAmt(tokenH.amount)} ${pair.symbol}` : `0 ${pair.symbol}`}</b>
+            </button>
           </div>
           {tab === "buy" ? (
             <>
@@ -130,7 +135,7 @@ function RealTradeForm({ pair, notify }: { pair: PairInfo; notify: (m: string, b
               <div className="real-quick">
                 {[5, 10, 25, 50, 100].map((v) => <button key={v} className="chip" onClick={() => setUsd(String(v))}>${v}</button>)}
               </div>
-              <p className="muted tiny">{pay} balance: {payBal ? `${fmtAmt(payBal.amount)} ${pay} (${fmtUsd(payBal.valueUsd ?? 0)})` : `0 ${pay}`}{pay === "SOL" ? " · 0.01 SOL is kept for network fees" : ""}</p>
+              {pay === "SOL" && <p className="muted tiny">0.01 SOL is kept for network fees.</p>}
             </>
           ) : (
             <>
