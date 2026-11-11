@@ -730,3 +730,21 @@ body.resizing { cursor: col-resize; user-select: none; }
 .bot-tabs .dot { width: 7px; height: 7px; border-radius: 50%; background: #5b6684; flex: none; }
 .bot-tabs .dot.live { background: var(--green, #00f5a0); box-shadow: 0 0 8px rgba(0, 245, 160, 0.7); }
 .bot-tag { display: inline-block; padding: 0 6px; margin-right: 2px; border-radius: 6px; font-size: 10.5px; font-weight: 700; color: var(--cyan); background: rgba(0, 229, 255, 0.1); }
+
+/* Bot tabs built into the top of the Auto-pilot card (one line) */
+.bot-tabs-wrap { display: block; gap: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; backdrop-filter: blur(10px); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 40px rgba(0, 0, 0, 0.35); transition: border-color 0.2s, box-shadow 0.2s; }
+.bot-tabs-wrap.live { border-color: rgba(0, 245, 160, 0.45); box-shadow: 0 0 30px rgba(0, 245, 160, 0.12); }
+.bot-tabs-wrap > .panel { background: none; border: 0; border-radius: 0; box-shadow: none; backdrop-filter: none; }
+.bot-tabs-wrap .bot-tabs { display: flex; flex-wrap: nowrap; gap: 0; border-bottom: 1px solid var(--border); background: rgba(0, 0, 0, 0.22); }
+.bot-tabs-wrap .bot-tabs button { flex: 1 1 0; min-width: 0; justify-content: center; gap: 6px; padding: 11px 8px 10px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--muted); font-size: 12px; position: relative; }
+.bot-tabs-wrap .bot-tabs button:last-child { border-right: 0; }
+.bot-tabs-wrap .bot-tabs button:hover { color: var(--text); background: rgba(255, 255, 255, 0.03); }
+.bot-tabs-wrap .bot-tabs button.on { background: rgba(255, 255, 255, 0.05); color: var(--text); }
+.bot-tabs-wrap .bot-tabs button.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--cyan); }
+.bot-tabs-wrap.live .bot-tabs button.on::after { background: var(--green, #00f5a0); }
+.bot-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Tablet: coin lists go under Positions (left), the trade column runs down the right: no gaps */
+@media (max-width: 1180px) and (min-width: 761px) {
+  .layout, .layout.list-collapsed { grid-template-areas: "chart right" "bottom right" "list right"; grid-template-rows: auto auto 1fr; }
+  .coin-side { align-self: start; }
+}

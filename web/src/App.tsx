@@ -1062,7 +1062,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
   const shownChain = running && active ? (active.autoChain ?? "all") : autoChain;
   const candidates = running ? (state?.bot.candidates ?? []) : [];
   const target = running ? state?.bot.target : null;
-  const botPos = state?.positions.find((p) => p.source === "bot");
+  const botPos = state?.positions.find((p) => p.source === "bot" && (p.botId ?? "1") === botId);
   const plan = running ? state?.lastSignal : null;
   const planOrders = plan?.consensus.orders ?? [];
   const startCash = state?.startCash ?? 10;
@@ -1758,8 +1758,9 @@ function BotTabs({ state, limit, children }: { state: AppState | null; limit: nu
   const current = ids.includes(sel) ? sel : "1";
   useEffect(() => localStorage.setItem("nexus-bot-tab", current), [current]);
   if (ids.length === 1) return <>{children("1")}</>;
+  const live = !!allBots(state).find((x) => x.id === current)?.bot.running;
   return (
-    <div className="bot-tabs-wrap">
+    <div className={`bot-tabs-wrap ${live ? "live" : ""}`}>
       <div className="bot-tabs" role="tablist" aria-label="Bots">
         {ids.map((id) => {
           const b = allBots(state).find((x) => x.id === id)?.bot;
@@ -1767,7 +1768,7 @@ function BotTabs({ state, limit, children }: { state: AppState | null; limit: nu
           return (
             <button key={id} role="tab" aria-selected={current === id} className={current === id ? "on" : ""} onClick={() => setSel(id)} title={b?.running ? `Bot ${id} is running` : `Bot ${id} is off`}>
               <span className={`dot ${b?.running ? "live" : ""}`} />
-              Bot {id}{label ? ` · ${label}` : ""}
+              <span className="bot-tab-label">Bot {id}{label ? <span className="muted"> · {label}</span> : null}</span>
             </button>
           );
         })}
