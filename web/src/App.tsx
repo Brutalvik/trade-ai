@@ -118,6 +118,16 @@ export default function App() {
   const shownPlan = savedPlan && (!botSig || savedPlan.at >= botSig.at) ? savedPlan : botSig;
   const sig = shownPlan?.consensus;
   const results = shownPlan?.results;
+  const planRisk = useMemo(() => {
+    const ok = results?.find((r) => r.ok);
+    const level = ok && ok.ok ? ok.signal.riskLevel : undefined;
+    const reasons: string[] = [];
+    if (level === "HIGH" || level === "EXTREME") reasons.push(`The AI rates this coin ${level} risk.`);
+    if (sig?.stance === "AVOID") reasons.push("The AI's current advice is to stay out.");
+    if ((botSig?.trendDown ?? false) || (pair?.change.h1 ?? 0) <= -10) reasons.push(`It's falling (1-hour change ${fmtPct(pair?.change.h1 ?? 0)}${botSig?.trendDown ? ", 1-hour trend down" : ""}).`);
+    if ((pair?.liquidityUsd ?? Infinity) < 50_000) reasons.push(`Liquidity is thin (${fmtBig(pair?.liquidityUsd ?? 0)}): prices can jump and fills slip.`);
+    return reasons;
+  }, [results, sig?.stance, botSig?.trendDown, pair?.change.h1, pair?.liquidityUsd]);
   const botOnThisCoin = !!(state?.bot.running && state.bot.config?.pool === pair?.pool && state.bot.config?.pick === "this");
   // Chart lines: the bot's open trade on this coin, otherwise Claude's standing orders.
   const orderLines = useMemo<ChartLine[]>(
@@ -195,7 +205,7 @@ export default function App() {
         </aside>
 
         <aside className="side">
-          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} />
+          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />
           <GoalLadder state={state} />
         </aside>
 
@@ -881,7 +891,7 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
   );
 }
 
-function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; alerts?: "telegram" | "ntfy" | null }) {
+function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, riskReasons = [] }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; riskReasons?: string[]; alerts?: "telegram" | "ntfy" | null }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
   // Your choices are saved in this browser, so a refresh or coin change keeps them.
@@ -976,13 +986,21 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const perTrade = Math.min(cash, ((state?.equityNow ?? cash) * shown.positionPct) / 100);
   const floor = startCash * (1 - shown.maxDrawdownPct / 100);
 
-  const start = async () => {
+  // Risky coin: ask first ("I understand"), then start with the safety pauses relaxed.
+  const [riskOpen, setRiskOpen] = useState(false);
+  const start = () => {
+    if (mode === "this" && !pair) return;
+    if (mode === "this" && riskReasons.length) return setRiskOpen(true);
+    void startBot(false);
+  };
+  const startBot = async (allowRisky: boolean) => {
+    setRiskOpen(false);
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : mode === "newcoins" ? "NEW COINS" : (pair?.symbol ?? ""), tf: mode === "this" ? tf : "5m", positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, lockPct: cfg.lockPct, partialAtPct: cfg.partialAtPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, newChain, newCoinPct: cfg.newCoinPct, newStopPct: cfg.newStopPct, newTakePct: cfg.newTakePct, newTrailPct: cfg.newTrailPct, newMaxMin: cfg.newMaxMin, newMaxPerDay: cfg.newMaxPerDay, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct, allowRisky };
     try {
       await api.startBot(full);
-      notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
+      notify(mode === "newcoins" ? `New coins bot started on ${newChain}` : mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})${allowRisky ? " · risky mode" : ""}`);
       refresh();
     } catch (e: any) {
       notify(e.message, true);
@@ -1210,6 +1228,28 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         </div>,
         document.body, // render at page level: the panel's blur effect would otherwise trap the popup inside it
       )}
+      {riskOpen && createPortal(
+        <div className="modal-backdrop">
+          <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="risk-title">
+            <div className="modal-head">
+              <h2 id="risk-title">⚠ High-risk trade</h2>
+              <button className="modal-close" onClick={() => setRiskOpen(false)} aria-label="Close" title="Close">✕</button>
+            </div>
+            <div className="modal-body">
+              <p className="risk-lead">Trading <b>{pair?.symbol}</b> with the bot right now is risky:</p>
+              <ul className="risk-list">{riskReasons.map((r) => <li key={r}>{r}</li>)}</ul>
+              <p>If you continue, the bot <b>will</b> buy even while the coin is falling, and won't pause after losing trades on it. It still uses the AI's exit, your minimum win chance and fee check, the daily loss limit and the emergency stop.</p>
+              <p className="muted small">You could lose a large part of the money in each trade. This is paper trading, but treat it as practice for real money.</p>
+            </div>
+            <div className="modal-foot">
+              <button className="btn ghost" onClick={() => void startBot(false)}>Start with safety on</button>
+              <button className="btn sell" onClick={() => void startBot(true)}>I understand, trade anyway</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {running && active?.allowRisky && <div className="risky-pill">⚠ Risky mode: buys while falling, no cool-downs</div>}
       {running ? (
         <button className="btn sell wide" onClick={stop}>STOP BOT</button>
       ) : (

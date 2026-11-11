@@ -97,6 +97,10 @@ export type BotConfig = {
   cooldownMin?: number; // after a losing trade, don't re-buy that coin for this long (default 30)
   dailyLossPct?: number; // stop opening trades for the rest of the UTC day after losing this % (default 10)
   maxDrop1hPct?: number; // no dip buys if the coin fell more than this % in the last hour (default 10)
+  // "I understand the risks": trade even when the coin is falling (dip buys allowed in a
+  // downtrend) and skip the per-coin cool-down / 2-losses-a-day skip. The daily loss limit,
+  // emergency stop, minimum win chance and fee check still apply.
+  allowRisky?: boolean;
   // Risk-based sizing: size each trade so hitting its exit loses about this % of the account
   // (default 1.5). positionPct is then only the maximum share of cash per trade.
   riskPerTradePct?: number;
@@ -484,7 +488,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe) {
   const trendDown = h1 ? h1.ema9 < h1.ema21 && h1.price < h1.ema21 : false;
   const cfg = state.bot.config;
   const maxDrop = cfg?.maxDrop1hPct ?? 10;
-  const dipsBlocked = trendDown || pair.change.h1 <= -maxDrop;
+  const dipsBlocked = !cfg?.allowRisky && (trendDown || pair.change.h1 <= -maxDrop);
   const recent = state.trades.filter((t) => t.pool === pool && t.source === "bot" && t.side === "SELL").slice(0, 5);
   // The AI's own track record (all coins): predicted win chance vs what really happened.
   const scored = state.trades.filter((t) => t.source === "bot" && t.side === "SELL" && typeof t.predictedWinPct === "number").slice(0, 30);
@@ -557,7 +561,7 @@ export function startBot(cfg: BotConfig) {
       ? `Bot started in NEW COINS mode (${cfg.newChain ?? "solana"}): ${cfg.newCoinPct ?? 3}% per coin, stop -${cfg.newStopPct ?? 15}%, half at +${cfg.newTakePct ?? 30}%, max ${cfg.newMaxPerDay ?? 5} buys a day. Cash $${state.cash.toFixed(2)}.`
       : isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round the AI checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
-      : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.`,
+      : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling and skip the cool-downs (you accepted the risk)." : ""}`,
     "good",
   );
   save();
@@ -624,6 +628,7 @@ function dailyBlock(cfg: BotConfig): string | null {
 
 // Cool-down: after a loss, wait before re-buying the coin; after 2 losses in a row, skip it for the day.
 function coinBlock(cfg: BotConfig, pool: string, symbol: string): string | null {
+  if (cfg.allowRisky) return null; // the user chose to trade anyway
   const cs = state.bot.coinStats[pool];
   if (!cs || !cs.losses) return null;
   if (cs.losses >= 2 && cs.lossDay === utcDay()) return `${symbol} lost ${cs.losses} trades in a row today, so it's skipped until 00:00 UTC`;
@@ -1010,7 +1015,7 @@ export async function tick(persist = true) {
       if (o.kind !== "buy_breakout") {
         const drop = pair.change.h1;
         const maxDrop = cfg.maxDrop1hPct ?? 10;
-        if (sig.trendDown || drop <= -maxDrop) {
+        if (!cfg.allowRisky && (sig.trendDown || drop <= -maxDrop)) {
           if (triggerMet(o, q))
             noteOnce(`trend:${sig.at}:${i}`, `${t3.symbol} reached the ${label}, but it's falling (${sig.trendDown ? "1-hour trend is down" : `${drop.toFixed(1)}% in the last hour`}), so dip orders are paused. A crash is not a dip.`);
           continue;
