@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { type FramePatterns, aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
-import { RulesPage } from "./Rules";
+import { GuidePage } from "./Guide";
 import { WalletButton } from "./Wallet";
 import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
@@ -33,7 +33,7 @@ export default function App() {
   const [me, setMe] = useState<User | null>(null);
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const [plansOpen, setPlansOpen] = useState(false);
-  // The trading rules page lives at #rules (linked from the footer, shareable).
+  // The user guide lives at #guide (linked from the footer, shareable; old #rules links still open it).
   const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
     const on = () => setHash(window.location.hash);
@@ -312,7 +312,7 @@ export default function App() {
       <Footer />
       {toast && <div className={`toast ${toast.bad ? "bad" : ""}`}>{toast.msg}</div>}
       {plansOpen && <PlansModal onClose={() => setPlansOpen(false)} />}
-      {hash === "#rules" && <RulesPage presets={PRESETS} plans={plans} onClose={closeRules} />}
+      {(hash === "#guide" || hash === "#rules") && <GuidePage presets={PRESETS} plans={plans} onClose={closeRules} />}
       {adminOpen && <AdminModal onClose={() => { setAdminOpen(false); void loadMe(); }} notify={notify} />}
     </div>
     </AccessCtx.Provider>
