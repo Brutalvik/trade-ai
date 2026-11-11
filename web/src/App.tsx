@@ -778,7 +778,8 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const active = state?.bot.config;
   // Your choices are saved in this browser, so a refresh or coin change keeps them.
   const savedBot = savedUi().bot ?? {};
-  const [mode, setMode] = useState<"this" | "auto" | "newcoins">(savedBot.mode ?? "this");
+  // New coins are traded like any other coin now (open one from the New coins tab).
+  const [mode, setMode] = useState<"this" | "auto" | "newcoins">(savedBot.mode === "auto" ? "auto" : "this");
   const [newChain, setNewChain] = useState<"solana" | "base">(savedBot.newChain ?? "solana");
   const [autoChain, setAutoChain] = useState<ScanChain>((savedBot.autoChain as ScanChain) ?? "all");
   const [waitForHold, setWaitForHold] = useState(savedBot.waitForHold ?? false);
@@ -901,29 +902,14 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
           ⓘ How it trades
         </button>
       </div>
-      <div className="presets three" role="radiogroup" aria-label="What to trade">
+      <div className="presets two" role="radiogroup" aria-label="What to trade">
         <button role="radio" aria-checked={shownMode === "this"} className={`preset balanced ${shownMode === "this" ? "on" : ""}`} onClick={() => setMode("this")} disabled={running}>
           {running && shownMode === "this" ? active?.symbol : `This coin${pair ? ` (${pair.symbol})` : ""}`}
         </button>
         <button role="radio" aria-checked={shownMode === "auto"} className={`preset safe ${shownMode === "auto" ? "on" : ""}`} onClick={() => setMode("auto")} disabled={running}>
           Auto-pick
         </button>
-        <button role="radio" aria-checked={shownMode === "newcoins"} className={`preset aggressive ${shownMode === "newcoins" ? "on" : ""}`} onClick={() => setMode("newcoins")} disabled={running}>
-          🚀 New coins
-        </button>
       </div>
-      {shownMode === "newcoins" && (
-        <>
-          <div className="chain-tabs compact">
-            {(["solana", "base"] as const).map((c) => (
-              <button key={c} className={`chip ${(running ? active?.newChain ?? "solana" : newChain) === c ? "on" : ""}`} onClick={() => setNewChain(c)} disabled={running}>{c === "solana" ? "Solana" : "Base"}</button>
-            ))}
-          </div>
-          <p className="preset-blurb small">
-            Fast, rule-based (no AI): buys young coins that pass the rug checks (Low or Medium risk), are 20+ min old with $25K+ liquidity and more buyers than sellers. Tiny positions ({cfg.newCoinPct}% each), stop -{cfg.newStopPct}%, sells half at +{cfg.newTakePct}% then trails, sells within {cfg.newMaxMin} min, max {cfg.newMaxPerDay} a day. Very high risk: paper only.
-          </p>
-        </>
-      )}
       {shownMode === "auto" && (
         <>
           <div className="chain-tabs compact">
@@ -1090,18 +1076,6 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                   <small>Just a milestone: the bot notes when you reach it and keeps going.</small>
                 </label>
               </div>
-              <div className="settings-head">
-                <span>New coins mode</span>
-                <span className="muted tiny">Used when the bot trades 🚀 New coins</span>
-              </div>
-              <div className="grid2 knobs">
-                <label>Money per new coin (% of account)<input type="number" step="0.5" value={shown.newCoinPct} onChange={set("newCoinPct")} disabled={running} /><small>Keep this small: many new coins go to zero.</small></label>
-                <label>Stop-loss (%)<input type="number" value={shown.newStopPct} onChange={set("newStopPct")} disabled={running} /><small>Sell if it falls this far below the buy price.</small></label>
-                <label>Sell half at (+%)<input type="number" value={shown.newTakePct} onChange={set("newTakePct")} disabled={running} /><small>Lock in half the position at this gain, then ride the rest.</small></label>
-                <label>Then trail by (%)<input type="number" value={shown.newTrailPct} onChange={set("newTrailPct")} disabled={running} /><small>The rest sells if it falls this far from its high.</small></label>
-                <label>Sell within (minutes)<input type="number" value={shown.newMaxMin} onChange={set("newMaxMin")} disabled={running} /><small>New-coin moves fade fast; this caps how long it holds.</small></label>
-                <label>Max new coins per day<input type="number" value={shown.newMaxPerDay} onChange={set("newMaxPerDay")} disabled={running} /><small>Each coin is traded at most once a day.</small></label>
-              </div>
               <TradingCosts fee={feeDraft} slip={slipDraft} setFee={setFeeDraft} setSlip={setSlipDraft} />
             </div>
             <div className="modal-foot">
@@ -1118,7 +1092,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
         <button className="btn buy wide" onClick={start} disabled={mode === "this" && !pair}>{mode === "newcoins" ? `START NEW COINS BOT (${newChain === "solana" ? "Solana" : "Base"})` : mode === "auto" ? "START AUTO-PICK BOT" : `START BOT ON ${pair?.symbol ?? "…"}`}</button>
       )}
       <p className="muted small run-mode-hint">{state?.settings.continuous ? "Trades continuously until you stop it." : "Stops by itself after one profitable trade."} Change this in Settings (wrench, top right).</p>
-      <p className="muted small">{mode === "newcoins" ? "New coins mode does not call the AI: it follows fixed safety and exit rules, so it is free to run." : multi ? "Each AI check calls two AI models (a few cents). The bot buys only when both agree and reward beats risk after fees." : "The AI is in charge. Each check is a paid the AI call (a few cents), and it only buys when reward beats risk after fees."}</p>
+      <p className="muted small">{mode === "newcoins" ? "New coins mode does not call the AI: it follows fixed safety and exit rules, so it is free to run." : multi ? "Each AI check calls two AI models (a few cents). The bot buys only when both agree and reward beats risk after fees." : "The AI is in charge. Each check is a paid AI call (a few cents), and it only buys when reward beats risk after fees."}</p>
     </div>
   );
 }
@@ -1325,7 +1299,7 @@ function NewCoins({ onSelect }: { onSelect: (p: PairInfo) => void }) {
         {rejected > 0 && <button className="chip" onClick={() => setShowRejected((v) => !v)}>{showRejected ? "Hide" : "Show"} {rejected} rejected</button>}
       </div>
       <div className="scan-head muted small">
-        Coins from minutes to 3 days old, checked for rug-pull signs ({chain === "solana" ? "RugCheck" : "honeypot.is"}). Rejected and High-risk coins are never bought by the bot. Very high risk: most new coins fail.
+        Coins from minutes to 3 days old, checked for rug-pull signs ({chain === "solana" ? "RugCheck" : "honeypot.is"}). Open a coin to see its chart, get the AI's plan and trade it like any other coin; avoid Rejected and High-risk ones. Very high risk: most new coins fail.
       </div>
       {err && <p className="down small pad">{err}</p>}
       {!list && !err && <p className="muted small pad">Scanning new coins and running safety checks…</p>}
