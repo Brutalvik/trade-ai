@@ -155,7 +155,7 @@ export default function App() {
         </aside>
 
         <aside className="side">
-          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} />
+          <BotPanel pair={pair} tf={tf} state={state} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} />
           <GoalLadder state={state} />
         </aside>
 
@@ -492,14 +492,14 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   );
 }
 
-type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number };
+type RiskKnobs = { positionPct: number; minConfidence: number; analyzeMin: number; maxDrawdownPct: number; breakEvenAtPct: number; trailPct: number; cooldownMin: number; dailyLossPct: number; maxDrop1hPct: number; riskPerTradePct: number };
 const PRESETS: Record<"safe" | "balanced" | "aggressive", RiskKnobs & { label: string; blurb: string }> = {
-  safe: { label: "Safe", blurb: "Small trades, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7 },
-  balanced: { label: "Balanced", blurb: "Most of your cash per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10 },
-  aggressive: { label: "Aggressive", blurb: "All-in trades, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15 },
+  safe: { label: "Safe", blurb: "Risks 1% of the account per trade, only orders with good odds, tight emergency brake.", positionPct: 50, minConfidence: 55, analyzeMin: 60, maxDrawdownPct: 15, breakEvenAtPct: 4, trailPct: 2, cooldownMin: 60, dailyLossPct: 5, maxDrop1hPct: 7, riskPerTradePct: 1 },
+  balanced: { label: "Balanced", blurb: "Risks 1.5% of the account per trade, decent odds required.", positionPct: 90, minConfidence: 45, analyzeMin: 30, maxDrawdownPct: 25, breakEvenAtPct: 6, trailPct: 3, cooldownMin: 30, dailyLossPct: 10, maxDrop1hPct: 10, riskPerTradePct: 1.5 },
+  aggressive: { label: "Aggressive", blurb: "Risks 3% per trade, accepts lower odds, wider brake. Bigger swings both ways.", positionPct: 100, minConfidence: 40, analyzeMin: 20, maxDrawdownPct: 40, breakEvenAtPct: 8, trailPct: 5, cooldownMin: 15, dailyLossPct: 15, maxDrop1hPct: 15, riskPerTradePct: 3 },
 };
 type PresetKey = keyof typeof PRESETS;
-const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct"];
+const KNOBS: (keyof RiskKnobs)[] = ["positionPct", "minConfidence", "analyzeMin", "maxDrawdownPct", "breakEvenAtPct", "trailPct", "cooldownMin", "dailyLossPct", "maxDrop1hPct", "riskPerTradePct"];
 const matchPreset = (k: RiskKnobs): PresetKey | null => (Object.keys(PRESETS) as PresetKey[]).find((p) => KNOBS.every((n) => PRESETS[p][n] === k[n])) ?? null;
 
 // "Started 2:33:51 PM · running 12m 05s" (ticks every second), or "Stopped … · ran …".
@@ -566,7 +566,7 @@ function TradingCosts({ fee, slip, setFee, setSlip }: { fee: string; slip: strin
   );
 }
 
-function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void }) {
+function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen, alerts = null }: { pair: PairInfo | null; tf: Timeframe; state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; multi: boolean; onOpen: (chain: string, pool: string) => void; alerts?: "telegram" | "ntfy" | null }) {
   const running = state?.bot.running ?? false;
   const active = state?.bot.config;
   const [mode, setMode] = useState<"this" | "auto">("this");
@@ -633,7 +633,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
 
   // While running, describe what the bot is actually using.
   const shown: RiskKnobs & { goalUsd: number } =
-    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, goalUsd: active.goalUsd } : cfg;
+    running && active ? { positionPct: active.positionPct, minConfidence: active.minConfidence, analyzeMin: Math.round(active.analyzeEverySec / 60), maxDrawdownPct: active.maxDrawdownPct, breakEvenAtPct: active.breakEvenAtPct, trailPct: active.trailPct ?? 3, cooldownMin: active.cooldownMin ?? 30, dailyLossPct: active.dailyLossPct ?? 10, maxDrop1hPct: active.maxDrop1hPct ?? 10, riskPerTradePct: active.riskPerTradePct ?? 1.5, goalUsd: active.goalUsd } : cfg;
   const preset = matchPreset(shown);
   const isCustom = (custom && !running) || !preset;
   const cash = state?.cash ?? startCash;
@@ -643,7 +643,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
   const start = async () => {
     if (mode === "this" && !pair) return;
     // In auto mode the chain/pool are placeholders; the bot chooses its own coins.
-    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct };
+    const full: BotConfig = { chain: pair?.chain ?? "solana", pool: pair?.pool ?? "", symbol: mode === "auto" ? "AUTO" : (pair?.symbol ?? ""), tf: mode === "auto" ? "5m" : tf, positionPct: cfg.positionPct, minConfidence: cfg.minConfidence, analyzeEverySec: cfg.analyzeMin * 60, checkEverySec: 5, maxDrawdownPct: cfg.maxDrawdownPct, breakEvenAtPct: cfg.breakEvenAtPct, trailPct: cfg.trailPct, goalUsd: cfg.goalUsd, pick: mode, autoChain, autoCandidates: 3, waitForHold, cooldownMin: cfg.cooldownMin, dailyLossPct: cfg.dailyLossPct, maxDrop1hPct: cfg.maxDrop1hPct, riskPerTradePct: cfg.riskPerTradePct };
     try {
       await api.startBot(full);
       notify(mode === "auto" ? `Auto-pick bot started (${preset ? PRESETS[preset].label : "Custom"})` : `Bot started on ${pair?.symbol} (${preset ? PRESETS[preset].label : "Custom"})`);
@@ -768,7 +768,7 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
               <p className="preset-blurb small">{isCustom ? "Your own numbers. Type them below; each box explains what it does." : PRESETS[preset!].blurb}</p>
 
               <ul className="plan small">
-                <li>Puts <b>{fmtUsd(perTrade)}</b> into each trade ({shown.positionPct}% of cash)</li>
+                <li>Sizes each trade so that hitting Claude's exit loses about <b>{shown.riskPerTradePct}%</b> of the account (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)}), never more than {fmtUsd(perTrade)} ({shown.positionPct}% of cash)</li>
                 <li>Claude writes standing orders; the bot uses ones with a <b>{shown.minConfidence}%+</b> win chance that make money on average after fees, and buys the moment one triggers (checked every 5 seconds, free)</li>
                 <li>Sells below Claude's exit price; once up <b>{shown.breakEvenAtPct}%</b> it can't turn into a loss</li>
                 <li>At Claude's target it rides the trend, selling if it falls <b>{shown.trailPct}%</b> from its high</li>
@@ -792,9 +792,14 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
               </div>
               <div className="grid2 knobs">
                 <label>
-                  Money per trade (% of cash)
+                  Risk per trade (% of account)
+                  <input type="number" step="0.5" value={shown.riskPerTradePct} onChange={set("riskPerTradePct")} disabled={running} />
+                  <small>How much one losing trade should cost. The bot sizes each trade from Claude's exit price so that hitting it loses about this much (≈{fmtUsd(((state?.equityNow ?? cash) * shown.riskPerTradePct) / 100)} now). Smaller = survives losing streaks.</small>
+                </label>
+                <label>
+                  Max money per trade (% of cash)
                   <input type="number" value={shown.positionPct} onChange={set("positionPct")} disabled={running} />
-                  <small>{shown.positionPct}% of {fmtUsd(cash)} = {fmtUsd(perTrade)} per trade. The rest stays safe as cash.</small>
+                  <small>Upper limit: never more than {shown.positionPct}% of {fmtUsd(cash)} = {fmtUsd(perTrade)} in one trade, even if the exit is very close.</small>
                 </label>
                 <label>
                   Minimum win chance (%)
@@ -843,6 +848,15 @@ function BotPanel({ pair, tf, state, notify, refresh, multi, onOpen }: { pair: P
                 </label>
               </div>
               <TradingCosts fee={feeDraft} slip={slipDraft} setFee={setFeeDraft} setSlip={setSlipDraft} />
+              <div className="settings-head">
+                <span>Phone alerts</span>
+                <span className="muted tiny">{alerts ? `On (${alerts === "telegram" ? "Telegram" : "ntfy"})` : "Off"}</span>
+              </div>
+              <p className="small">
+                {alerts
+                  ? "You'll get a message for every bot buy and sell, protected sells, the daily loss limit, the emergency stop, and a daily summary after midnight UTC."
+                  : "Get a message on your phone for every trade, safety limit and a daily summary: add Telegram or ntfy settings in Vercel (see the README), then redeploy."}
+              </p>
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={cancelRules}>Cancel</button>

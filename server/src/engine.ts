@@ -6,6 +6,7 @@ import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, 
 import { snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { createStore } from "./store.js";
+import { alertChannel, sendAlert } from "./alerts.js";
 
 export type Position = {
   id: string;
@@ -77,6 +78,9 @@ export type BotConfig = {
   cooldownMin?: number; // after a losing trade, don't re-buy that coin for this long (default 30)
   dailyLossPct?: number; // stop opening trades for the rest of the UTC day after losing this % (default 10)
   maxDrop1hPct?: number; // no dip buys if the coin fell more than this % in the last hour (default 10)
+  // Risk-based sizing: size each trade so hitting its exit loses about this % of the account
+  // (default 1.5). positionPct is then only the maximum share of cash per trade.
+  riskPerTradePct?: number;
 };
 
 export type Settings = { feePct: number; slippagePct: number };
@@ -203,6 +207,12 @@ function save() {
 // Wait for writes to finish (must happen before a Vercel function returns).
 export async function flush() {
   await pending;
+}
+
+// Phone alert (Telegram / ntfy, if configured). Queued with saves so flush() waits for it.
+function alert(text: string) {
+  if (!alertChannel()) return;
+  pending = pending.then(() => sendAlert(text)).catch(() => {});
 }
 
 // Saved state stays small and constant-size: newest trades, log lines and equity points only.
@@ -411,23 +421,34 @@ const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);
 const clock = (ms: number) => new Date(ms).toISOString().slice(11, 16) + " UTC";
 
 // Write a log line only once per key (keys include a day / plan / loss time so they reset naturally).
-function noteOnce(key: string, msg: string, level: "info" | "good" | "bad" = "info") {
-  if (state.bot.noted[key]) return;
+function noteOnce(key: string, msg: string, level: "info" | "good" | "bad" = "info"): boolean {
+  if (state.bot.noted[key]) return false;
   state.bot.noted[key] = Date.now();
   for (const [k, at] of Object.entries(state.bot.noted)) if (Date.now() - at > 2 * 86_400_000) delete state.bot.noted[k];
   log(msg, level);
+  return true;
 }
 
 function setBlocked(reason: string | null, key?: string) {
   if (state.bot.blocked !== reason) dirty = true;
   state.bot.blocked = reason;
-  if (reason && key) noteOnce(key, `Not trading: ${reason}.`, "bad");
+  if (reason && key && noteOnce(key, `Not trading: ${reason}.`, "bad") && key.startsWith("daily:")) alert(`⛔ Daily loss limit: ${reason}.`);
 }
 
 // Daily loss limit: no new trades for the rest of the UTC day after losing this much since midnight.
 function dailyBlock(cfg: BotConfig): string | null {
   const today = utcDay();
-  if (!state.bot.day || state.bot.day.date !== today) state.bot.day = { date: today, startEquity: equity() };
+  if (!state.bot.day || state.bot.day.date !== today) {
+    const prev = state.bot.day;
+    if (prev) {
+      // Daily summary for the day that just ended.
+      const sells = state.trades.filter((t) => t.side === "SELL" && utcDay(t.time) === prev.date);
+      const pnl = sells.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+      const change = ((equity() - prev.startEquity) / prev.startEquity) * 100;
+      alert(`📊 Daily summary ${prev.date}: ${sells.length} closed trade${sells.length === 1 ? "" : "s"} (${sells.filter((t) => (t.pnlUsd ?? 0) > 0).length} profitable), P&L ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}. Account $${equity().toFixed(2)} (${change >= 0 ? "+" : ""}${change.toFixed(1)}% on the day).`);
+    }
+    state.bot.day = { date: today, startEquity: equity() };
+  }
   const limit = cfg.dailyLossPct ?? 10;
   const lostPct = ((state.bot.day.startEquity - equity()) / state.bot.day.startEquity) * 100;
   return lostPct >= limit ? `daily loss limit reached (down ${lostPct.toFixed(1)}% today, limit ${limit}%); resumes at 00:00 UTC` : null;
@@ -618,6 +639,7 @@ export async function tick(persist = true) {
           cs.lossDay = utcDay();
         } else cs.losses = 0;
         log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+        alert(`${t.pnlUsd! >= 0 ? "✅" : "🔻"} Sold ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}. Account $${equity().toFixed(2)}.`);
         // Ask Claude for a fresh plan right away.
         state.lastSignal = null;
         state.bot.armedSince = [];
@@ -713,8 +735,15 @@ export async function tick(persist = true) {
       }
       if (Date.now() - state.bot.armedSince[i]! < holdSec * 1000) continue;
 
-      const usd = Math.floor(state.cash * (cfg.positionPct / 100) * 100) / 100;
+      // Risk-based size: if the trade hits its exit, lose about riskPerTradePct of the account
+      // (exit distance plus round-trip costs), capped at positionPct of cash.
+      const riskPct = cfg.riskPerTradePct ?? 1.5;
+      const exitLossPct = ((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100 + roundTripCostPct();
+      const bySize = (equity() * riskPct) / 100 / (exitLossPct / 100);
+      const cap = state.cash * (cfg.positionPct / 100);
+      const usd = Math.floor(Math.min(cap, bySize) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
+      const riskUsd = usd * (exitLossPct / 100);
       // Fill like a real order at the trigger price (or better/worse, see buyFillPrice).
       const t = buy({ ...pair, priceUsd: buyFillPrice(o, q) }, usd, "bot", `Claude plan: ${label}`, {
         stopLoss: o.stopLoss,
@@ -724,7 +753,8 @@ export async function tick(persist = true) {
         sellBy: Date.now() + o.maxHoldMinutes * 60_000,
         predictedWinPct: o.winChancePct,
       });
-      log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}; at ${fmt(o.target)} it starts trailing.`, "good");
+      log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.`, "good");
+      alert(`🤖 Bought ${pair.symbol}: $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}, target ${fmt(o.target)}. Risking ~$${riskUsd.toFixed(2)}.`);
       // The plan is used up; Claude plans again after this trade closes.
       state.lastSignal = { ...sig, consensus: { ...c, orders: [], note: "Plan used for an entry." } };
       state.bot.armedSince = [];
@@ -825,6 +855,7 @@ export async function guardProtected() {
         const t = sell(p.id, Math.min(stop, q.price), 1, `Protection: fell ${p.protectPct}% from its high of ${fmt(p.peak!)}`);
         t.auto = true;
         log(`PROTECTED SELL ${p.symbol} @ ${fmt(t.price)}: fell ${p.protectPct}% from its high of ${fmt(p.peak!)} (${gain >= 0 ? "+" : ""}${gain.toFixed(1)}% from your buy). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+        alert(`🛡 Protection sold ${p.symbol} @ ${fmt(t.price)} (fell ${p.protectPct}% from its high). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}.`);
         changed = true;
       }
     }
@@ -842,6 +873,7 @@ function checkDrawdown(cfg: BotConfig) {
   if (eq >= state.startCash * (1 - cfg.maxDrawdownPct / 100)) return false;
   for (const p of state.positions.filter((x) => x.source === "bot")) sell(p.id, p.lastPrice, 1, "Emergency stop");
   stopBot(`Equity $${eq.toFixed(2)} fell below the ${cfg.maxDrawdownPct}% limit`);
+  alert(`🚨 Emergency stop: account $${eq.toFixed(2)} fell below your ${cfg.maxDrawdownPct}% limit. Bot positions sold and the bot is OFF.`);
   return true;
 }
 

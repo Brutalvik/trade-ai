@@ -88,6 +88,15 @@ Vercel runs the API as short-lived copies that don't share memory or disk, so tw
 
 Storage use: while it's holding or about to buy a coin, the bot reads the saved state every 5 seconds (so a Stop from the dashboard always wins). That's about 720 Redis reads per hour of active watching. Check that against your Upstash plan's monthly allowance. When there's nothing to watch, it only does a quick check per wake-up.
 
+### Phone alerts (optional)
+
+Get a message for every bot buy and sell, protected sells, the daily loss limit, the emergency stop, and a daily summary after midnight UTC. Pick one, add its settings in Vercel (Settings → Environment Variables), then redeploy:
+
+- **ntfy** (easiest, no account): install the ntfy app, subscribe to a long random topic name (e.g. `nexus-7f3k2m9q`), and set `NTFY_TOPIC` to that name. Anyone who knows the topic can read it, so make it hard to guess.
+- **Telegram** (private): create a bot with @BotFather to get `TELEGRAM_BOT_TOKEN`, send your bot any message, then get your chat id from `https://api.telegram.org/bot<token>/getUpdates` and set `TELEGRAM_CHAT_ID`.
+
+The How it trades popup shows whether alerts are on.
+
 ## Data sources
 
 FOMO (fomo.family) doesn't offer a public trading or data API. Its tokens are ordinary on-chain Solana tokens, though, so this app reads the same pools from public sources. Live prices and search come from DexScreener (free, no key).
