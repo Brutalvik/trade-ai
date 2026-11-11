@@ -24,11 +24,11 @@ const OrderSchema = z.object({
 });
 
 export const PlanSchema = z.object({
-  stance: z.enum(["BUY_NOW", "WAIT_FOR_TRIGGER", "AVOID"]).describe("BUY_NOW: good entry right now. WAIT_FOR_TRIGGER: only buy if a trigger below is hit. AVOID: no orders, stay out."),
+  stance: z.enum(["BUY_NOW", "WAIT_FOR_TRIGGER", "AVOID"]).describe("BUY_NOW: good entry right now. WAIT_FOR_TRIGGER: only buy if a trigger below is hit. AVOID: you advise staying out (still give your best risky setup in orders)."),
   confidence: z.number().describe("0-100, overall confidence in your read of this market (shown to the user; orders are judged by their own winChancePct)"),
   riskLevel: z.enum(["LOW", "MEDIUM", "HIGH", "EXTREME"]),
   reasoning: z.string().describe("2-4 short sentences explaining the plan in plain words"),
-  orders: z.array(OrderSchema).describe("0-2 standing buy orders. Empty for AVOID."),
+  orders: z.array(OrderSchema).describe("1-2 standing buy orders: your best setups. Give them even with AVOID (the user may choose to trade risky setups); leave empty only for a confirmed rug/honeypot or when no sensible price level exists."),
   cancelBelow: z.number().describe("Cancel the whole plan if price falls below this USD price (0 = none)"),
   cancelAbove: z.number().describe("Cancel the whole plan if price rises above this USD price without any order filling (0 = none)"),
   validMinutes: z.number().describe("How long this plan stays valid (5-720)"),
@@ -92,7 +92,7 @@ Rules:
 - Respect the bot's current limits given below: if dip orders are blocked, use a breakout order or AVOID.
 - Use your track record (given below when available) to calibrate winChancePct: if your past predictions were too optimistic, lower them.
 - Read buy/sell pressure (share of buys in the last hour), liquidity and the pool's age: thin, brand-new or sell-heavy pools deserve lower win chances.
-- Use AVOID with no orders for rugs, parabolic pumps, collapsing volume, thin liquidity, or no edge.
+- Use AVOID as your advice for rugs, parabolic pumps, collapsing volume, thin liquidity, or no edge, but STILL give your best 1-2 orders (buy level, stop, target) with an honest, usually low, winChancePct. The user decides whether to trade a risky setup; the bot only trades AVOID plans if they accept the risk. Leave orders empty only for a confirmed rug/honeypot or when there is no sensible level at all.
 - Put target slightly BELOW the nearest resistance (where recent rallies stalled or sellers stepped in), not at or above it.
   Runs often stall just under resistance; a target that actually gets reached lets the bot ride the trend from there.
   Base winChancePct on that reachable target.
@@ -232,7 +232,7 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   if (!agreement) return { ...empty, action: "HOLD", stance: "AVOID", confidence: Math.round(confidence / 2), agreement, note: `Models disagree (${[...stances].join(" vs ")}), so standing aside.` };
 
   const plan = plans[0];
-  const { kept, dropped } = plan.stance === "AVOID" ? { kept: [], dropped: [] } : checkOrders(plan.orders, costPct);
+  const { kept, dropped } = checkOrders(plan.orders, costPct);
   const validMs = clamp(plan.validMinutes, 5, 720) * 60_000;
   // Default cancel range: below the lowest stop, above the highest target.
   const cancelBelow = plan.cancelBelow > 0 ? plan.cancelBelow : kept.length ? Math.min(...kept.map((o) => o.stopLoss)) : 0;
@@ -246,7 +246,9 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   let note =
     stance === "AVOID"
       ? plan.stance === "AVOID"
-        ? "The AI says stay out for now."
+        ? kept.length
+          ? `The AI advises staying out (risky). Its best setup if you trade anyway: ${kept.map(describe).join(" or ")}.`
+          : `The AI says stay out for now${dropped.length ? ` (its setups failed the fee/risk check: ${dropped.join("; ")})` : ""}.`
         : `No order passed the fee/risk check (${dropped.join("; ")}).`
       : `Standing orders: ${kept.map(describe).join(" or ")}.`;
   if (kept.length && dropped.length) note += ` Dropped: ${dropped.join("; ")}.`;

@@ -448,3 +448,4 @@ tbody tr:hover { background: rgba(0, 229, 255, 0.04); }
 .risk-list { margin: 6px 0 10px; padding-left: 18px; color: #ffb3c4; }
 .risk-list li { margin: 3px 0; }
 .risky-pill { margin: 0 0 8px; padding: 6px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; color: #ff8fab; background: rgba(255, 61, 113, 0.1); border: 1px solid rgba(255, 61, 113, 0.45); }
+.avoid-setup { margin: 4px 0 8px; padding: 8px 10px; border-radius: 10px; font-size: 12px; line-height: 1.45; color: #ffb3c4; background: rgba(255, 61, 113, 0.08); border: 1px solid rgba(255, 61, 113, 0.4); }

@@ -1007,6 +1007,9 @@ export async function tick(persist = true) {
     const pair = q.pair;
     const c = sig.consensus;
     if (!c.orders.length || Date.now() > c.expiresAt) return;
+    // The AI advised staying out: its risky setup is only traded if the user accepted the risk.
+    if (c.stance === "AVOID" && !cfg.allowRisky)
+      return noteOnce(`avoid:${sig.at}`, `The AI advises staying out of ${t3.symbol}, so its risky setup isn't traded. Start the bot and choose "I understand, trade anyway" to trade it.`), undefined;
     for (let i = 0; i < c.orders.length; i++) {
       const o = c.orders[i];
       const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;

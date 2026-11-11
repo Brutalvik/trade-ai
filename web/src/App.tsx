@@ -573,7 +573,11 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
           {sig.orders?.length > 0 && (
             <div className="orders">
-              <div className="label-sm">Standing orders: the bot buys on its own the moment one triggers</div>
+              {sig.stance === "AVOID" ? (
+                <div className="avoid-setup">⚠ Risky setup: the AI advises against trading now. These are its best levels if you trade anyway; the bot uses them only if you start it and choose "I understand, trade anyway".</div>
+              ) : (
+                <div className="label-sm">Standing orders: the bot buys on its own the moment one triggers</div>
+              )}
               {sig.orders.map((o, i) => (
                 <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
               ))}
