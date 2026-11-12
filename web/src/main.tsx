@@ -1,47 +1,25 @@
-import { StrictMode } from 'react'
+import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
-import { PrivyProvider } from '@privy-io/react-auth'
 import './index.css'
-import App from './App.tsx'
-import { PrivyEnabled } from './Account.tsx'
 
-// Sign-in and wallets run on Privy when the server has a Privy app ID (from /api/status).
-// The ID is public; it's cached so the page shows instantly next time.
-const CACHE = 'nexus-privy-app-id'
+// The landing page lives at "/", the trading app at "/app". Each loads only its own code:
+// the landing page never downloads the app (or Privy). Old links to the app's pages
+// (/#guide, /#privacy, /#terms) still open them in the app.
+const path = window.location.pathname
+const inApp = path === '/app' || path.startsWith('/app/')
 const root = createRoot(document.getElementById('root')!)
 
-function render(appId: string | null) {
+if (inApp) {
+  void import('./appMain.tsx').then((m) => m.start(root))
+} else if (/^#(guide|rules|privacy|terms)$/.test(window.location.hash)) {
+  window.location.replace('/app' + window.location.hash)
+} else {
+  const Landing = lazy(() => import('./Landing.tsx'))
   root.render(
     <StrictMode>
-      {appId ? (
-        <PrivyProvider
-          appId={appId}
-          config={{
-            loginMethods: ['email', 'google'],
-            appearance: { theme: 'dark', accentColor: '#00e5ff', landingHeader: 'Sign in to TRADING//RUST', loginMessage: 'Your own paper account and Solana wallet' },
-            embeddedWallets: { solana: { createOnLogin: 'users-without-wallets' } },
-          }}
-        >
-          <PrivyEnabled.Provider value={true}>
-            <App />
-          </PrivyEnabled.Provider>
-        </PrivyProvider>
-      ) : (
-        <App />
-      )}
+      <Suspense fallback={null}>
+        <Landing />
+      </Suspense>
     </StrictMode>,
   )
 }
-
-const cached = localStorage.getItem(CACHE)
-render(cached)
-fetch('/api/status')
-  .then((r) => r.json())
-  .then((s: { privyAppId?: string | null }) => {
-    const id = s.privyAppId ?? null
-    if (id === cached) return
-    if (id) localStorage.setItem(CACHE, id)
-    else localStorage.removeItem(CACHE)
-    render(id)
-  })
-  .catch(() => {})

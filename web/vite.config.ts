@@ -23,4 +23,6 @@ export default defineConfig({
     __APP_COMMIT__: JSON.stringify(commit.slice(0, 7)),
   },
   server: { port: 5173, proxy: { '/api': 'http://localhost:8787' } },
+  // Two pages: the landing page (/) and the trading app (/app); both boot src/main.tsx.
+  build: { rollupOptions: { input: { main: 'index.html', app: 'app/index.html' } } },
 })

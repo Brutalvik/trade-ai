@@ -117,6 +117,10 @@ function Avatar({ user, size }: { user: User; size: number }) {
   );
 }
 
+// Set when the page was opened to sign in (the landing page's buttons): the sign-in window opens
+// as soon as sign-in is ready, then the flag is cleared.
+export const SIGNIN_PENDING = "nexus-signin-pending";
+
 // True when the page runs inside Privy's provider (sign-in and wallets through Privy).
 export const PrivyEnabled = createContext(false);
 
@@ -138,6 +142,11 @@ function PrivyAccountButton({ notify, onChange, state }: Props) {
     window.addEventListener(SIGNIN_EVENT, open);
     return () => window.removeEventListener(SIGNIN_EVENT, open);
   }); // re-subscribes each render so it uses the latest state
+  useEffect(() => {
+    if (!ready || !sessionStorage.getItem(SIGNIN_PENDING)) return;
+    sessionStorage.removeItem(SIGNIN_PENDING);
+    if (!authenticated) login();
+  }, [ready, authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
   const { wallets } = useWallets();
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [open, setOpen] = useState(false);
@@ -259,6 +268,10 @@ function PasswordAccountButton({ notify, onChange, state }: Props) {
   }, []);
   useEffect(() => {
     const open = () => setOpen("auth");
+    if (sessionStorage.getItem(SIGNIN_PENDING)) {
+      sessionStorage.removeItem(SIGNIN_PENDING);
+      open();
+    }
     window.addEventListener(SIGNIN_EVENT, open);
     return () => window.removeEventListener(SIGNIN_EVENT, open);
   }, []);

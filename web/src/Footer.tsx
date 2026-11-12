@@ -8,10 +8,13 @@ const PRIVACY_EMAIL = "testing@tradeairust.com";
 // Footer: a short risk reminder on the left; version, User guide, Privacy Policy and Terms on the right.
 // The Privacy Policy also opens at #privacy (shareable link).
 export function Footer() {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => window.location.hash === "#terms");
   const [privacy, setPrivacy] = useState(() => window.location.hash === "#privacy");
   useEffect(() => {
-    const on = () => window.location.hash === "#privacy" && setPrivacy(true);
+    const on = () => {
+      if (window.location.hash === "#privacy") setPrivacy(true);
+      if (window.location.hash === "#terms") setOpen(true);
+    };
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
@@ -37,7 +40,7 @@ export function Footer() {
           </button>
         </span>
       </footer>
-      {open && <TermsModal onClose={() => setOpen(false)} onPrivacy={() => { setOpen(false); setPrivacy(true); }} />}
+      {open && <TermsModal onClose={() => { setOpen(false); if (window.location.hash === "#terms") history.replaceState(null, "", window.location.pathname + window.location.search); }} onPrivacy={() => { setOpen(false); setPrivacy(true); }} />}
       {privacy && <PrivacyModal onClose={closePrivacy} />}
     </>
   );

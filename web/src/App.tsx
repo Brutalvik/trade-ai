@@ -8,7 +8,7 @@ import { WalletButton } from "./Wallet";
 import { findCoinPair, Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
 import { paperCsv, paperPdf, realCsv, realPdf } from "./exportTrades";
-import { AccessCtx, AccountButton, AdminModal, LockChip, Modal, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
+import { AccessCtx, AccountButton, SIGNIN_PENDING, AdminModal, LockChip, Modal, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
@@ -45,6 +45,15 @@ export default function App() {
     setHash("");
   };
   const [adminOpen, setAdminOpen] = useState(false);
+  // Arrived from the landing page's "Start free" / "Sign in": open the sign-in window once.
+  useEffect(() => {
+    const u = new URL(window.location.href);
+    if (u.searchParams.get("signin") !== "1") return;
+    u.searchParams.delete("signin");
+    history.replaceState(null, "", u.pathname + u.search + u.hash);
+    sessionStorage.setItem(SIGNIN_PENDING, "1");
+    window.dispatchEvent(new Event(SIGNIN_EVENT));
+  }, []);
   const loadMe = useCallback(() => api.me().then((r) => setMe(r.user)).catch(() => setMe(null)), []);
   useEffect(() => {
     void loadMe();
