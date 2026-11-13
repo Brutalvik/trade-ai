@@ -13,7 +13,7 @@ import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, scanAgents, type AgentCoin } from "./agents.js";
-import { firesNow, learn, type Learned } from "./learn.js";
+import { firesNow, learn, watchLevel, type Learned, type Watch } from "./learn.js";
 
 import { noteCommunityBuy } from "./lists.js";
 
@@ -192,6 +192,7 @@ type State = {
     agentLog?: AgentDecision[]; // Agents mode: recent picks and skips
     learned?: Learned; // Agent: what it learned from its coin's history
     lastFiredAt?: number; // Agent: the candle its pattern last fired on (one try per signal)
+    watch?: Watch | null; // Agent: the level it is watching (drawn on the chart)
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -805,7 +806,7 @@ function startBotHere(cfg: BotConfig) {
     cfg.autoCandidates = Math.min(5, Math.max(1, cfg.autoCandidates ?? 3));
     cfg.autoMinLiquidityUsd ??= 50_000;
   }
-  rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : cfg.pick === "agents" ? "agents" : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
+  rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : cfg.pick === "agents" ? "agents" : cfg.pick === "agent" ? `agent, $${cfg.budgetUsd ?? 1000} budget` : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
     symbol: cfg.symbol, pool: cfg.pool, pick: cfg.pick ?? "this", positionPct: cfg.positionPct, riskPerTradePct: cfg.riskPerTradePct, minConfidence: cfg.minConfidence,
     dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky, settingsOff: cfg.disabled ?? [], rewardRule: cfg.rewardRule !== false, strongMode: cfg.strongMode !== false,
   });
@@ -828,6 +829,7 @@ function startBotHere(cfg: BotConfig) {
   state.bot.startedAt = Date.now();
   state.bot.learned = undefined; // an agent learns its (possibly new) coin afresh
   state.bot.lastFiredAt = undefined;
+  state.bot.watch = null;
   state.bot.stoppedAt = null;
   cfg.trailPct = clampNum(cfg.trailPct ?? 3, 0.5, 30);
   log(
@@ -835,6 +837,8 @@ function startBotHere(cfg: BotConfig) {
       ? `Bot started in NEW COINS mode (${cfg.newChain ?? "solana"}): ${cfg.newCoinPct ?? 3}% per coin, stop -${cfg.newStopPct ?? 15}%, half at +${cfg.newTakePct ?? 30}%, max ${cfg.newMaxPerDay ?? 5} buys a day. Cash $${state.cash.toFixed(2)}.`
       : isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round the AI checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
+      : isCoinAgent(cfg)
+        ? `Agent started on ${cfg.symbol} with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. It studies the coin's history first, then watches for the pattern that paid there.`
       : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling (you accepted the risk). Trades are capped at 25% of the account, with a 5-minute cool-down after a loss." : ""}`,
     "good",
   );
@@ -1376,6 +1380,17 @@ async function coinAgentStep(cfg: BotConfig) {
     log(`${cfg.symbol} agent: ${L.summary}`, L.best ? "good" : "info");
     acct().dirty = true;
   }
+  // The level it's watching, for the chart (refreshed about once a minute). With no proven
+  // pattern yet it shows the closest one, marked as watching only (not traded).
+  const wst = L.best ?? L.table[0];
+  if (wst && Date.now() - (state.bot.watch?.at ?? 0) > 55_000) {
+    try {
+      const wp = await getPair(cfg.chain, cfg.pool);
+      const wc = await getCandles(cfg.chain, cfg.pool, wst.tf as Timeframe, 300, wp);
+      state.bot.watch = watchLevel(wst, wc, cost, AGENT_NET_TARGET, !!L.best) ?? { key: wst.key, label: wst.label, tf: wst.tf, side: "above", price: 0, stop: 0, target: 0, live: !!L.best, at: Date.now() };
+      acct().dirty = true;
+    } catch { /* keep the last one */ }
+  }
   if (!L.best) return setBlocked(null);
   const block = coinBlock(cfg, cfg.pool, cfg.symbol);
   if (block) return setBlocked(block, `ablock:${block}`);
@@ -1662,7 +1677,7 @@ async function tickBot(persist: boolean) {
         if (isAuto(cfg)) state.bot.target = null;
         // One trade at a time (the default): stop after a profitable round trip.
         const total = t.pnlUsd! + (pos.realizedUsd ?? 0);
-        if (total > 0 && !state.settings.continuous) {
+        if (total > 0 && !state.settings.continuous && !isCoinAgent(cfg) && !isAgents(cfg)) {
           stopBot(`Done: one profitable trade (+$${total.toFixed(2)}). Start it again for another, or turn on "Trade continuously" in Settings.`);
           alert(`⏹ Bot stopped after a profitable trade (+$${total.toFixed(2)}). Account $${equity().toFixed(2)}.`);
         }

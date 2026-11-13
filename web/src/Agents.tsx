@@ -15,15 +15,17 @@ type Defaults = Pick<BotConfig, "positionPct" | "minConfidence" | "analyzeEveryS
 
 const modeName = (c: BotConfig | null) => (c?.pick === "agent" ? "Agent" : c?.pick === "auto" ? "Auto-pick bot" : c?.pick === "newcoins" ? "New coins bot" : c?.pick === "agents" ? "Scout bot" : "AI-plan bot");
 
-export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, onClassic }: { state: AppState | null; limit: number; notify: Notify; refresh: () => void; onOpen: (chain: string, pool: string) => void; defaults: Defaults; onClassic: () => void }) {
+export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults }: { state: AppState | null; limit: number; notify: Notify; refresh: () => void; onOpen: (chain: string, pool: string) => void; defaults: Defaults }) {
   const access = useAccess();
   const [adding, setAdding] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null); // the agent whose window is open
   const slots = allBots(state);
   const running = slots.filter((b) => b.bot.running);
   const ids = Array.from({ length: Math.max(limit, 1) }, (_, i) => String(i + 1));
   const busy = (id: string) => slots.find((b) => b.id === id)?.bot.running || state?.positions.some((p) => p.source === "bot" && (p.botId ?? "1") === id);
   const freeId = ids.find((id) => !busy(id));
   const canAdd = limit > 0 && !!freeId;
+  const opened = running.find((b) => b.id === openId);
   return (
     <div className="panel agents-panel">
       <div className="panel-title">
@@ -34,7 +36,7 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, o
       </div>
       {running.length ? (
         <div className="agent-list">
-          {running.map((b) => <AgentCard key={b.id} slot={b} state={state} notify={notify} refresh={refresh} onOpen={onOpen} />)}
+          {running.map((b) => <AgentCard key={b.id} slot={b} state={state} notify={notify} refresh={refresh} onOpen={onOpen} onDetails={() => setOpenId(b.id)} />)}
         </div>
       ) : (
         <p className="muted small agents-empty">
@@ -43,83 +45,196 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, o
             : "No agents yet. An agent trades one coin with the money you give it: it studies the coin's history, learns which pattern has paid there, and buys only when that pattern appears."}
         </p>
       )}
-      <button className="link agents-classic" onClick={onClassic}>Classic bot view</button>
       {adding && freeId && <NewAgentModal slotId={freeId} state={state} defaults={defaults} notify={notify} onClose={() => setAdding(false)} onStarted={() => { setAdding(false); refresh(); }} takenPools={running.map((b) => b.bot.config?.pool ?? "")} />}
+      {opened && <AgentModal slot={opened} state={state} notify={notify} refresh={refresh} onOpen={onOpen} onClose={() => setOpenId(null)} />}
     </div>
   );
 }
 
-function AgentCard({ slot, state, notify, refresh, onOpen }: { slot: BotSlot; state: AppState | null; notify: Notify; refresh: () => void; onOpen: (chain: string, pool: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [stopping, setStopping] = useState(false);
+// Everything the card and the window show about one agent.
+function useAgent(slot: BotSlot, state: AppState | null) {
   const { bot, id } = slot;
   const cfg = bot.config;
   const isAgent = cfg?.pick === "agent";
   const pos = state?.positions.find((p) => p.source === "bot" && (p.botId ?? "1") === id);
   const since = bot.startedAt ?? 0;
-  const realized = (state?.trades ?? []).filter((t) => t.source === "bot" && (t.botId ?? "1") === id && t.side === "SELL" && t.time >= since).reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
-  const open$ = pos ? pos.qty * pos.lastPrice - pos.costUsd : 0;
-  const pnl = realized + open$;
+  const trades = (state?.trades ?? []).filter((t) => t.source === "bot" && (t.botId ?? "1") === id && t.time >= since);
+  const sells = trades.filter((t) => t.side === "SELL");
+  const realized = sells.reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
+  const pnl = realized + (pos ? pos.qty * pos.lastPrice - pos.costUsd : 0);
   const budget = cfg?.budgetUsd ?? DEFAULT_BUDGET;
   const L = bot.learned;
-  const chain = pos?.chain ?? (cfg?.pick === "auto" || cfg?.pick === "agents" ? bot.target?.chain : cfg?.chain);
-  const pool = pos?.pool ?? (cfg?.pick === "auto" || cfg?.pick === "agents" ? bot.target?.pool : cfg?.pool);
-  const symbol = pos?.symbol ?? (cfg?.pick === "auto" || cfg?.pick === "agents" ? bot.target?.symbol ?? "Scanning" : cfg?.symbol) ?? "?";
+  const roams = cfg?.pick === "auto" || cfg?.pick === "agents";
+  const chain = pos?.chain ?? (roams ? bot.target?.chain : cfg?.chain);
+  const pool = pos?.pool ?? (roams ? bot.target?.pool : cfg?.pool);
+  const symbol = pos?.symbol ?? (roams ? bot.target?.symbol ?? "Scanning" : cfg?.symbol) ?? "?";
+  // Where it is in its loop: 0 studying, 1 watching, 2 in a trade.
+  const stage = pos ? 2 : isAgent && !L ? 0 : 1;
+  const paused = !pos && !!bot.blocked;
   const status = pos
-    ? `Holding since ${new Date(pos.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: bought at ${fmtPrice(pos.entryPrice)}, exit ${pos.stopLoss ? fmtPrice(pos.stopLoss) : "–"}, target ${pos.target ? fmtPrice(pos.target) : "–"}`
+    ? `In a trade since ${new Date(pos.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: bought at ${fmtPrice(pos.entryPrice)}, exit ${pos.stopLoss ? fmtPrice(pos.stopLoss) : "–"}, target ${pos.target ? fmtPrice(pos.target) : "–"}`
     : bot.blocked
       ? `Paused: ${bot.blocked}`
       : isAgent
         ? L
-          ? L.best ? `Watching for "${L.best.label}" on the ${L.best.tf} chart` : "No pattern with an edge yet: watching, relearns every hour"
+          ? L.best ? `Watching for "${L.best.label}" on the ${L.best.tf} chart` : "No proven pattern yet: watching, relearns every hour"
           : "Studying the coin's history…"
         : "Running";
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status };
+}
+
+const STAGES = ["Studying", "Watching", "In a trade"];
+// The "it's running" bar: a light sweeps along it while the agent works; amber and still when paused.
+function RunBar({ stage, paused, labels = false }: { stage: number; paused: boolean; labels?: boolean }) {
+  return (
+    <div className={`run-bar ${paused ? "paused" : ""} s${stage}`} role="status" aria-label={paused ? "Agent paused" : `Agent running: ${STAGES[stage]}`}>
+      <div className="run-track"><i /></div>
+      {labels ? (
+        <div className="run-steps">
+          {STAGES.map((n, i) => <span key={n} className={i === stage ? "now" : i < stage ? "done" : ""}>{n}</span>)}
+          <em>{paused ? "Paused" : "Running"}</em>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function useStop(a: ReturnType<typeof useAgent>, notify: Notify, refresh: () => void, after?: () => void) {
+  const [stopping, setStopping] = useState(false);
   const stop = async () => {
     setStopping(true);
     try {
-      await api.stopBot(id);
-      notify(`${isAgent ? "Agent" : "Bot"} on ${symbol} stopped${pos ? ". Its open trade stays in Positions: close it there if you want out." : ""}`);
+      await api.stopBot(a.id);
+      notify(`${a.isAgent ? "Agent" : "Bot"} on ${a.symbol} stopped${a.pos ? ". Its open trade stays in Positions: close it there if you want out." : ""}`);
       refresh();
+      after?.();
     } catch (e: any) {
       notify(e.message, true);
     } finally {
       setStopping(false);
     }
   };
+  return { stop, stopping };
+}
+
+function AgentCard({ slot, state, notify, refresh, onOpen, onDetails }: { slot: BotSlot; state: AppState | null; notify: Notify; refresh: () => void; onOpen: (chain: string, pool: string) => void; onDetails: () => void }) {
+  const a = useAgent(slot, state);
+  const { stop, stopping } = useStop(a, notify, refresh);
   return (
-    <div className={`agent-card ${pos ? "holding" : ""}`}>
+    <div className={`agent-card ${a.pos ? "holding" : ""}`} role="button" tabIndex={0} aria-label={`Open the ${a.symbol} agent`} onClick={onDetails}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onDetails(); } }}>
       <div className="agent-top">
-        <span className={`agent-avatar ${pos ? "live" : L && !L.best && isAgent ? "idle" : ""}`}>{pos?.imageUrl ? <img src={pos.imageUrl} alt="" /> : symbol.slice(0, 1).toUpperCase()}</span>
+        <span className={`agent-avatar ${a.pos ? "live" : a.paused ? "idle" : ""}`}>{a.pos?.imageUrl ? <img src={a.pos.imageUrl} alt="" /> : a.symbol.slice(0, 1).toUpperCase()}</span>
         <span className="agent-name">
-          <b>{symbol}</b>
-          <small>{modeName(cfg)}{isAgent ? ` · ${fmtUsd(budget)} budget` : ""}</small>
+          <b>{a.symbol}</b>
+          <small>{modeName(a.cfg)}{a.isAgent ? ` · ${fmtUsd(a.budget)} budget` : ""}</small>
         </span>
-        <span className={`agent-pnl ${pnl >= 0 ? "up" : "down"}`}>
-          {pnl >= 0 ? "+" : ""}{fmtUsd(pnl)}
-          {isAgent ? <small>{((pnl / budget) * 100).toFixed(1)}%</small> : null}
+        <span className={`agent-pnl ${a.pnl >= 0 ? "up" : "down"}`}>
+          {a.pnl >= 0 ? "+" : ""}{fmtUsd(a.pnl)}
+          {a.isAgent ? <small>{((a.pnl / a.budget) * 100).toFixed(1)}%</small> : null}
         </span>
       </div>
-      <div className="agent-status">{status}</div>
-      {isAgent && L ? <div className={`agent-learned ${L.best ? "has" : ""}`}>{L.summary}</div> : null}
-      <div className="agent-actions">
-        {chain && pool ? <button className="chip" onClick={() => onOpen(chain, pool)}>View chart</button> : null}
-        {isAgent && L?.table.length ? <button className="chip" onClick={() => setOpen((v) => !v)} aria-expanded={open}>{open ? "Hide" : "What it learned"}</button> : null}
+      <RunBar stage={a.stage} paused={a.paused} />
+      <div className="agent-status">{a.status}</div>
+      <div className="agent-actions" onClick={(e) => e.stopPropagation()}>
+        {a.chain && a.pool ? <button className="chip" onClick={() => onOpen(a.chain!, a.pool!)}>View chart</button> : null}
+        <button className="chip" onClick={onDetails}>Details</button>
         <button className="chip danger" onClick={() => void stop()} disabled={stopping}>{stopping ? "Stopping…" : "Stop"}</button>
       </div>
-      {open && L ? (
-        <table className="agent-table">
-          <thead><tr><th>Pattern</th><th>Chart</th><th className="num">Trades</th><th className="num">Won</th><th className="num">Avg after fees</th></tr></thead>
-          <tbody>
-            {L.table.map((t) => (
-              <tr key={`${t.key}${t.tf}`} className={L.best && t.key === L.best.key && t.tf === L.best.tf ? "best" : ""}>
-                <td>{t.label}</td><td>{t.tf}</td><td className="num">{t.trades}</td><td className="num">{t.wins}</td>
-                <td className={`num ${t.avgNetPct >= 0 ? "up" : "down"}`}>{t.avgNetPct >= 0 ? "+" : ""}{t.avgNetPct.toFixed(1)}%</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
     </div>
+  );
+}
+
+// The agent's window: what it's doing now, what it learned, its activity and its trades.
+function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: BotSlot; state: AppState | null; notify: Notify; refresh: () => void; onOpen: (chain: string, pool: string) => void; onClose: () => void }) {
+  const a = useAgent(slot, state);
+  const { stop, stopping } = useStop(a, notify, refresh, onClose);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const ran = Math.max(0, Math.floor((now - (a.bot.startedAt ?? now)) / 1000));
+  const ranText = ran >= 3600 ? `${Math.floor(ran / 3600)}h ${Math.floor((ran % 3600) / 60)}m` : `${Math.floor(ran / 60)}m ${String(ran % 60).padStart(2, "0")}s`;
+  const wins = a.sells.filter((t) => (t.pnlUsd ?? 0) > 0).length;
+  const w = a.bot.watch;
+  const L = a.L;
+  return (
+    <Modal title={`${a.symbol} ${a.isAgent ? "agent" : "bot"}`} onClose={onClose} wide
+      foot={
+        <>
+          {a.chain && a.pool ? <button className="btn ghost" onClick={() => { onOpen(a.chain!, a.pool!); onClose(); }}>View chart</button> : null}
+          <button className="btn ghost danger-btn" onClick={() => void stop()} disabled={stopping}>{stopping ? "Stopping…" : `Stop ${a.isAgent ? "agent" : "bot"}`}</button>
+        </>
+      }>
+      <div className="agent-modal">
+        <div className="agent-top">
+          <span className={`agent-avatar big ${a.pos ? "live" : a.paused ? "idle" : ""}`}>{a.pos?.imageUrl ? <img src={a.pos.imageUrl} alt="" /> : a.symbol.slice(0, 1).toUpperCase()}</span>
+          <span className="agent-name">
+            <b>{a.symbol}</b>
+            <small>{modeName(a.cfg)} · running {ranText}</small>
+          </span>
+          <span className={`agent-pnl big ${a.pnl >= 0 ? "up" : "down"}`}>
+            {a.pnl >= 0 ? "+" : ""}{fmtUsd(a.pnl)}
+            {a.isAgent ? <small>{((a.pnl / a.budget) * 100).toFixed(1)}% of budget</small> : null}
+          </span>
+        </div>
+        <RunBar stage={a.stage} paused={a.paused} labels />
+        <p className="agent-now">{a.status}</p>
+        <div className="agent-stats">
+          {a.isAgent ? <div><small>Budget</small><b>{fmtUsd(a.budget)}</b></div> : null}
+          {a.isAgent ? <div><small>Funds now</small><b>{fmtUsd(a.budget + a.realized)}</b></div> : null}
+          <div><small>Trades</small><b>{a.sells.length}</b></div>
+          <div><small>Profitable</small><b>{a.sells.length ? `${wins} of ${a.sells.length}` : "–"}</b></div>
+          {w && w.price > 0 ? <div><small>{w.live ? (w.side === "above" ? "Buys above" : "Buys near") : "Watching level"}</small><b>{fmtPrice(w.price)}</b></div> : null}
+          {w && w.live && w.price > 0 ? <div><small>Then exit / target</small><b>{fmtPrice(w.stop)} / {fmtPrice(w.target)}</b></div> : null}
+        </div>
+        {a.isAgent && L ? (
+          <>
+            <div className="label-sm">What it learned from {a.symbol}'s history</div>
+            <div className={`agent-learned ${L.best ? "has" : ""}`}>{L.summary}</div>
+            {L.table.length ? (
+              <table className="agent-table">
+                <thead><tr><th>Pattern</th><th>Chart</th><th className="num">Past trades</th><th className="num">Won</th><th className="num">Average after fees</th></tr></thead>
+                <tbody>
+                  {L.table.map((t) => (
+                    <tr key={`${t.key}${t.tf}`} className={L.best && t.key === L.best.key && t.tf === L.best.tf ? "best" : ""}>
+                      <td>{t.label}{L.best && t.key === L.best.key && t.tf === L.best.tf ? " ✓" : ""}</td><td>{t.tf}</td><td className="num">{t.trades}</td><td className="num">{t.wins}</td>
+                      <td className={`num ${t.avgNetPct >= 0 ? "up" : "down"}`}>{t.avgNetPct >= 0 ? "+" : ""}{t.avgNetPct.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+          </>
+        ) : null}
+        <div className="label-sm">Activity</div>
+        <div className="agent-log">
+          {a.bot.log.length ? a.bot.log.slice(0, 14).map((l, i) => (
+            <div key={i} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span> {l.msg}</div>
+          )) : <div className="muted">Nothing yet.</div>}
+        </div>
+        {a.trades.length ? (
+          <>
+            <div className="label-sm">Its trades</div>
+            <table className="agent-table">
+              <thead><tr><th>Time</th><th>Side</th><th className="num">Price</th><th className="num">Amount</th><th className="num">P&amp;L</th><th>Why</th></tr></thead>
+              <tbody>
+                {a.trades.slice(0, 10).map((t) => (
+                  <tr key={t.id}>
+                    <td>{new Date(t.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
+                    <td className={t.side === "BUY" ? "up" : "down"}>{t.side}</td>
+                    <td className="num">{fmtPrice(t.price)}</td><td className="num">{fmtUsd(t.usd)}</td>
+                    <td className={`num ${(t.pnlUsd ?? 0) >= 0 ? "up" : "down"}`}>{t.pnlUsd === undefined ? "–" : `${t.pnlUsd >= 0 ? "+" : ""}${fmtUsd(t.pnlUsd)}`}</td>
+                    <td className="why">{t.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 

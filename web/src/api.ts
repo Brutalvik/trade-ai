@@ -41,6 +41,7 @@ export type AppState = {
   settings: { feePct: number; slippagePct: number; continuous?: boolean };
   bot: {
     learned?: Learned; // Agent: what it learned from its coin's history
+    watch?: { key: string; label: string; tf: string; side: "above" | "below"; price: number; stop: number; target: number; live: boolean; at: number } | null; // Agent: the level it's watching
     running: boolean;
     config: BotConfig | null;
     lastAnalysisAt: number;

@@ -30,21 +30,27 @@ export function Modal({ title, onClose, children, foot, narrow, wide }: { title:
 
 // ---------- Settings ----------
 
-export function SettingsButton({ alerts, continuous, onSaved, notify }: { alerts: "telegram" | "ntfy" | null; continuous: boolean; onSaved: () => void; notify: (m: string, bad?: boolean) => void }) {
+export function SettingsButton({ alerts, fee, slip, onSaved, notify }: { alerts: "telegram" | "ntfy" | null; fee: number; slip: number; onSaved: () => void; notify: (m: string, bad?: boolean) => void }) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(continuous);
+  const [feeS, setFeeS] = useState(String(fee));
+  const [slipS, setSlipS] = useState(String(slip));
   const [saving, setSaving] = useState(false);
   const openIt = () => {
-    setDraft(continuous);
+    setFeeS(String(fee));
+    setSlipS(String(slip));
     setOpen(true);
   };
+  const f = Number(feeS), sl = Number(slipS);
+  const valid = f >= 0 && f <= 10 && sl >= 0 && sl <= 10;
+  const changed = f !== fee || sl !== slip;
   const save = async () => {
+    if (!valid) return notify("Fees and slippage must be between 0 and 10%.", true);
     setSaving(true);
     try {
-      if (draft !== continuous) await api.settings({ continuous: draft });
+      if (changed) await api.settings({ feePct: f, slippagePct: sl });
       onSaved();
       setOpen(false);
-      notify(draft === continuous ? "No changes." : draft ? "The bot will now trade continuously." : "The bot will now stop after each profitable trade.");
+      notify(changed ? "Trading costs saved." : "No changes.");
     } catch (e: any) {
       notify(e.message, true);
     } finally {
@@ -70,25 +76,24 @@ export function SettingsButton({ alerts, continuous, onSaved, notify }: { alerts
           }
         >
           <div className="settings-head">
-            <span>Bot trading</span>
-            <span className="muted tiny">{continuous ? "Continuous" : "One trade at a time"}</span>
+            <span>Trading costs (paper)</span>
+            <span className="muted tiny">Used for every simulated trade</span>
           </div>
-          <div className="choice-list" role="radiogroup" aria-label="Bot trading">
-            <label className={`choice ${!draft ? "on" : ""}`}>
-              <input type="radio" name="runmode" checked={!draft} onChange={() => setDraft(false)} />
-              <span>
-                <b>One trade at a time</b>
-                <small>The bot stops itself after a profitable trade, so you can check the result and start it again. After a losing trade it keeps going (with its safety rules).</small>
-              </span>
+          <div className="grid2 knobs">
+            <label>
+              Fee per buy or sell (%)
+              <input type="number" step="0.1" min="0" max="10" value={feeS} onChange={(e) => setFeeS(e.target.value)} />
+              <small>What your exchange charges on each side of a trade.</small>
             </label>
-            <label className={`choice ${draft ? "on" : ""}`}>
-              <input type="radio" name="runmode" checked={draft} onChange={() => setDraft(true)} />
-              <span>
-                <b>Trade continuously</b>
-                <small>The bot keeps trading round after round until you stop it, or a safety limit (daily loss limit, emergency stop) stops it.</small>
-              </span>
+            <label>
+              Slippage per buy or sell (%)
+              <input type="number" step="0.1" min="0" max="10" value={slipS} onChange={(e) => setSlipS(e.target.value)} />
+              <small>How much worse the fill usually is than the quoted price. Thin coins slip more.</small>
             </label>
           </div>
+          <p className="small">
+            A buy plus a sell costs about <b>{(2 * ((f || 0) + (sl || 0))).toFixed(1)}%</b>. Agents aim for +10% after these costs, so their target sits that much higher on the price.
+          </p>
 
           <div className="settings-head">
             <span>Phone alerts</span>
@@ -96,7 +101,7 @@ export function SettingsButton({ alerts, continuous, onSaved, notify }: { alerts
           </div>
           <p className="small">
             {alerts
-              ? "You'll get a message for every bot buy and sell, protected sells, the daily loss limit, the emergency stop, and a daily summary after midnight UTC."
+              ? "You'll get a message for every agent buy and sell, protected sells, the daily loss limit, the emergency stop, and a daily summary after midnight UTC."
               : "Get a message on your phone for every trade, safety limit and a daily summary: add Telegram or ntfy settings in Vercel (see the README), then redeploy."}
           </p>
         </Modal>

@@ -1142,3 +1142,40 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .opp-score.amber { color: #ffc857; }
 .agent-foot-note { margin-right: auto; }
 @media (max-width: 640px) { .agent-form { grid-template-columns: 1fr; } .opp-row { grid-template-columns: 18px 26px minmax(0, 1fr) 54px; } .opp-bars { display: none; } }
+
+/* Agent "running" bar: a light sweeps along the track while the agent works */
+.agent-card { cursor: pointer; transition: border-color 0.15s, transform 0.15s; }
+.agent-card:hover { border-color: rgba(0, 229, 255, 0.5); transform: translateY(-1px); }
+.agent-card:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.run-bar { display: flex; flex-direction: column; gap: 6px; }
+.run-track { position: relative; height: 4px; border-radius: 999px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
+.run-track i { position: absolute; top: 0; bottom: 0; left: -40%; width: 40%; border-radius: 999px; background: linear-gradient(90deg, transparent, var(--cyan), var(--violet), transparent); animation: run-sweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+.run-bar.s2 .run-track i { background: linear-gradient(90deg, transparent, var(--up), var(--cyan), transparent); animation-duration: 1.1s; }
+.run-bar.s0 .run-track i { animation-duration: 0.9s; }
+.run-bar.paused .run-track i { animation: none; left: 0; width: 100%; background: rgba(255, 200, 87, 0.55); }
+@keyframes run-sweep { from { left: -40%; } to { left: 100%; } }
+.run-steps { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.run-steps span { padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); }
+.run-steps span.done { color: #9be9ff; border-color: rgba(0, 229, 255, 0.3); }
+.run-steps span.now { color: #04101a; font-weight: 700; border-color: transparent; background: linear-gradient(90deg, #00f5a0, var(--cyan)); animation: run-pulse 1.6s ease-in-out infinite; }
+.run-bar.paused .run-steps span.now { background: #ffc857; animation: none; }
+@keyframes run-pulse { 50% { box-shadow: 0 0 14px rgba(0, 229, 255, 0.55); } }
+.run-steps em { margin-left: auto; font-style: normal; font-weight: 600; color: var(--up); display: inline-flex; align-items: center; gap: 6px; }
+.run-steps em::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: lp-ping 1.6s infinite; }
+.run-bar.paused .run-steps em { color: #ffc857; } .run-bar.paused .run-steps em::before { animation: none; }
+@keyframes lp-ping { 0% { box-shadow: 0 0 0 0 rgba(0, 245, 160, 0.6); } 100% { box-shadow: 0 0 0 9px rgba(0, 245, 160, 0); } }
+/* Agent window */
+.agent-modal { display: flex; flex-direction: column; gap: 12px; }
+.agent-avatar.big { width: 46px; height: 46px; font-size: 17px; }
+.agent-pnl.big { font-size: 20px; } .agent-pnl.big small { font-size: 11px; }
+.agent-now { margin: 0; font-size: 14px; line-height: 1.5; }
+.agent-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.agent-stats > div { padding: 9px 11px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.03); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.agent-stats small { font-size: 11px; color: var(--muted); }
+.agent-stats b { font-family: "JetBrains Mono", monospace; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-log { max-height: 190px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; font-size: 12px; line-height: 1.45; padding: 9px 11px; border-radius: 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); }
+.agent-log .good { color: #8ff5cd; } .agent-log .bad { color: #ff9db2; }
+.agent-table td.why { color: var(--muted); max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.btn.danger-btn { color: #ff8fa8; border-color: rgba(255, 61, 113, 0.45); }
+.btn.danger-btn:hover { background: rgba(255, 61, 113, 0.12); }
+@media (prefers-reduced-motion: reduce) { .run-track i { animation: none; left: 0; width: 100%; opacity: 0.5; } .run-steps span.now, .run-steps em::before { animation: none; } }

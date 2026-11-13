@@ -5,28 +5,11 @@ import { useEffect, type ReactNode } from "react";
 import { useAccess } from "./Account";
 import type { PlanInfo } from "./api";
 
-type Preset = {
-  label: string;
-  positionPct: number;
-  riskPerTradePct: number;
-  minConfidence: number;
-  analyzeMin: number;
-  breakEvenAtPct: number;
-  lockPct: number;
-  partialAtPct: number;
-  trailPct: number;
-  cooldownMin: number;
-  dailyLossPct: number;
-  maxDrop1hPct: number;
-  maxDrawdownPct: number;
-  riskyMinWin: number;
-};
-
 type Section = { id: string; title: string; show: boolean; body: ReactNode };
 
 const fmtM = (n: number) => (n >= 1_000_000 ? `${n / 1_000_000}M` : `${Math.round(n / 1000)}K`);
 
-export function GuidePage({ presets, plans, onClose }: { presets: Record<string, Preset>; plans: PlanInfo[]; onClose: () => void }) {
+export function GuidePage({ plans, onClose }: { plans: PlanInfo[]; onClose: () => void }) {
   const { me, openPlans } = useAccess();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -44,19 +27,11 @@ export function GuidePage({ presets, plans, onClose }: { presets: Record<string,
   const limit = has("trade.limit");
   const ai = has("ai.analyze");
   const bot = has("bot.run");
-  const pro = has("bot.autopick");
   const bots = me?.botLimit ?? (bot ? 1 : 0);
   const plan = plans.find((p) => p.id === (me?.plan ?? "free")) ?? plans.find((p) => p.id === "free");
   const planName = plan?.name ?? "Free";
   const isTop = me?.plan === "max" || me?.role === "admin";
 
-  const P = Object.values(presets);
-  const row = (label: string, f: (p: Preset) => string) => (
-    <tr>
-      <td>{label}</td>
-      {P.map((p) => <td key={p.label} className="num">{f(p)}</td>)}
-    </tr>
-  );
   const go = (id: string) => document.getElementById(`guide-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
   const sections: Section[] = [
@@ -70,7 +45,7 @@ export function GuidePage({ presets, plans, onClose }: { presets: Record<string,
             <li><b>Pick a coin</b> from the list on the left, or search by name, ticker or address at the top.</li>
             <li><b>Read the chart</b>, then <b>buy</b> from the trade panel on the right. Your coins appear under <b>Positions</b> below the chart.</li>
           </ol>
-          <p>The screen has four parts: the <b>coin list</b> (left), the <b>chart</b> (middle), the <b>trade panel{ai ? ", AI Signal" : ""}{bot ? " and Auto-pilot" : ""}</b> (right) and <b>Positions, Trade history{bot ? " and Bot log" : ""}</b> (bottom).</p>
+          <p>The screen has four parts: the <b>coin list</b> (left), the <b>chart</b> (middle), the <b>trade panel{ai ? ", AI Signal" : ""}{bot ? " and Agents" : ""}</b> (right) and <b>Positions, Trade history{bot ? " and the agents' log" : ""}</b> (bottom).</p>
         </>
       ),
     },
@@ -147,125 +122,23 @@ export function GuidePage({ presets, plans, onClose }: { presets: Record<string,
             <li><b>One AI check before each buy</b> (optional): a small AI call per trade, not per scan.</li>
             <li><b>Its budget is its limit.</b> It invests only its budget plus what its own trades have made. If it loses half its budget, it stops itself.</li>
             <li><b>Top 10 opportunities</b> are scored by eight rule-based scouts: trend, volume, real traders, holders, dev wallet, liquidity, momentum and age. A coin with a deal-breaker (for example the dev holds too much, or liquidity is being pulled) is marked vetoed with the reason. Scores are not advice.</li>
-            <li><b>Stop</b> on an agent's card switches it off; an open trade stays in Positions for you to close. The older bot card is under <b>Classic bot view</b>.</li>
+            <li><b>On the chart</b>: once an agent is on a coin, the chart shows the level it's watching (BUY ABOVE / BUY BELOW with the exit and target it would use; grey WATCHING while no pattern has proved itself). After it buys you see BOUGHT, EXIT and TARGET, and its buys and sells are marked on the candles.</li>
+            <li><b>Click an agent's card</b> to open its window: a running bar (Studying → Watching → In a trade), its budget and results, what it learned, its activity log and its trades.</li>
+            <li><b>Safety limits</b>: after a losing trade it waits 30 minutes before buying that coin again; after 3 losing trades in a row across your agents, no new buys for an hour; if the account falls 10% in a day, no new trades until 00:00 UTC; if it falls 25% below its value when an agent started, every agent sells and switches off.</li>
+            <li><b>Exits only move up</b>: stop-loss first; from +8% the exit sits above the buy price and then follows the best price to keep half the best gain; at the target it sells half and trails the rest; a time limit closes a trade that goes nowhere. Prices more than 15% away from the live price are ignored as bad ticks.</li>
+            <li><b>Stop</b> on an agent's card or in its window switches it off; an open trade stays in Positions for you to close.</li>
           </ul>
         </>
-      ),
-    },
-    {
-      id: "bot", title: "Auto-pilot: the AI bot", show: bot,
-      body: (
-        <>
-          <ol>
-            <li>Open a coin, choose a preset (<b>Safe</b>, <b>Balanced</b>, <b>Aggressive</b>) or <b>Custom</b>, and press <b>Start bot</b>.</li>
-            <li><b>The AI writes a plan</b>; the app checks every order against fees, risk and your minimum win chance.</li>
-            <li><b>The bot watches the price every 5 seconds</b> (with the page closed too) and buys the moment an order's trigger is reached, if the safety rules allow it.</li>
-            <li><b>It manages the trade</b> until it sells (see "How the bot sells"), then asks the AI for a fresh plan before buying again. While it does, the AI panel shows the planning animation.</li>
-          </ol>
-          <ul>
-            <li><b>One trade or continuously</b> (wrench ⚙ in the header): by default the bot stops after a profitable trade; <b>Trade continuously</b> keeps it going.</li>
-            <li><b>Buy by hand, let the bot sell</b>: start a bot on a coin you already hold and it takes over that position. <b>Closing a bot's coin yourself</b> stops that bot.</li>
-            <li><b>Settings</b> (in the bot card) can't be changed while the bot runs: stop it first.</li>
-            <li><b>Bot log</b> (bottom) shows every decision; trades the bot makes also pop up at the top right.</li>
-            {bots > 1 ? <li><b>{bots} bots at once</b>: the Bot 1–{bots} tabs each run their own coin, settings, plan and log, from the same cash. Two bots never trade the same coin. Clicking a bot tab opens its coin; the daily loss limit and emergency stop cover the whole account.</li> : null}
-          </ul>
-        </>
-      ),
-    },
-    {
-      id: "switches", title: "Bot switches", show: bot,
-      body: (
-        <ul>
-          <li><b>Strong mode</b> (on by default): extra checks on every buy. Win chances are scaled by your bots' real results; no dip buys while a coin is falling; dip orders wait for a bounce off the low; breakouts must hold above the level; after 3 losing trades in a row, no new buys for 60 minutes; Avoid plans are never traded.</li>
-          <li><b>AI second look at the stop</b> (on by default): when a trade touches its stop-loss, the AI checks the chart again and may keep it open <b>once</b>, with a new last exit never more than 1.5× the original risk below your buy price. At the time limit it can extend the hold (10–120 min, up to 3 times). It must clear your minimum win chance, aim for a profit after fees and make money on average from there; otherwise, or if the AI is slow or unavailable, the bot sells. This can turn a small loss into a bigger one.</li>
-          <li><b>Gain must be 1.5× the risk</b> (on by default): only buys when the possible gain after fees is at least 1.5× the possible loss.</li>
-          <li><b>Turning a protection off</b> (any setting's On/Off pill, Strong mode, or the 1.5× rule) asks you to confirm "I understand", and your choice is recorded in your activity history.</li>
-        </ul>
-      ),
-    },
-    {
-      id: "buy", title: "When the bot buys", show: bot,
-      body: (
-        <ul>
-          <li><b>Fills like real orders</b>: a dip order at its trigger price or better; a breakout at its trigger or worse; buy now at the live price.</li>
-          <li><b>Wait for the price to hold</b> (optional): the bot waits a few seconds past the trigger so it doesn't buy a spike or a crash that's still going.</li>
-          <li><b>Fresh plan only</b>: never a plan made before the bot started or before its last trade closed.</li>
-          <li><b>Falling coins</b>: dip and buy-now orders pause while the 1-hour trend is down or the coin fell more than your limit in the last hour.</li>
-          <li><b>Size</b>: <i>money per trade</i> is the most one trade can use (% of the account). With <i>risk per trade</i> set, the trade is sized so hitting the exit loses about that % of the account: amount ≈ account × risk % ÷ (distance to the exit + costs).</li>
-          <li><b>AI tokens</b>: when they run out, the bot makes no new plans (it still manages an open trade).</li>
-        </ul>
-      ),
-    },
-    {
-      id: "sell", title: "How the bot sells", show: bot,
-      body: (
-        <>
-          <p>The AI sets each trade's starting exit (stop-loss). After that the bot only raises it, except for the AI second look above.</p>
-          <ul>
-            <li><b>Stop-loss</b>: sells if the price falls to the exit, at that price or lower if it gapped.</li>
-            <li><b>Profit guard</b>: once the trade is up enough, the exit jumps to a small profit after fees, so a winner can't turn into a loss.</li>
-            <li><b>Profit lock</b>: the exit then follows the best price so the trade keeps at least a share of its best gain (default 50%).</li>
-            <li><b>Take half</b>: sells half at the target (or earlier, if you set it), and the rest rides on.</li>
-            <li><b>Trailing stop</b> past the target: sells if the price falls a set % from its highest close (sized to how much the coin normally moves, at most 12%).</li>
-            <li><b>Sell everything once up $X</b> (optional): takes the whole profit when the trade is up that many dollars after fees.</li>
-            <li><b>Time limit</b>: sells after the order's maximum holding time.</li>
-            <li>Bad ticks (prices more than 15% away from the live price) are ignored.</li>
-          </ul>
-        </>
-      ),
-    },
-    {
-      id: "safety", title: "Safety limits", show: bot,
-      body: (
-        <ul>
-          <li><b>Cool-down after a loss</b>: no re-buy of that coin for a while. <b>Two losses in a row</b> on a coin in a day: skipped until 00:00 UTC.</li>
-          <li><b>Daily loss limit</b>: if the account falls this % in a UTC day, no new trades until midnight UTC. <b>Continue anyway</b> (after "I understand") lifts it for the rest of the day.</li>
-          <li><b>Emergency stop</b>: if the account falls more than this % below its value when the bot started, the bot sells its positions and switches off. It always applies.</li>
-        </ul>
-      ),
-    },
-    {
-      id: "risky", title: "Risky mode and auto-pick", show: pro,
-      body: (
-        <>
-          <p><b>Risky mode</b>: starting a bot on a coin the AI rates risky, advises avoiding, that is falling, or with thin liquidity shows the reasons. <b>"I understand, trade anyway"</b> lets the bot use Avoid plans and red risky setups and lower its minimum win chance (default 30%). Still applies: each trade capped at 25% of the account, a 5-minute cool-down after a loss, a coin skipped for the day after two losses in a row, the 1.5× rule (if on), the daily loss limit and the emergency stop. With Strong mode on, Avoid plans are still skipped.</p>
-          <p><b>Auto-pick</b>: instead of one coin, the bot scans trending coins on the chosen chain, skips thin ones (under $50K liquidity), asks the AI about the best few and trades the strongest plan, then picks again after each trade.</p>
-        </>
-      ),
-    },
-    {
-      id: "presets", title: "Preset values", show: bot,
-      body: (
-        <div className="table-wrap">
-          <table className="scan rules-table">
-            <thead><tr><th>Setting</th>{P.map((p) => <th key={p.label} className="num">{p.label}</th>)}</tr></thead>
-            <tbody>
-              {row("Money per trade (% of account)", (p) => `${p.positionPct}%`)}
-              {row("Risk per trade (% of account)", (p) => (p.riskPerTradePct > 0 ? `${p.riskPerTradePct}%` : "off (full amount)"))}
-              {row("Minimum win chance", (p) => `${p.minConfidence}%`)}
-              {pro ? row("Minimum win chance in risky mode", (p) => `${p.riskyMinWin}%`) : null}
-              {row("Backup AI re-check", (p) => `every ${p.analyzeMin} min`)}
-              {row("Profit guard once up", (p) => `${p.breakEvenAtPct}%`)}
-              {row("Profit lock (best gain kept)", (p) => `${p.lockPct}%`)}
-              {row("Take half at (of the way to target)", (p) => `${p.partialAtPct}%`)}
-              {row("Trailing stop past the target", (p) => `${p.trailPct}%`)}
-              {row("Cool-down after a loss", (p) => `${p.cooldownMin} min`)}
-              {row("Skip dips if it fell more than (1 hour)", (p) => `${p.maxDrop1hPct}%`)}
-              {row("Daily loss limit", (p) => `${p.dailyLossPct}%`)}
-              {row("Emergency stop", (p) => `${p.maxDrawdownPct}%`)}
-            </tbody>
-          </table>
-        </div>
       ),
     },
     {
       id: "positions", title: "Positions, history and exports", show: true,
       body: (
         <ul>
-          <li><b>Positions</b>: each coin you hold, {bot ? "who bought it (you or a bot), " : ""}the amount invested, entry and current price, profit or loss, exit and target, and when it sells by.</li>
+          <li><b>Positions</b>: each coin you hold, {bot ? "who bought it (you or an agent), " : ""}the amount invested, entry and current price, profit or loss, exit and target, and when it sells by.</li>
           <li><b>Trade history</b>: every buy and sell. Download it as <b>CSV</b> (for spreadsheets) or a formatted <b>PDF</b>.</li>
           <li><b>Growth ladder</b> (checkbox): your progress toward account goals, shown under Positions.</li>
-          <li><b>Profile → Activity &amp; history</b>: sign-ins, setting changes, {bot ? "bot starts and stops, " : ""}{ai ? "AI analyses, " : ""}and every "I understand" you confirmed. Entries are never edited or deleted.</li>
+          <li><b>Profile → Activity &amp; history</b>: sign-ins, setting changes, {bot ? "agent starts and stops, " : ""}{ai ? "AI analyses, " : ""}and every "I understand" you confirmed. Entries are never edited or deleted.</li>
         </ul>
       ),
     },
@@ -277,7 +150,7 @@ export function GuidePage({ presets, plans, onClose }: { presets: Record<string,
           <ul>
             <li><b>Your wallet</b>: a Solana wallet created and secured by Privy. Open it from the wallet icon in the header to see your balance and address and to add funds. Send only Solana-network funds to it.</li>
             <li><b>You approve every trade</b>: each buy or sell is a Jupiter swap you review and sign. Once confirmed on the blockchain it can't be undone.</li>
-            <li><b>Solana coins only</b>; each real trade is capped at $100 for now. {bot ? "The bots don't trade real money yet." : ""}</li>
+            <li><b>Solana coins only</b>; each real trade is capped at $100 for now. {bot ? "Agents don't trade real money yet." : ""}</li>
             <li>Switch back to <b>Paper</b> any time; your practice account is untouched.</li>
           </ul>
         </>
@@ -288,7 +161,7 @@ export function GuidePage({ presets, plans, onClose }: { presets: Record<string,
       body: (
         <>
           <ul>
-            <li><b>Trading costs</b> (paper, simulated): a DEX fee and slippage on each side, about 3% for a buy and a sell together. Change them in the wrench ⚙ settings. Real trades pay the real swap and network fees shown before you sign.</li>
+            <li><b>Trading costs</b> (paper, simulated): a DEX fee and slippage on each side, about 3% for a buy and a sell together. Change them in Settings (the wrench in the header). Real trades pay the real swap and network fees shown before you sign.</li>
             {plan ? (
               <li><b>Platform charge on your plan ({planName})</b>: {plan.feePct === 0 ? "none" : plan.freeTrades > 0 ? `${plan.freeTrades} trades a month free, then ${plan.feePct}% of each trade` : `${plan.feePct}% of each trade`}.</li>
             ) : null}
@@ -310,7 +183,7 @@ export function GuidePage({ presets, plans, onClose }: { presets: Record<string,
       body: (
         <ul>
           <li><b>Profile</b> (your avatar, top right): name, email, password, plan, Paper / Real mode, and your activity history.</li>
-          <li>Your username can't be changed. Each account has its own paper balance{bot ? ", bots" : ""}, trades and history.</li>
+          <li>Your username can't be changed. Each account has its own paper balance{bot ? ", agents" : ""}, trades and history.</li>
           <li>How we handle your personal information is in the <b>Privacy Policy</b>; the rules of using the app are in the <b>Terms &amp; Conditions</b> (both linked at the bottom of the page).</li>
         </ul>
       ),

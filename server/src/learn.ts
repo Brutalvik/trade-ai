@@ -128,3 +128,21 @@ export function firesNow(best: StratResult, candles: Candle[]): { yes: boolean; 
   const i = candles.length - 2;
   return { yes: i > 30 && fires(best.key, s, i), closedAt: candles[i]?.time ?? 0, stopPct: i > 30 ? stopPctFor(s, i) : 5 };
 }
+
+// Where the pattern would trigger from here: the level the agent is watching, with the exit and
+// target it would use if bought there. null for patterns with no fixed level (RSI rebound).
+export type Watch = { key: StratKey; label: string; tf: string; side: "above" | "below"; price: number; stop: number; target: number; live: boolean; at: number };
+export function watchLevel(st: StratResult, candles: Candle[], costPct: number, netTarget: number, live: boolean): Watch | null {
+  if (candles.length < 40) return null;
+  const s = series(candles);
+  const i = candles.length - 2; // newest closed candle
+  let price = 0;
+  let side: Watch["side"] = "above";
+  if (st.key === "breakout" || st.key === "squeeze") price = hi(candles, i - 19, i + 1);
+  else if (st.key === "flag") price = hi(candles, i - 7, i + 1);
+  else if (st.key === "pullback") { price = s.ema21[i]; side = "below"; }
+  else return null;
+  if (!(price > 0)) return null;
+  const stopPct = stopPctFor(s, i);
+  return { key: st.key, label: st.label, tf: st.tf, side, price, stop: price * (1 - stopPct / 100), target: price * (1 + (netTarget + costPct) / 100), live, at: Date.now() };
+}
