@@ -107,6 +107,21 @@ Rules:
 - Your trade journal (below) shows which setups have really worked for this account; lean toward those.
 - Prices are in USD and may be tiny numbers; keep full precision.`;
 
+// Agents get their own instructions: a trader working one coin with a budget, expected to act.
+const AGENT_SYSTEM = `You are an active short-term crypto trader working ONE token with a fixed budget, through a bot that carries out your orders.
+Your job is to make that budget grow. That means taking calculated risks when the odds are on your side, not waiting for a perfect setup: a trader who never enters makes nothing.
+The bot checks prices every 5 seconds and fills an order the moment its trigger is touched. You are asked again every few minutes, whenever the price moves about 4%, and right after each trade, so plan for the next 10-30 minutes, not for hours.
+
+How to decide:
+- Read all timeframes, the volume, buyers vs sellers, the chart patterns and the history study you are given, and form a view: where is this going next, and with what odds?
+- If the entry is good right now (trend up with buyers behind it, a breakout holding, a dip that has bounced), say BUY_NOW with a buy_now order. Momentum is a reason to trade, not a reason to stay out: a coin that is running can be bought with a stop under the last higher low.
+- Otherwise say WAIT_FOR_TRIGGER and give the exact price at which you WILL buy: a breakout above a level (with a volume check) and/or a pullback to support. Put those levels close enough to be reached in the next 10-30 minutes.
+- ALWAYS give 1-2 orders you would genuinely take. Use AVOID only when the token looks like a rug or honeypot, liquidity is being pulled, or it is in free fall with no buyers; even then give the level where you would step back in.
+- For every order give winChancePct: your honest, calibrated chance that price reaches target before stopLoss. Do not shade it down out of caution or up out of eagerness; the bot uses an order only if your own numbers make money on average after costs.
+- Targets must be at least the minimum distance you are told (it gives +10% after costs). Pick trades where such a move is realistic: strong trends, breakouts with volume, sharp reversals. Put the stop where your idea is proved wrong, outside normal noise.
+- Set cancelBelow / cancelAbove just outside your thesis and validMinutes between 10 and 30.
+- reasoning: 2-3 short plain sentences on what you expect and why. Prices are USD and may be tiny; keep full precision.`;
+
 // One timeframe of chart data for Claude.
 export type Frame = { tf: string; label: string; candles: Candle[]; snap: Snapshot | null; show: number };
 
@@ -135,7 +150,7 @@ ${context ? `\n${context}\n` : ""}
 Write your trading plan (standing orders) for roughly the next few hours.`;
 }
 
-async function askClaude(prompt: string, model = CLAUDE_MODEL, effort: "low" | "medium" | "high" = "high"): Promise<{ plan: Plan; tokens: number }> {
+async function askClaude(prompt: string, model = CLAUDE_MODEL, effort: "low" | "medium" | "high" = "high", system = SYSTEM): Promise<{ plan: Plan; tokens: number }> {
   anthropic ??= new Anthropic();
   const res = await anthropic.beta.messages.parse({
     model,
@@ -143,7 +158,7 @@ async function askClaude(prompt: string, model = CLAUDE_MODEL, effort: "low" | "
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default", // if a safety classifier declines, retry on a fallback model
     output_config: { effort, format: betaZodOutputFormat(PlanSchema) },
-    system: SYSTEM,
+    system,
     messages: [{ role: "user", content: prompt }],
   });
   if (res.stop_reason === "refusal") throw new Error("The AI declined this request");
@@ -180,7 +195,7 @@ export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, 
   const prompt = buildPrompt(pair, frames, costPct, context);
   const jobs: Promise<ModelResult>[] = [];
   // The bot's own re-plans (model given) use medium effort so a new plan arrives quickly.
-  if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt, model, model ? "medium" : "high")));
+  if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt, model, model ? "medium" : "high", aiInCharge ? AGENT_SYSTEM : SYSTEM)));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
   if (!jobs.length) throw new Error("AI is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
   const results = await Promise.all(jobs);
@@ -265,7 +280,11 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   const cancelBelow = plan.cancelBelow > 0 ? plan.cancelBelow : kept.length ? Math.min(...kept.map((o) => o.stopLoss)) : 0;
   const cancelAbove = plan.cancelAbove > 0 ? plan.cancelAbove : kept.length ? Math.max(...kept.map((o) => o.target)) : 0;
   const first = kept[0];
-  const stance = plan.stance !== "AVOID" && !passing.length ? "AVOID" : plan.stance;
+  const stance = !passing.length
+    ? "AVOID"
+    : aiInCharge && plan.stance === "AVOID"
+      ? (passing.some((o) => o.kind === "buy_now") ? "BUY_NOW" : "WAIT_FOR_TRIGGER") // an agent's orders count, whatever the label
+      : plan.stance;
   const action = stance === "BUY_NOW" ? "BUY" : stance === "AVOID" ? "SELL" : "HOLD";
   const describe = (o: CheckedOrder) =>
     (o.kind === "buy_dip" ? `buy if it dips to $${o.triggerPrice.toPrecision(4)}` : o.kind === "buy_breakout" ? `buy if it breaks above $${o.triggerPrice.toPrecision(4)}` : `buy now up to $${o.triggerPrice.toPrecision(4)}`) +

@@ -198,7 +198,7 @@ type State = {
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[] } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; priceAt?: number } | null;
   // Extra bots (2 and 3). Bot 1 is `bot` / `lastSignal` above, so older saved states keep working.
   bots?: BotSlot[];
 };
@@ -719,7 +719,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const model = opts.forBot ? BOT_MODEL : CLAUDE_MODEL;
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
   rec("ai.analysis", `${opts.forBot ? "Bot re-plan" : "AI analysis"} on ${pair.symbol}: ${apiTokens.toLocaleString()} AI tokens (${appTokens.toLocaleString()} app tokens)`, { symbol: pair.symbol, pool, model, apiTokens, appTokens, forBot: !!opts.forBot, stance: consensus.stance });
-  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown, atrPct: primary.snap.atrPct, patterns };
+  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, priceAt: pair.priceUsd };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
   save();
@@ -1161,7 +1161,9 @@ function claudeDue(cfg: BotConfig, price: number | null): string | null {
   if (Date.now() > c.expiresAt) return "the plan expired";
   if (price !== null && c.cancelBelow > 0 && price < c.cancelBelow) return `the price fell below the plan's cancel level (${fmt(c.cancelBelow)})`;
   if (price !== null && c.cancelAbove > 0 && price > c.cancelAbove) return `the price rose above the plan's range (${fmt(c.cancelAbove)})`;
-  if (Date.now() - state.bot.lastAnalysisAt >= cfg.analyzeEverySec * 1000) return "backup re-check";
+  if (isCoinAgent(cfg) && price !== null && sig.priceAt && Math.abs(price - sig.priceAt) / sig.priceAt >= AGENT_MOVE_PCT / 100)
+    return `the price moved ${(((price - sig.priceAt) / sig.priceAt) * 100).toFixed(1)}% since the AI's plan`;
+  if (Date.now() - state.bot.lastAnalysisAt >= cfg.analyzeEverySec * 1000) return isCoinAgent(cfg) ? "time for a fresh look" : "backup re-check";
   return null;
 }
 
@@ -1355,6 +1357,8 @@ async function agentsStep(cfg: BotConfig) {
 // the trade journal, and answers: buy now, buy at a level, or stay out, with exit and target.
 // The bot carries that out with the agent's budget. No other limits apply.
 export const AGENT_BUDGET_DEFAULT = 1000;
+export const AGENT_RECHECK_SEC = 600; // an agent asks its AI again at least this often
+export const AGENT_MOVE_PCT = 4; // ...and whenever the price has moved this much since its plan
 const RELEARN_MS = 60 * 60_000;
 
 // The agent's money: its budget plus everything its trades have made or lost since it started.
@@ -1394,7 +1398,7 @@ async function agentBrief(cfg: BotConfig): Promise<string> {
   const L = state.bot.learned;
   const lines = [
     `You are this coin's dedicated trading agent. Budget $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} (funds now $${agentFunds(cfg).toFixed(2)}); each buy invests all of it.`,
-    `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you would buy at (buy_dip or buy_breakout), or AVOID if you would not put money in. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them.`,
+    `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you WILL buy at (buy_dip and/or buy_breakout), close enough to be reached in the next 10-30 minutes. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them. You will be asked again within 10 minutes, or sooner if the price moves ${AGENT_MOVE_PCT}%.`,
     `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. Put the stop where the idea is proved wrong.`,
     `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. An order is used unless your own numbers say it loses money on average after costs.`,
     `After buying: from +${AGENT_GUARD_AT}% the exit moves above the buy price and then keeps half of the best gain; half is sold at your target and the rest trails; at the stop you are asked once whether to hold.`,
@@ -1484,6 +1488,7 @@ async function tickBot(persist: boolean) {
     cfg.strongMode = false;
     cfg.rewardRule = false;
     cfg.allowRisky = false;
+    cfg.analyzeEverySec = Math.min(cfg.analyzeEverySec || AGENT_RECHECK_SEC, AGENT_RECHECK_SEC); // look again at least every 10 minutes
     cfg.disabled = [...new Set([...(cfg.disabled ?? []), "dailyLossPct", "cooldownMin", "maxDrawdownPct", "minConfidence", "maxDrop1hPct", "riskPerTradePct"])];
     if (state.bot.blocked) setBlocked(null);
   }

@@ -76,6 +76,8 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const okRes = plan?.results.find((r) => r.ok);
   const reasoning = okRes && okRes.ok ? okRes.signal.reasoning : "";
   const at = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // Agents ask the AI again at least every 10 minutes (and on a 4% move, or when the plan runs out).
+  const nextLook = c ? Math.min(c.expiresAt, (bot.lastAnalysisAt || Date.now()) + (isAgent ? 600 : (cfg?.analyzeEverySec ?? 1800)) * 1000) : 0;
   // Where it is in its loop: 0 the AI is deciding, 1 waiting for its level, 2 in a trade.
   const stage = pos ? 2 : !c ? 0 : 1;
   const paused = !pos && !!bot.blocked;
@@ -86,11 +88,11 @@ function useAgent(slot: BotSlot, state: AppState | null) {
       : !c
         ? "The AI is reading the charts and deciding…"
         : c.stance === "AVOID" || !order
-          ? `The AI decided to stay out for now. It looks again by ${at(c.expiresAt)}, sooner if the price moves.`
+          ? `The AI sees no bet worth taking right now${order ? ` (closest: ${order.kind === "buy_breakout" ? "above" : "at"} ${fmtPrice(order.triggerPrice)}, ${order.winChancePct}% win chance)` : ""}. It looks again by ${at(nextLook)}, or sooner if the price moves 4%.`
           : order.kind === "buy_now"
             ? `The AI says buy now (up to ${fmtPrice(order.triggerPrice)}): ${order.winChancePct}% win chance`
             : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}: ${order.winChancePct}% win chance`;
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning };
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning, nextLook };
 }
 
 const STAGES = ["AI deciding", "Waiting for its price", "In a trade"];
@@ -204,6 +206,7 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
             <div className={`agent-learned ${a.plan.stance === "AVOID" ? "" : "has"}`}>
               <b>{a.plan.stance === "BUY_NOW" ? "Buy now" : a.plan.stance === "AVOID" ? "Stay out for now" : "Buy at its level"}</b> · {a.plan.confidence}% sure{a.order && a.plan.stance !== "AVOID" ? ` · ${a.order.winChancePct}% win chance · aims for +${a.order.netRewardPct.toFixed(1)}% after fees, risks ${a.order.netRiskPct.toFixed(1)}%` : ""}
               {a.reasoning ? <><br />{a.reasoning}</> : null}
+              {!a.pos && a.nextLook ? <><br /><span className="muted">Next look by {new Date(a.nextLook).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, or sooner on a 4% move or when an order fills.</span></> : null}
             </div>
           </>
         ) : null}
