@@ -34,6 +34,9 @@ export type AppState = {
   cash: number;
   peakEquity: number;
   equityNow: number;
+  available?: number; // cash you can spend yourself (cash minus what is locked for agents)
+  locked?: number; // cash set aside for running agents (still part of equity)
+  locks?: { id: string; symbol: string; usd: number }[];
   roundTripCostPct: number;
   positions: Position[];
   trades: Trade[];

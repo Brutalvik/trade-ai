@@ -368,6 +368,28 @@ const ACTIVE_KEY = "active-accounts";
 export const botIds = (st: State = acct().state) => ["1", ...(st.bots ?? []).map((b) => b.id)];
 const runningIds = (st: State = acct().state) => botIds(st).filter((id) => (id === "1" ? st.bot : slotOf(st, id)!.bot).running);
 const anyBotRunning = (st: State = acct().state) => runningIds(st).length > 0;
+
+// ---------- Agents' locked budgets ----------
+// A running agent's money is set aside for it: its budget plus what its trades have made or lost
+// since it started, minus what is in its open trade right now. That cash can't be spent by you
+// or by another agent. Equity is unchanged: locked cash is still your cash.
+export type AgentLock = { id: string; symbol: string; usd: number };
+export function agentLocks(st: State = acct().state): AgentLock[] {
+  return botIds(st).flatMap((id) => {
+    const bot = id === "1" ? st.bot : slotOf(st, id)!.bot;
+    const cfg = bot.config;
+    if (!bot.running || !cfg || cfg.pick !== "agent") return [];
+    const since = bot.startedAt ?? 0;
+    const pnl = st.trades.filter((t) => t.strategy === "agents" && (t.botId ?? "1") === id && t.time >= since && t.side === "SELL").reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
+    const invested = st.positions.filter((p) => p.source === "bot" && (p.botId ?? "1") === id).reduce((s, p) => s + p.costUsd, 0);
+    return [{ id, symbol: cfg.symbol, usd: Math.max(0, (cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT) + pnl - invested) }];
+  });
+}
+// Cash that isn't locked for an agent (exceptId: leave that agent's own lock out).
+export function availableCash(st: State = acct().state, exceptId?: string) {
+  const locked = agentLocks(st).filter((l) => l.id !== exceptId).reduce((s, l) => s + l.usd, 0);
+  return Math.max(0, st.cash - locked);
+}
 const isActive = (st: State) => anyBotRunning(st) || st.positions.some((p) => p.protectPct) || (st.orders?.length ?? 0) > 0;
 async function markActive(a: Account) {
   if (!a.key) return;
@@ -550,14 +572,19 @@ export function emptyView() {
 
 export function getState() {
   const st = acct().state;
-  return { ...st, bots: st.bots ?? [], equityNow: equity(), roundTripCostPct: roundTripCostPct(), storage: store.kind };
+  const available = availableCash(st);
+  // available = cash you can spend yourself; locked = set aside for running agents (still part of equity).
+  return { ...st, bots: st.bots ?? [], equityNow: equity(), roundTripCostPct: roundTripCostPct(), storage: store.kind, available, locked: Math.max(0, st.cash - available), locks: agentLocks(st) };
 }
 
 // ---------- Broker ----------
 
 export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reason: string, plan?: Partial<Position>, extraSlipPct = 0) {
   if (!(usd > 0)) throw new Error("Amount must be positive");
-  if (usd > state.cash + 1e-9) throw new Error(`Not enough cash ($${state.cash.toFixed(2)} available)`);
+  // Your own buys can't use cash locked for agents; an agent's buy uses its own locked budget.
+  const spendable = source === "manual" ? availableCash() : state.cash;
+  if (usd > spendable + 1e-9)
+    throw new Error(state.cash - spendable > 0.005 ? `Not enough available cash: $${spendable.toFixed(2)} available, $${(state.cash - spendable).toFixed(2)} is locked for your agents` : `Not enough cash ($${state.cash.toFixed(2)} available)`);
   if (!(pair.priceUsd > 0)) throw new Error("No live price for this token");
   const { feePct, slippagePct } = state.settings;
   const feeUsd = usd * (feePct / 100);
@@ -754,6 +781,13 @@ export function startBot(cfg: BotConfig, botId = "1", maxBots = 10) {
   const st = acct().state;
   const others = runningIds(st).filter((x) => x !== id);
   if (others.length + 1 > maxBots) throw new Error(maxBots <= 1 ? "Your plan includes 1 agent. Stop it first, or see Plans for more." : `Your plan includes ${maxBots} agents and they're all running. Stop one first, or see Plans for more.`);
+  if (cfg.pick === "agent") {
+    const budget = Number(cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT);
+    if (!(budget >= 10)) throw new Error("An agent's budget must be at least $10.");
+    const free = availableCash(st, id);
+    if (budget > free + 0.005) throw new Error(`Only $${free.toFixed(2)} is available${st.cash - free > 0.005 ? ` ($${(st.cash - free).toFixed(2)} is locked for your other agents)` : ""}. Lower the budget or free some cash.`);
+    cfg.budgetUsd = Math.floor(budget * 100) / 100;
+  }
   if (cfg.pick !== "auto" && cfg.pool)
     for (const o of others) {
       const ob = o === "1" ? st.bot : slotOf(st, o)!.bot;
@@ -1858,7 +1892,7 @@ async function tickBot(persist: boolean) {
       const bySize = riskPct > 0 ? (equity() * riskPct) / 100 / (exitLossPct / 100) : Infinity;
       const sizePct = cfg.allowRisky ? Math.min(cfg.positionPct, RISKY_MAX_POSITION_PCT) : cfg.positionPct; // risky trades stay small
       const cap = Math.min(state.cash, equity() * (sizePct / 100));
-      const usd = isCoinAgent(cfg) ? Math.floor(Math.min(state.cash, agentFunds(cfg)) * 100) / 100 : Math.floor(Math.min(cap, bySize) * 100) / 100;
+      const usd = isCoinAgent(cfg) ? Math.floor(Math.min(state.cash, availableCash(acct().state, currentBotId()), agentFunds(cfg)) * 100) / 100 : Math.floor(Math.min(cap, bySize) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
       // Fill like a real order at the trigger price (or better/worse, see buyFillPrice).
@@ -2033,7 +2067,7 @@ export function placeOrder(body: { side?: string; chain?: string; pool?: string;
   if (side === "BUY") {
     const usd = Math.floor(Number(body.usd) * 100) / 100;
     if (!(usd >= 1)) throw new Error("Enter at least $1 to buy");
-    if (usd > state.cash + 0.005) throw new Error(`Not enough cash (you have $${state.cash.toFixed(2)})`);
+    if (usd > availableCash() + 0.005) throw new Error(`Not enough available cash (you have $${availableCash().toFixed(2)} that isn't locked for agents)`);
     if (!body.chain || !body.pool) throw new Error("Pick a coin first");
     o = { id: uid(), side, chain: body.chain, pool: body.pool, symbol: String(body.symbol ?? "?"), price, usd, createdAt: Date.now() };
   } else {
@@ -2077,7 +2111,7 @@ async function checkLimitOrders() {
     for (const o of list) {
       if (!state.orders.some((x) => x.id === o.id)) continue;
       if (o.side === "BUY" && q.low <= o.price) {
-        const usd = Math.floor(Math.min(o.usd ?? 0, state.cash) * 100) / 100;
+        const usd = Math.floor(Math.min(o.usd ?? 0, availableCash()) * 100) / 100;
         state.orders = state.orders.filter((x) => x.id !== o.id);
         if (usd < 1) {
           log(`Limit buy on ${o.symbol} at ${fmt(o.price)} cancelled: not enough cash.`, "bad");

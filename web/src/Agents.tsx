@@ -30,7 +30,7 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults }:
   return (
     <div className="panel agents-panel">
       <div className="panel-title">
-        <span>AGENTS <span className="muted small">{running.length}/{Math.max(limit, 0)}</span></span>
+        <span>AGENTS <span className="muted small">{running.length}/{Math.max(limit, 0)}{(state?.locked ?? 0) > 0.005 ? ` · ${fmtUsd(state!.locked!)} locked` : ""}</span></span>
         <button className="btn buy agents-new" onClick={() => (limit <= 0 ? access.openPlans() : canAdd ? setAdding(true) : notify(`Your plan includes ${limit} agent${limit > 1 ? "s" : ""}. Stop one first, or see Plans for more.`, true))}>
           + New Agent
         </button>
@@ -195,6 +195,7 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
         <div className="agent-stats">
           {a.isAgent ? <div><small>Budget</small><b>{fmtUsd(a.budget)}</b></div> : null}
           {a.isAgent ? <div><small>Funds now</small><b>{fmtUsd(a.budget + a.realized)}</b></div> : null}
+          {a.isAgent ? <div><small>Locked cash</small><b>{fmtUsd(state?.locks?.find((l) => l.id === a.id)?.usd ?? 0)}</b></div> : null}
           <div><small>Trades</small><b>{a.sells.length}</b></div>
           <div><small>Profitable</small><b>{a.sells.length ? `${wins} of ${a.sells.length}` : "–"}</b></div>
           {a.order && !a.pos ? <div><small>{a.order.kind === "buy_now" ? "Buys now up to" : a.order.kind === "buy_breakout" ? "Buys above" : "Buys at"}</small><b>{fmtPrice(a.order.triggerPrice)}</b></div> : null}
@@ -284,10 +285,10 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
       setPicking(null);
     }
   };
-  const cash = state?.cash ?? 0;
+  const cash = state?.available ?? state?.cash ?? 0; // what isn't already locked for other agents
   const amount = Number(budget);
   const taken = pick ? takenPools.includes(pick.pool) : false;
-  const problem = !pick ? "Pick a coin" : taken ? `An agent is already trading ${pick.symbol}` : !(amount >= 10) ? "Budget must be at least $10" : amount > cash ? `Only ${fmtUsd(cash)} cash available` : "";
+  const problem = !pick ? "Pick a coin" : taken ? `An agent is already trading ${pick.symbol}` : !(amount >= 10) ? "Budget must be at least $10" : amount > cash ? `Only ${fmtUsd(cash)} is available${(state?.locked ?? 0) > 0.005 ? ` (${fmtUsd(state!.locked!)} is locked for your other agents)` : ""}` : "";
   const start = async () => {
     if (!pick || problem) return;
     setStarting(true);
@@ -311,7 +312,7 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
     <Modal title="New agent" onClose={onClose} wide
       foot={
         <>
-          <span className="muted small agent-foot-note">{problem || `It will only invest this budget, in ${pick?.symbol}, on your paper account.`}</span>
+          <span className="muted small agent-foot-note">{problem || `${fmtUsd(amount)} will be locked for this agent: it leaves your Available cash, and stays in your equity.`}</span>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
           <button className="btn buy" onClick={() => void start()} disabled={!!problem || starting}>{starting ? "Starting…" : pick ? `Start agent on ${pick.symbol}` : "Start agent"}</button>
         </>

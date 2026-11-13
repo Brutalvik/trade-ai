@@ -53,7 +53,8 @@ function PaperAccount({ state }: { state: AppState | null }) {
         </div>
       </div>
       <div className="paper-stats">
-        <div><small>Cash</small><b>{fmtUsd(state.cash)}</b></div>
+        <div><small>Available cash</small><b>{fmtUsd(state.available ?? state.cash)}</b></div>
+        <div><small>Locked for agents</small><b>{fmtUsd(state.locked ?? 0)}</b></div>
         <div><small>In open trades</small><b>{fmtUsd(inPositions)}</b></div>
         <div><small>Open trades</small><b>{state.positions.length}</b></div>
         <div><small>Waiting orders</small><b>{state.orders?.length ?? 0}</b></div>

@@ -813,7 +813,9 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   const [limitPrice, setLimitPrice] = useState("");
   const [sellShare, setSellShare] = useState(1);
   const pos = state?.positions.find((p) => p.pool === pair?.pool && p.source === "manual");
-  const cash = state?.cash ?? 0;
+  // Cash you can spend yourself: budgets locked for running agents are left out.
+  const cash = state?.available ?? state?.cash ?? 0;
+  const lockedForAgents = state?.locked ?? 0;
   const live = pair?.priceUsd ?? 0;
   const orders = (state?.orders ?? []).filter((o) => o.pool === pair?.pool);
   const otherOrders = (state?.orders?.length ?? 0) - orders.length;
@@ -894,7 +896,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
           {!access.can("trade.limit") && "🔒 "}Limit
         </button>
       </div>
-      <span className="available"><span className="muted">Available</span> <b>{tab === "buy" ? fmtUsd(cash) : pos ? `${pos.qty.toPrecision(4)} ${pos.symbol}` : "0"}</b></span>
+      <span className="available" data-tip={tab === "buy" && lockedForAgents > 0.005 ? `${fmtUsd(lockedForAgents)} more is locked for your agents` : undefined}><span className="muted">Available</span> <b>{tab === "buy" ? fmtUsd(cash) : pos ? `${pos.qty.toPrecision(4)} ${pos.symbol}` : "0"}</b></span>
       </div>
 
       {tab === "buy" ? (
