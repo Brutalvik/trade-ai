@@ -176,7 +176,7 @@ async function timed(model: string, fn: () => Promise<{ plan: Plan; tokens: numb
   }
 }
 
-export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string) {
+export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string, aiInCharge = false) {
   const prompt = buildPrompt(pair, frames, costPct, context);
   const jobs: Promise<ModelResult>[] = [];
   // The bot's own re-plans (model given) use medium effort so a new plan arrives quickly.
@@ -184,7 +184,7 @@ export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, 
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
   if (!jobs.length) throw new Error("AI is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
   const results = await Promise.all(jobs);
-  return { results, consensus: combine(results, costPct, pair.priceUsd) };
+  return { results, consensus: combine(results, costPct, pair.priceUsd, aiInCharge) };
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
@@ -192,7 +192,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, N
 // Checks each order for sanity and against fees/risk; drops the ones that fail.
 // An order is kept only if, using Claude's own win chance, it makes money on
 // average after fees (positive expected value) and its gain >= its loss.
-export function checkOrders(orders: PlanOrder[], costPct: number): { kept: CheckedOrder[]; dropped: string[]; warned: CheckedOrder[] } {
+export function checkOrders(orders: PlanOrder[], costPct: number, aiInCharge = false): { kept: CheckedOrder[]; dropped: string[]; warned: CheckedOrder[] } {
   const kept: CheckedOrder[] = [];
   const dropped: string[] = [];
   const warned: CheckedOrder[] = []; // sensible prices, but they fail the fee/risk check
@@ -212,7 +212,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number): { kept: Check
     const netRiskPct = ((t - o.stopLoss) / t) * 100 + costPct;
     const win = clamp(o.winChancePct, 0, 100) / 100;
     const evPct = win * netRewardPct - (1 - win) * netRiskPct;
-    if (netRewardPct <= 0 || netRewardPct < netRiskPct) {
+    if (netRewardPct <= 0 || (!aiInCharge && netRewardPct < netRiskPct)) {
       const why = `after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) is smaller than the risk (${netRiskPct.toFixed(1)}%)`;
       dropped.push(`${o.kind}: ${why}`);
       warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.` });
@@ -240,7 +240,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number): { kept: Check
 
 // Conservative combination: orders only when every model that answered has the same stance
 // (with Claude alone, Claude's plan is used), and every order must pass the fee/risk check.
-export function combine(results: ModelResult[], costPct: number, livePrice: number): Consensus {
+export function combine(results: ModelResult[], costPct: number, livePrice: number, aiInCharge = false): Consensus {
   const plans = results.filter((r): r is Extract<ModelResult, { ok: true }> => r.ok).map((r) => r.signal);
   const now = Date.now();
   const empty = {
@@ -255,7 +255,7 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   if (!agreement) return { ...empty, action: "HOLD", stance: "AVOID", confidence: Math.round(confidence / 2), agreement, note: `Models disagree (${[...stances].join(" vs ")}), so standing aside.` };
 
   const plan = plans[0];
-  const checked = checkOrders(plan.orders, costPct);
+  const checked = checkOrders(plan.orders, costPct, aiInCharge);
   const { dropped } = checked;
   // Orders that pass come first; ones that fail the check stay as warned, risky setups.
   const kept = [...checked.kept, ...checked.warned];

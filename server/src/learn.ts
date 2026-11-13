@@ -117,8 +117,8 @@ export function learn(frames: { tf: "5m" | "1h"; candles: Candle[] }[], costPct:
   table.sort((a, b) => merit(b) - merit(a));
   const best = table.find((t) => t.trades >= 3 && t.avgNetPct > 0.5) ?? null;
   const summary = best
-    ? `Learned: "${best.label}" on ${best.tf} candles made money on this coin: ${best.trades} past trades, ${best.wins} reached +${netTarget}% after fees, average ${best.avgNetPct >= 0 ? "+" : ""}${best.avgNetPct.toFixed(1)}% per trade. It buys when that pattern appears.`
-    : `No pattern has proved itself on this coin yet with a +${netTarget}% target after fees (it needs at least 3 past trades that made money on average)${table.length ? `. Closest: "${table[0].label}" on ${table[0].tf}, average ${table[0].avgNetPct >= 0 ? "+" : ""}${table[0].avgNetPct.toFixed(1)}% over ${table[0].trades} trade${table[0].trades === 1 ? "" : "s"}` : ""}. It keeps watching and relearns every hour.`;
+    ? `"${best.label}" on ${best.tf} candles has paid on this coin: ${best.trades} past trades, ${best.wins} reached +${netTarget}% after fees, average ${best.avgNetPct >= 0 ? "+" : ""}${best.avgNetPct.toFixed(1)}% per trade.`
+    : `No simple pattern has paid on this coin recently with a +${netTarget}% target after fees${table.length ? ` (closest: "${table[0].label}" on ${table[0].tf}, average ${table[0].avgNetPct >= 0 ? "+" : ""}${table[0].avgNetPct.toFixed(1)}% over ${table[0].trades} trade${table[0].trades === 1 ? "" : "s"})` : ""}.`;
   return { at: Date.now(), netTargetPct: netTarget, table: table.slice(0, 10), best, summary };
 }
 

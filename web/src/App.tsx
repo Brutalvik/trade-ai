@@ -195,7 +195,7 @@ export default function App() {
   const shownPlan = demo ? null : savedPlan && (!botSig || savedPlan.at >= botSig.at) ? savedPlan : botSig;
   const sig = shownPlan?.consensus;
   const results = shownPlan?.results;
-  const botOnThisCoin = allBots(state).some((b) => b.bot.running && b.bot.config?.pool === pair?.pool && b.bot.config?.pick === "this");
+  const botOnThisCoin = allBots(state).some((b) => b.bot.running && b.bot.config?.pool === pair?.pool && (b.bot.config?.pick === "this" || b.bot.config?.pick === "agent"));
   // The bot is really fetching a plan for this coin: running here, not paused (skip / limits),
   // and not holding the coin (a holding bot manages its trade instead of planning).
   const botPausedHere = allBots(state).find((b) => b.bot.running && b.bot.config?.pool === pair?.pool && b.bot.blocked)?.bot.blocked ?? null;
@@ -222,23 +222,11 @@ export default function App() {
         pos.trailing && pos.peak ? { price: pos.peak * (1 - trail / 100), color: "#ffc857", title: "TRAILING STOP" } : { price: pos.target ?? 0, color: "#00f5a0", title: "TARGET" },
       ];
     }
-    // An agent on this coin: the level it is watching, with the exit and target it would use.
-    const agent = allBots(state).find((b) => b.bot.running && b.bot.config?.pick === "agent" && b.bot.config.pool === pair?.pool);
-    const w = agent?.bot.watch;
-    if (agent) {
-      if (!w || !(w.price > 0)) return [];
-      if (!w.live) return [{ price: w.price, color: "#7182a8", title: "WATCHING" }];
-      return [
-        { price: w.price, color: "#00e5ff", title: w.side === "above" ? "BUY ABOVE" : "BUY BELOW" },
-        { price: w.target, color: "#00f5a0", title: "TARGET" },
-        { price: w.stop, color: "#ff3d71", title: "EXIT" },
-      ];
-    }
     if (!sig?.orders?.length) return [];
     const out: ChartLine[] = sig.orders.map((o) => ({ price: o.triggerPrice, color: "#00e5ff", title: o.kind === "buy_breakout" ? "BUY ABOVE" : "BUY BELOW" }));
     out.push({ price: sig.orders[0].target, color: "#00f5a0", title: "TARGET" }, { price: sig.orders[0].stopLoss, color: "#ff3d71", title: "EXIT" });
     return out;
-  }, [state?.positions, state?.bot, state?.bots, pair?.pool, sig]);
+  }, [state?.positions, pair?.pool, sig]);
   const lines = useMemo(() => [...planLines, ...orderLines], [planLines, orderLines]);
   const pairTrades = useMemo(() => (state?.trades ?? []).filter((t) => t.pool === pair?.pool), [state?.trades, pair?.pool]);
 
@@ -1009,7 +997,6 @@ const LINE_NAME: Record<string, string> = {
   "TRAILING STOP": "Trailing stop",
   "PROTECT STOP": "Protection stop",
   "BUY BELOW": "Buy if it dips to",
-  WATCHING: "Agent is watching",
   "BUY ABOVE": "Buy if it breaks above",
   "LIMIT BUY": "Your limit buy",
   "LIMIT SELL": "Your limit sell",
@@ -1021,7 +1008,6 @@ const LINE_HELP: Record<string, string> = {
   "TRAILING STOP": "Follows the price up; sells if it falls back to this line.",
   "PROTECT STOP": "Your manual trade sells if the price falls back to this line.",
   "BUY BELOW": "The AI's standing order: the bot buys if the price dips to this line.",
-  WATCHING: "The level of the closest pattern on this coin. The agent is not trading it yet: the pattern hasn't proved itself here.",
   "BUY ABOVE": "The AI's standing order: the bot buys if the price breaks above this line.",
   "LIMIT BUY": "Your limit buy: fills automatically if the price falls to this line.",
   "LIMIT SELL": "Your limit sell: fills automatically if the price rises to this line.",

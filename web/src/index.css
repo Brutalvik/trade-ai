@@ -1179,3 +1179,5 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .btn.danger-btn { color: #ff8fa8; border-color: rgba(255, 61, 113, 0.45); }
 .btn.danger-btn:hover { background: rgba(255, 61, 113, 0.12); }
 @media (prefers-reduced-motion: reduce) { .run-track i { animation: none; left: 0; width: 100%; opacity: 0.5; } .run-steps span.now, .run-steps em::before { animation: none; } }
+
+.agent-form-note { margin: 0; line-height: 1.5; align-self: center; }

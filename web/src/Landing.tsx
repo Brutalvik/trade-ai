@@ -113,7 +113,7 @@ function Hero({ coins }: { coins: ListCoin[] }) {
           <Stat value="5s" label="price checks" />
           <Stat value="4" label="timeframes read" />
           <Stat value="9" label="chart patterns" />
-          <Stat value="3" label="bots at once" />
+          <Stat value="3" label="agents at once" />
         </div>
       </div>
       <div className="lp-hero-art" ref={stage} onPointerMove={onMove} onPointerLeave={() => { stage.current?.style.setProperty("--rx", "0deg"); stage.current?.style.setProperty("--ry", "0deg"); }}>
@@ -511,9 +511,9 @@ const FEATURES: { icon: string; title: string; text: string }[] = [
   { icon: "◎", title: "AI plans on four timeframes", text: "5-second to daily candles, volume, liquidity and buyers vs sellers, turned into standing orders with an exit, a target and an honest win chance." },
   { icon: "⌁", title: "Chart patterns, back-tested", text: "Breakouts, flags, double bottoms, tight ranges and more, each checked against how it played out earlier on the same chart." },
   { icon: "▤", title: "Learns from your trades", text: "A trade journal of your bots' real results goes into every plan, so the AI leans toward what actually works for you." },
-  { icon: "⛨", title: "Strong mode", text: "No buying falling knives, waits for a bounce, breakouts must hold, and a pause after a losing streak." },
+  { icon: "⛨", title: "Eight scouts", text: "Trend, volume, real traders, holders, dev wallet, liquidity, momentum and age: every busy coin scored, deal-breakers flagged." },
   { icon: "↺", title: "AI second look", text: "When a trade touches its stop, the AI checks once more and holds only with a strict, capped last exit." },
-  { icon: "⚡", title: "Up to 3 bots", text: "Each on its own coin with its own settings, checking prices every 5 seconds, even with the page closed." },
+  { icon: "⚡", title: "Up to 3 agents", text: "Each trades one coin with its own budget; its AI decides, and prices are checked every 5 seconds, even with the page closed." },
   { icon: "◈", title: "Your own Solana wallet", text: "Switch to Real mode and trade from a wallet only you control. You approve every swap." },
   { icon: "✎", title: "Pro chart tools", text: "Indicators, drawing tools, Fibonacci, measure, price or market-cap scale and screenshots." },
 ];
@@ -588,7 +588,7 @@ const FAQ: [string, ReactNode][] = [
   ["Does the AI guarantee profit?", "No. Its plans and win chances are estimates and are often wrong, and small coins can fall fast. The bot's rules limit losses, but trading is at your own risk."],
   ["Do I need to keep the page open?", "No. A scheduler wakes your bots about every minute and they check prices every 5 seconds."],
   ["Who holds my funds?", "You do. Your wallet is created and secured by Privy; we never hold your keys or your funds."],
-  ["Can I change how careful the bot is?", "Yes: pick Safe, Balanced or Aggressive, or set every number yourself. Turning a protection off asks you to confirm first."],
+  ["What limits an agent?", "Its budget. You choose how much each agent may invest; its AI decides when to buy and sell, and the agent stops when the budget is used up."],
 ];
 function Faq() {
   const [open, setOpen] = useState<number | null>(0);

@@ -13,7 +13,7 @@ import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, scanAgents, type AgentCoin } from "./agents.js";
-import { firesNow, learn, watchLevel, type Learned, type Watch } from "./learn.js";
+import { learn, type Learned, type Watch } from "./learn.js";
 
 import { noteCommunityBuy } from "./lists.js";
 
@@ -660,7 +660,7 @@ async function loadFrames(chain: string, pool: string, pair: PairInfo, only?: Ti
   return got.filter((f): f is Frame => f !== null);
 }
 
-export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean } = {}) {
+export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean; agentBrief?: string } = {}) {
   const pair = await getPair(chain, pool);
   const frames = await loadFrames(chain, pool, pair);
   // Chart patterns found by code on each timeframe, with how each did earlier on the same chart.
@@ -696,6 +696,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   };
   const journal = tradeJournal(state.trades, pool, pair.symbol);
   const context = [
+    opts.agentBrief ?? "",
     patternsText(patterns),
     journal,
     cfg && strongOn(cfg)
@@ -705,13 +706,15 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
       ? `Recent bot trades on this coin (newest first): ${recent.map((t) => `${new Date(t.time).toISOString().slice(11, 16)} UTC ${(t.pnlUsd ?? 0) >= 0 ? "+" : ""}$${(t.pnlUsd ?? 0).toFixed(2)} (${t.reason})`).join("; ")}.`
       : "No recent bot trades on this coin.",
     record,
+    ...(opts.agentBrief ? [] : [
     dipsBlocked
       ? `IMPORTANT: right now the bot will NOT fill buy_dip or buy_now orders (${trendDown ? "the 1-hour trend is down" : `the coin fell ${Math.abs(pair.change.h1).toFixed(1)}% in the last hour`}). Only a buy_breakout can be used; otherwise choose AVOID.`
       : `Dip and buy-now orders are allowed right now (the bot pauses them if the 1-hour trend turns down or the coin falls more than ${maxDrop}% in an hour).`,
     `Exact exit rules: once up ${ex.be}%, the stop moves to break-even, then a profit lock keeps at least ${ex.lock}% of the best gain; it sells half at ${ex.half}% of the way from entry to your target; at the target it trails ${ex.trail}% below the highest price. Orders with a win chance below ${ex.minWin}% are not used. After a losing trade it waits before re-buying, and skips the coin for the day after 2 losses.`,
+    ]),
   ].filter(Boolean).join("\n");
   if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
-  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined);
+  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined, !!opts.agentBrief);
   const appTokens = await chargeTokens(results);
   const model = opts.forBot ? BOT_MODEL : CLAUDE_MODEL;
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
@@ -838,7 +841,7 @@ function startBotHere(cfg: BotConfig) {
       : isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round the AI checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
       : isCoinAgent(cfg)
-        ? `Agent started on ${cfg.symbol} with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. It studies the coin's history first, then watches for the pattern that paid there.`
+        ? `Agent started on ${cfg.symbol} with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. Its AI is reading the charts and deciding now.`
       : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling (you accepted the risk). Trades are capped at 25% of the account, with a 5-minute cool-down after a loss." : ""}`,
     "good",
   );
@@ -1346,10 +1349,11 @@ async function agentsStep(cfg: BotConfig) {
   }
 }
 
-// ---------- Agent: one coin, its own budget ----------
-// Learns from its coin's history which entry pattern really made +10% after fees (relearns every
-// hour), and buys when that pattern appears on the newest closed candle. One AI check before
-// each buy (if on). Exits: the agents' rules (protect from +8%, half at the target, trail the rest).
+// ---------- Agent: one coin, its own budget, the AI decides ----------
+// On start (and whenever its plan runs out or a trade closes) the agent asks the AI, which gets
+// every timeframe, the chart patterns, a study of the coin's own history, the scouts' reading and
+// the trade journal, and answers: buy now, buy at a level, or stay out, with exit and target.
+// The bot carries that out with the agent's budget. No other limits apply.
 export const AGENT_BUDGET_DEFAULT = 1000;
 const RELEARN_MS = 60 * 60_000;
 
@@ -1360,99 +1364,52 @@ function agentFunds(cfg: BotConfig) {
   return (cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT) + pnl;
 }
 
-async function coinAgentStep(cfg: BotConfig) {
+// true = the agent stopped (its budget is gone)
+async function agentPrep(cfg: BotConfig): Promise<boolean> {
   const budget = cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT;
-  const funds = agentFunds(cfg);
-  if (funds < budget * 0.5) {
-    stopBot(`Agent stopped: it lost half its $${budget} budget. Its trades are in your history.`);
-    alert(`⏹ Agent on ${cfg.symbol} stopped: it lost half its $${budget} budget.`);
-    return;
+  if (agentFunds(cfg) < Math.max(10, budget * 0.1)) {
+    stopBot(`Agent stopped: its $${budget} budget is used up. Its trades are in your history.`);
+    alert(`⏹ Agent on ${cfg.symbol} stopped: its $${budget} budget is used up.`);
+    return true;
   }
-  const cost = roundTripCostPct();
-  let L = state.bot.learned;
+  const L = state.bot.learned;
   if (!L || Date.now() - L.at > RELEARN_MS) {
-    const pair = await getPair(cfg.chain, cfg.pool);
-    const [c5, c1] = await Promise.all([
-      getCandles(cfg.chain, cfg.pool, "5m", 300, pair).catch(() => []),
-      getCandles(cfg.chain, cfg.pool, "1h", 300, pair).catch(() => []),
-    ]);
-    L = state.bot.learned = learn([{ tf: "5m", candles: c5 }, { tf: "1h", candles: c1 }], cost, AGENT_NET_TARGET);
-    log(`${cfg.symbol} agent: ${L.summary}`, L.best ? "good" : "info");
-    acct().dirty = true;
-  }
-  // The level it's watching, for the chart (refreshed about once a minute). With no proven
-  // pattern yet it shows the closest one, marked as watching only (not traded).
-  const wst = L.best ?? L.table[0];
-  if (wst && Date.now() - (state.bot.watch?.at ?? 0) > 55_000) {
     try {
-      const wp = await getPair(cfg.chain, cfg.pool);
-      const wc = await getCandles(cfg.chain, cfg.pool, wst.tf as Timeframe, 300, wp);
-      state.bot.watch = watchLevel(wst, wc, cost, AGENT_NET_TARGET, !!L.best) ?? { key: wst.key, label: wst.label, tf: wst.tf, side: "above", price: 0, stop: 0, target: 0, live: !!L.best, at: Date.now() };
-      acct().dirty = true;
-    } catch { /* keep the last one */ }
-  }
-  if (!L.best) return setBlocked(null);
-  const block = coinBlock(cfg, cfg.pool, cfg.symbol);
-  if (block) return setBlocked(block, `ablock:${block}`);
-  if (strongOn(cfg)) {
-    const pausedTill = streakPauseUntil(state.trades);
-    if (pausedTill) return setBlocked(`${STREAK_LOSSES} losing trades in a row: no new buys until ${clock(pausedTill)}`, `astreak:${pausedTill}`);
-  }
-  setBlocked(null);
-  const best = L.best;
-  const pair0 = await getPair(cfg.chain, cfg.pool);
-  const candles = await getCandles(cfg.chain, cfg.pool, best.tf as Timeframe, 300, pair0).catch(() => [] as Candle[]);
-  if (candles.length < 60) return;
-  const f = firesNow(best, candles);
-  if (!f.yes || f.closedAt <= (state.bot.lastFiredAt ?? 0)) return;
-  state.bot.lastFiredAt = f.closedAt;
-  acct().dirty = true;
-  const price = pair0.priceUsd;
-  const stop = price * (1 - f.stopPct / 100);
-  const target = price * (1 + (AGENT_NET_TARGET + cost) / 100);
-  log(`${cfg.symbol} agent: "${best.label}" just appeared on the ${best.tf} chart (it paid ${best.wins} of ${best.trades} times here).`);
-  let ai = "";
-  if (cfg.agentAiCheck !== false && (await tokensLeft()) > 0) {
-    try {
-      const frames = await loadFrames(cfg.chain, cfg.pool, pair0, ["5s", "5m", "1h"]);
-      const pats = frames.filter((x) => x.tf === "5m").map((x) => findPatterns(x.tf, x.candles));
-      const d = await Promise.race([
-        reviewAgentPick({ pair: pair0, frames, agentReport: `${L.summary}\nPast results of each pattern on this coin:\n${L.table.slice(0, 5).map((t) => `- ${t.label} (${t.tf}): ${t.trades} trades, ${t.wins} wins, average ${t.avgNetPct.toFixed(1)}%`).join("\n")}`, patterns: patternsText(pats), entry: price, stop, target, costPct: cost }),
-        new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 40_000)),
+      const pair = await getPair(cfg.chain, cfg.pool);
+      const [c5, c1] = await Promise.all([
+        getCandles(cfg.chain, cfg.pool, "5m", 300, pair).catch(() => []),
+        getCandles(cfg.chain, cfg.pool, "1h", 300, pair).catch(() => []),
       ]);
-      await chargeTokens([{ model: BOT_MODEL, ok: false, error: "", ms: 0, tokens: d.tokens }]);
-      const p = Math.max(0, Math.min(100, d.winChancePct)) / 100;
-      const ev = p * AGENT_NET_TARGET - (1 - p) * (f.stopPct + cost);
-      if (!d.approve || ev <= 0) {
-        log(`${cfg.symbol} agent: the AI check said skip (${d.approve ? `${d.winChancePct}% win chance doesn't pay after fees` : d.reason}). Waiting for the next signal.`);
-        return;
-      }
-      ai = ` AI: ${d.winChancePct}% win chance. ${d.reason}`;
-    } catch (e: any) {
-      log(`${cfg.symbol} agent: AI check unavailable (${e?.message ?? e}); skipping this signal.`, "bad");
-      return;
-    }
+      state.bot.learned = learn([{ tf: "5m", candles: c5 }, { tf: "1h", candles: c1 }], roundTripCostPct(), AGENT_NET_TARGET);
+      if (!L) log(`${cfg.symbol} agent: studied the coin's history for the AI. ${state.bot.learned.summary}`);
+      acct().dirty = true;
+    } catch { /* the AI still gets the charts */ }
   }
-  let q: Quote;
-  try { q = await quote(cfg.chain, cfg.pool, Date.now() - 10_000); } catch { return; }
-  if (!(q.price > 0)) return;
-  const usd = Math.floor(Math.min(state.cash, funds) * 100) / 100;
-  if (usd < 1) return noteOnce(`agcash:${utcDay()}`, `${cfg.symbol} agent: not enough cash in the account for its budget.`, "bad");
-  const slip = thinSlipPct(usd, q.pair.liquidityUsd);
-  const t = buy({ ...q.pair, priceUsd: q.price }, usd, "bot", `Agent: ${best.label} (${best.tf})`, {
-    stopLoss: q.price * (1 - f.stopPct / 100),
-    target: q.price * (1 + (AGENT_NET_TARGET + cost) / 100),
-    takeProfit: q.price * (1 + (AGENT_NET_TARGET + cost) / 100),
-    trailPct: trailFor(cfg, (atr(candles) / q.price) * 100),
-    botId: currentBotId(),
-    sellBy: Date.now() + (best.tf === "1h" ? 12 : 4) * 60 * 60_000,
-    strategy: "agents",
-    extraSlipPct: slip,
-  }, slip);
-  t.strategy = "agents";
-  const msg = `AGENT BUY ${cfg.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${best.label}, ${best.tf}). Exit ${fmt(q.price * (1 - f.stopPct / 100))} (-${f.stopPct.toFixed(1)}%), target ${fmt(q.price * (1 + (AGENT_NET_TARGET + cost) / 100))} (+${AGENT_NET_TARGET}% after fees).${ai}`;
-  log(msg, "good");
-  alert(`🛰 ${msg}`);
+  return false;
+}
+
+// What the AI is told when it plans for an agent.
+async function agentBrief(cfg: BotConfig): Promise<string> {
+  const cost = roundTripCostPct();
+  const L = state.bot.learned;
+  const lines = [
+    `You are this coin's dedicated trading agent. Budget $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} (funds now $${agentFunds(cfg).toFixed(2)}); each buy invests all of it.`,
+    `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you would buy at (buy_dip or buy_breakout), or AVOID if you would not put money in. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them.`,
+    `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. Put the stop where the idea is proved wrong.`,
+    `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. An order is used unless your own numbers say it loses money on average after costs.`,
+    `After buying: from +${AGENT_GUARD_AT}% the exit moves above the buy price and then keeps half of the best gain; half is sold at your target and the rest trails; at the stop you are asked once whether to hold.`,
+  ];
+  if (L) {
+    lines.push(`A study of this coin's own history (simple entry patterns replayed with these exact rules): ${L.summary}`);
+    if (L.table.length) lines.push(...L.table.slice(0, 6).map((t) => `- ${t.label} on ${t.tf}: ${t.trades} past trades, ${t.wins} reached the target, average ${t.avgNetPct >= 0 ? "+" : ""}${t.avgNetPct.toFixed(1)}% after costs`));
+  }
+  try {
+    const pair = await getPair(cfg.chain, cfg.pool);
+    const scan = await scanAgents();
+    const c = scan.coins.find((x) => x.mint === pair.tokenAddress);
+    if (c) lines.push(`Scouts' reading of this coin (rule-based, 0-100 each): ${AGENT_KEYS.map((k) => `${k} ${Math.round(c.agents[k].score)} (${c.agents[k].note})`).join("; ")}.${c.vetoes.length ? ` Warnings: ${c.vetoes.join("; ")}.` : ""}`);
+  } catch { /* optional */ }
+  return lines.join("\n");
 }
 
 // New coins mode: one fast, rule-based step (no AI). Picks the best young coin that
@@ -1521,6 +1478,15 @@ export async function tick(persist = true) {
 async function tickBot(persist: boolean) {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg || acct().busy) return;
+  if (isCoinAgent(cfg)) {
+    // An agent's AI is in charge: no daily loss limit, cool-down, losing-streak pause, emergency
+    // stop, minimum win chance or falling-coin filter. Its budget is its only limit.
+    cfg.strongMode = false;
+    cfg.rewardRule = false;
+    cfg.allowRisky = false;
+    cfg.disabled = [...new Set([...(cfg.disabled ?? []), "dailyLossPct", "cooldownMin", "maxDrawdownPct", "minConfidence", "maxDrop1hPct", "riskPerTradePct"])];
+    if (state.bot.blocked) setBlocked(null);
+  }
   acct().busy = true;
   // Look at candles since the previous check (at most the last minute).
   const windowStart = Math.max(Date.now() - 60_000, (state.bot.lastTickAt || Date.now()) - CHECK_MS);
@@ -1647,7 +1613,7 @@ async function tickBot(persist: boolean) {
       }
       // Second look: before a stop-loss or time-limit sale, the AI checks whether holding can
       // still end in profit. Once per trade at the stop; up to 3 time extensions; sells on any doubt.
-      if (reason && pos.source === "bot" && !pos.strategy && !isOff(cfg, "aiSecondLook")) {
+      if (reason && pos.source === "bot" && (!pos.strategy || (pos.strategy === "agents" && isCoinAgent(cfg))) && !isOff(cfg, "aiSecondLook")) {
         const atStop = reason === "Stop-loss hit" && !pos.secondLook;
         const atTime = reason === "Maximum holding time reached" && (pos.extensions ?? 0) < 3;
         if ((atStop || atTime) && (await tokensLeft()) > 0) {
@@ -1701,7 +1667,7 @@ async function tickBot(persist: boolean) {
     }
     if (isNew(cfg)) return await newCoinsStep(cfg);
     if (isAgents(cfg)) return await agentsStep(cfg);
-    if (isCoinAgent(cfg)) return await coinAgentStep(cfg);
+    if (isCoinAgent(cfg) && (await agentPrep(cfg))) return;
     if (isAuto(cfg) && state.bot.target && coinBlock(cfg, state.bot.target.pool, state.bot.target.symbol)) {
       state.bot.target = null; // pick another coin
       state.lastSignal = null;
@@ -1717,11 +1683,12 @@ async function tickBot(persist: boolean) {
     // 3. Ask AI only when something calls for it (never more than once per 2 min).
     const why = claudeDue(cfg, q?.price ?? null);
     let askedAt = 0;
+    const askGap = isCoinAgent(cfg) ? 30_000 : MIN_CLAUDE_GAP_MS; // agents decide again quickly after a trade or a broken plan
     if (why && (await tokensLeft()) <= 0) {
       noteOnce(`tokens:${month()}`, "Out of AI tokens for this month on your plan: the bot can't make new plans. Open positions are still managed. Upgrade your plan to keep the bot trading.", "bad");
       return;
     }
-    if (why && Date.now() - state.bot.lastAnalysisAt >= MIN_CLAUDE_GAP_MS) {
+    if (why && Date.now() - state.bot.lastAnalysisAt >= askGap) {
       // Save "asked Claude at ..." BEFORE the slow, paid call, so no other
       // request or server decides a check is due and asks again meanwhile.
       state.bot.lastAnalysisAt = Date.now();
@@ -1735,7 +1702,7 @@ async function tickBot(persist: boolean) {
       if (isAuto(cfg)) {
         await autoPick(cfg);
       } else {
-        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true });
+        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
       }
@@ -1744,7 +1711,7 @@ async function tickBot(persist: boolean) {
     } else if (why) {
       // A new plan is due but the AI was asked less than 2 minutes ago: wait for it
       // rather than trade on the old plan.
-      const waitS = Math.ceil((state.bot.lastAnalysisAt + MIN_CLAUDE_GAP_MS - Date.now()) / 1000);
+      const waitS = Math.ceil((state.bot.lastAnalysisAt + askGap - Date.now()) / 1000);
       noteOnce(`wait:${state.bot.lastAnalysisAt}`, `Waiting for a fresh AI plan before the next trade (${why}); asking in about ${waitS}s.`);
       return;
     }
@@ -1760,7 +1727,9 @@ async function tickBot(persist: boolean) {
     if (!c.orders.length || Date.now() > c.expiresAt) return;
     // The AI advised staying out: its risky setup is only traded if the user accepted the risk.
     if (c.stance === "AVOID" && !cfg.allowRisky)
-      return noteOnce(`avoid:${sig.at}`, `The AI advises staying out of ${t3.symbol}, so its risky setup isn't traded. Start the bot and choose "I understand, trade anyway" to trade it.`), undefined;
+      return noteOnce(`avoid:${sig.at}`, isCoinAgent(cfg)
+        ? `${t3.symbol} agent: the AI decided to stay out for now. ${(() => { const r = sig.results.find((x) => x.ok); return r && r.ok ? r.signal.reasoning : ""; })()} It looks again by ${clock(Math.min(c.expiresAt, state.bot.lastAnalysisAt + cfg.analyzeEverySec * 1000))}, sooner if the price moves.`
+        : `The AI advises staying out of ${t3.symbol}, so its risky setup isn't traded. Start the bot and choose "I understand, trade anyway" to trade it.`), undefined;
     const strong = strongOn(cfg);
     if (strong) {
       const pausedTill = streakPauseUntil(state.trades);
@@ -1773,6 +1742,10 @@ async function tickBot(persist: boolean) {
       const o = c.orders[i];
       // Setups that fail the fee/risk check are shown as warnings; traded only in risky mode (never in Strong mode).
       if (o.warning && (!cfg.allowRisky || strong)) continue;
+      if (isCoinAgent(cfg) && o.netRewardPct < AGENT_NET_TARGET) {
+        if (triggerMet(o, q)) noteOnce(`anet:${sig.at}:${i}`, `${t3.symbol}: the AI's order aims for only +${o.netRewardPct.toFixed(1)}% after fees; the agent needs +${AGENT_NET_TARGET}%. Not buying.`);
+        continue;
+      }
       const label = o.kind === "buy_dip" ? `dip to ${fmt(o.triggerPrice)}` : o.kind === "buy_breakout" ? `breakout above ${fmt(o.triggerPrice)}` : `buy-now order (up to ${fmt(o.triggerPrice)})`;
       // Orders below the user's minimum win chance are never used, but say so when their trigger is hit.
       // Trend filter: a crash is not a dip.
@@ -1861,7 +1834,7 @@ async function tickBot(persist: boolean) {
       const bySize = riskPct > 0 ? (equity() * riskPct) / 100 / (exitLossPct / 100) : Infinity;
       const sizePct = cfg.allowRisky ? Math.min(cfg.positionPct, RISKY_MAX_POSITION_PCT) : cfg.positionPct; // risky trades stay small
       const cap = Math.min(state.cash, equity() * (sizePct / 100));
-      const usd = Math.floor(Math.min(cap, bySize) * 100) / 100;
+      const usd = isCoinAgent(cfg) ? Math.floor(Math.min(state.cash, agentFunds(cfg)) * 100) / 100 : Math.floor(Math.min(cap, bySize) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
       // Fill like a real order at the trigger price (or better/worse, see buyFillPrice).
@@ -1873,9 +1846,11 @@ async function tickBot(persist: boolean) {
         botId: currentBotId(),
         sellBy: Date.now() + o.maxHoldMinutes * 60_000,
         predictedWinPct: o.winChancePct,
+        ...(isCoinAgent(cfg) ? { strategy: "agents" as const } : {}),
         ...(sig.patterns ? { patterns: patternTags(sig.patterns) } : {}),
       });
       if (sig.patterns) t.patterns = patternTags(sig.patterns);
+      if (isCoinAgent(cfg)) t.strategy = "agents";
       log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.`, "good");
       alert(`🤖 Bought ${pair.symbol}: $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}, target ${fmt(o.target)}. Risking ~$${riskUsd.toFixed(2)}.`);
       // The plan is used up; Claude plans again after this trade closes.

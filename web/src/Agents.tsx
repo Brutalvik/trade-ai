@@ -1,5 +1,6 @@
-// Agents: each agent trades ONE coin with its own budget. It studies that coin's history, learns
-// which entry pattern really made +10% after fees there, and buys when the pattern appears.
+// Agents: each agent trades ONE coin with its own budget, and its AI decides. On start it asks the
+// AI at once (every timeframe, chart patterns, a study of the coin's history, the scouts' reading,
+// your trade journal): buy now, buy at a level, or stay out. The budget is its only limit.
 // This panel lists your agents; "+ New Agent" opens a window with the top opportunities (scored
 // by the eight scouts) and the coin search.
 import { useEffect, useState } from "react";
@@ -42,7 +43,7 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults }:
         <p className="muted small agents-empty">
           {limit <= 0
             ? "Agents trade one coin each, on their own. They're included from the AI Starter plan."
-            : "No agents yet. An agent trades one coin with the money you give it: it studies the coin's history, learns which pattern has paid there, and buys only when that pattern appears."}
+            : "No agents yet. An agent trades one coin with the money you give it. Its AI decides when to buy and sell, starting the moment you create it."}
         </p>
       )}
       {adding && freeId && <NewAgentModal slotId={freeId} state={state} defaults={defaults} notify={notify} onClose={() => setAdding(false)} onStarted={() => { setAdding(false); refresh(); }} takenPools={running.map((b) => b.bot.config?.pool ?? "")} />}
@@ -68,22 +69,31 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const chain = pos?.chain ?? (roams ? bot.target?.chain : cfg?.chain);
   const pool = pos?.pool ?? (roams ? bot.target?.pool : cfg?.pool);
   const symbol = pos?.symbol ?? (roams ? bot.target?.symbol ?? "Scanning" : cfg?.symbol) ?? "?";
-  // Where it is in its loop: 0 studying, 1 watching, 2 in a trade.
-  const stage = pos ? 2 : isAgent && !L ? 0 : 1;
+  // The AI's latest plan for this agent's coin.
+  const plan = slot.lastSignal && slot.lastSignal.pool === (cfg?.pool ?? pool) ? slot.lastSignal : slot.lastSignal;
+  const c = plan?.consensus;
+  const order = c?.orders.find((o) => !o.warning) ?? c?.orders[0];
+  const okRes = plan?.results.find((r) => r.ok);
+  const reasoning = okRes && okRes.ok ? okRes.signal.reasoning : "";
+  const at = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // Where it is in its loop: 0 the AI is deciding, 1 waiting for its level, 2 in a trade.
+  const stage = pos ? 2 : !c ? 0 : 1;
   const paused = !pos && !!bot.blocked;
   const status = pos
-    ? `In a trade since ${new Date(pos.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: bought at ${fmtPrice(pos.entryPrice)}, exit ${pos.stopLoss ? fmtPrice(pos.stopLoss) : "–"}, target ${pos.target ? fmtPrice(pos.target) : "–"}`
+    ? `In a trade since ${at(pos.openedAt)}: bought at ${fmtPrice(pos.entryPrice)}, exit ${pos.stopLoss ? fmtPrice(pos.stopLoss) : "–"}, target ${pos.target ? fmtPrice(pos.target) : "–"}`
     : bot.blocked
       ? `Paused: ${bot.blocked}`
-      : isAgent
-        ? L
-          ? L.best ? `Watching for "${L.best.label}" on the ${L.best.tf} chart` : "No proven pattern yet: watching, relearns every hour"
-          : "Studying the coin's history…"
-        : "Running";
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status };
+      : !c
+        ? "The AI is reading the charts and deciding…"
+        : c.stance === "AVOID" || !order
+          ? `The AI decided to stay out for now. It looks again by ${at(c.expiresAt)}, sooner if the price moves.`
+          : order.kind === "buy_now"
+            ? `The AI says buy now (up to ${fmtPrice(order.triggerPrice)}): ${order.winChancePct}% win chance`
+            : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}: ${order.winChancePct}% win chance`;
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning };
 }
 
-const STAGES = ["Studying", "Watching", "In a trade"];
+const STAGES = ["AI deciding", "Waiting for its price", "In a trade"];
 // The "it's running" bar: a light sweeps along it while the agent works; amber and still when paused.
 function RunBar({ stage, paused, labels = false }: { stage: number; paused: boolean; labels?: boolean }) {
   return (
@@ -157,7 +167,6 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
   const ran = Math.max(0, Math.floor((now - (a.bot.startedAt ?? now)) / 1000));
   const ranText = ran >= 3600 ? `${Math.floor(ran / 3600)}h ${Math.floor((ran % 3600) / 60)}m` : `${Math.floor(ran / 60)}m ${String(ran % 60).padStart(2, "0")}s`;
   const wins = a.sells.filter((t) => (t.pnlUsd ?? 0) > 0).length;
-  const w = a.bot.watch;
   const L = a.L;
   return (
     <Modal title={`${a.symbol} ${a.isAgent ? "agent" : "bot"}`} onClose={onClose} wide
@@ -186,20 +195,29 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
           {a.isAgent ? <div><small>Funds now</small><b>{fmtUsd(a.budget + a.realized)}</b></div> : null}
           <div><small>Trades</small><b>{a.sells.length}</b></div>
           <div><small>Profitable</small><b>{a.sells.length ? `${wins} of ${a.sells.length}` : "–"}</b></div>
-          {w && w.price > 0 ? <div><small>{w.live ? (w.side === "above" ? "Buys above" : "Buys near") : "Watching level"}</small><b>{fmtPrice(w.price)}</b></div> : null}
-          {w && w.live && w.price > 0 ? <div><small>Then exit / target</small><b>{fmtPrice(w.stop)} / {fmtPrice(w.target)}</b></div> : null}
+          {a.order && !a.pos ? <div><small>{a.order.kind === "buy_now" ? "Buys now up to" : a.order.kind === "buy_breakout" ? "Buys above" : "Buys at"}</small><b>{fmtPrice(a.order.triggerPrice)}</b></div> : null}
+          {a.order && !a.pos ? <div><small>Exit / target</small><b>{fmtPrice(a.order.stopLoss)} / {fmtPrice(a.order.target)}</b></div> : null}
         </div>
+        {a.plan ? (
+          <>
+            <div className="label-sm">The AI's decision</div>
+            <div className={`agent-learned ${a.plan.stance === "AVOID" ? "" : "has"}`}>
+              <b>{a.plan.stance === "BUY_NOW" ? "Buy now" : a.plan.stance === "AVOID" ? "Stay out for now" : "Buy at its level"}</b> · {a.plan.confidence}% sure{a.order && a.plan.stance !== "AVOID" ? ` · ${a.order.winChancePct}% win chance · aims for +${a.order.netRewardPct.toFixed(1)}% after fees, risks ${a.order.netRiskPct.toFixed(1)}%` : ""}
+              {a.reasoning ? <><br />{a.reasoning}</> : null}
+            </div>
+          </>
+        ) : null}
         {a.isAgent && L ? (
           <>
-            <div className="label-sm">What it learned from {a.symbol}'s history</div>
-            <div className={`agent-learned ${L.best ? "has" : ""}`}>{L.summary}</div>
+            <div className="label-sm">{a.symbol}'s history, as given to the AI</div>
+            <div className="agent-learned">{L.summary}</div>
             {L.table.length ? (
               <table className="agent-table">
                 <thead><tr><th>Pattern</th><th>Chart</th><th className="num">Past trades</th><th className="num">Won</th><th className="num">Average after fees</th></tr></thead>
                 <tbody>
                   {L.table.map((t) => (
-                    <tr key={`${t.key}${t.tf}`} className={L.best && t.key === L.best.key && t.tf === L.best.tf ? "best" : ""}>
-                      <td>{t.label}{L.best && t.key === L.best.key && t.tf === L.best.tf ? " ✓" : ""}</td><td>{t.tf}</td><td className="num">{t.trades}</td><td className="num">{t.wins}</td>
+                    <tr key={`${t.key}${t.tf}`}>
+                      <td>{t.label}</td><td>{t.tf}</td><td className="num">{t.trades}</td><td className="num">{t.wins}</td>
                       <td className={`num ${t.avgNetPct >= 0 ? "up" : "down"}`}>{t.avgNetPct >= 0 ? "+" : ""}{t.avgNetPct.toFixed(1)}%</td>
                     </tr>
                   ))}
@@ -244,7 +262,6 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
   const [pick, setPick] = useState<PairInfo | null>(null);
   const [picking, setPicking] = useState<string | null>(null);
   const [budget, setBudget] = useState(String(DEFAULT_BUDGET));
-  const [aiCheck, setAiCheck] = useState(true);
   const [starting, setStarting] = useState(false);
   useEffect(() => {
     const load = () => api.agents().then(setScan).catch((e) => setErr(e.message));
@@ -274,7 +291,8 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
     try {
       const cfg: BotConfig = {
         ...defaults, chain: pick.chain, pool: pick.pool, symbol: pick.symbol, tf: "5m", checkEverySec: 5, goalUsd: 1e9,
-        pick: "agent", budgetUsd: amount, agentAiCheck: aiCheck, strongMode: true, rewardRule: true, disabled: [],
+        pick: "agent", budgetUsd: amount, strongMode: false, rewardRule: false, minConfidence: 0,
+        disabled: ["dailyLossPct", "cooldownMin", "maxDrawdownPct", "minConfidence", "maxDrop1hPct", "riskPerTradePct"],
       };
       await api.startBot(cfg, slotId);
       notify(`Agent started on ${pick.symbol} with ${fmtUsd(amount)}`);
@@ -296,7 +314,7 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
         </>
       }>
       <div className="new-agent">
-        <p className="muted small">One agent trades one coin. It studies the coin's price history, learns which entry pattern has really made <b>+10% after all fees</b> there, and buys only when that pattern appears. If nothing has paid on that coin, it waits.</p>
+        <p className="muted small">One agent trades one coin. The moment it starts, its AI reads every timeframe, the chart patterns, the coin's history and your past trades, and decides: <b>buy now</b>, buy at a level, or stay out. Each trade aims for <b>+10% after all fees</b>.</p>
         <CoinSearch className="in-modal" placeholder="Search any coin by ticker, name or address…" notify={notify} onSelect={setPick} autoFocus />
         {pick ? (
           <div className="agent-picked">
@@ -311,10 +329,7 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
             <div className="agent-budget"><i>$</i><input type="number" min={10} step={50} value={budget} onChange={(e) => setBudget(e.target.value)} /></div>
             <div className="agent-quick">{[250, 500, 1000, 2500].map((v) => <button key={v} type="button" className={`chip ${amount === v ? "on" : ""}`} onClick={() => setBudget(String(v))}>${v.toLocaleString()}</button>)}</div>
           </label>
-          <label className="check small">
-            <input type="checkbox" checked={aiCheck} onChange={(e) => setAiCheck(e.target.checked)} />
-            <span>One AI check before each buy <small className="muted">(a small AI call per trade, not per scan)</small></span>
-          </label>
+          <p className="muted small agent-form-note">Its AI decides when to buy and sell. There is no daily loss limit, cool-down or other brake: <b>the budget is the only limit</b>, so give it only what you're ready to lose.</p>
         </div>
         <div className="label-sm opp-title">Top 10 opportunities right now{scan ? <span className="muted"> · {scan.scanned} coins scanned by 8 scouts</span> : null}</div>
         {err ? <div className="muted small">Couldn't load the opportunities: {err}</div> : !scan ? <div className="muted small">Scanning…</div> : (

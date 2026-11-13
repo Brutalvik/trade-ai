@@ -114,18 +114,17 @@ export function GuidePage({ plans, onClose }: { plans: PlanInfo[]; onClose: () =
       id: "agents", title: "Agents", show: bot,
       body: (
         <>
-          <p>An agent trades <b>one coin</b> with the money you give it. Press <b>+ New Agent</b> in the Agents panel, pick a coin from the <b>top 10 opportunities</b> or the search box, set a budget (default $1,000) and start it.{bots > 1 ? ` Your plan runs up to ${bots} agents at once, each on its own coin.` : ""}</p>
+          <p>An agent trades <b>one coin</b> with the money you give it, and its <b>AI decides</b>. Press <b>+ New Agent</b>, pick a coin from the <b>top 10 opportunities</b> or the search box, set a budget (default $1,000) and start it.{bots > 1 ? ` Your plan runs up to ${bots} agents at once, each on its own coin.` : ""}</p>
           <ul>
-            <li><b>It learns first.</b> The agent replays five entry patterns over the coin's own history (breakout with volume, pullback to the trend line, tight-range breakout, bull flag, RSI rebound) with the exact rules it trades by, and keeps the one that really made money there. It relearns every hour. "What it learned" on its card shows every pattern's record.</li>
-            <li><b>It only trades with proof.</b> If no pattern has at least 3 past trades that made money on average, the agent waits. Waiting is the agent working, not a fault.</li>
-            <li><b>Every trade aims for +10% after all fees.</b> The exit sits 4–7% below the buy price. From +8% the exit moves above the buy price; at the target it sells half and trails the rest.</li>
-            <li><b>One AI check before each buy</b> (optional): a small AI call per trade, not per scan.</li>
-            <li><b>Its budget is its limit.</b> It invests only its budget plus what its own trades have made. If it loses half its budget, it stops itself.</li>
-            <li><b>Top 10 opportunities</b> are scored by eight rule-based scouts: trend, volume, real traders, holders, dev wallet, liquidity, momentum and age. A coin with a deal-breaker (for example the dev holds too much, or liquidity is being pulled) is marked vetoed with the reason. Scores are not advice.</li>
-            <li><b>On the chart</b>: once an agent is on a coin, the chart shows the level it's watching (BUY ABOVE / BUY BELOW with the exit and target it would use; grey WATCHING while no pattern has proved itself). After it buys you see BOUGHT, EXIT and TARGET, and its buys and sells are marked on the candles.</li>
-            <li><b>Click an agent's card</b> to open its window: a running bar (Studying → Watching → In a trade), its budget and results, what it learned, its activity log and its trades.</li>
-            <li><b>Safety limits</b>: after a losing trade it waits 30 minutes before buying that coin again; after 3 losing trades in a row across your agents, no new buys for an hour; if the account falls 10% in a day, no new trades until 00:00 UTC; if it falls 25% below its value when an agent started, every agent sells and switches off.</li>
-            <li><b>Exits only move up</b>: stop-loss first; from +8% the exit sits above the buy price and then follows the best price to keep half the best gain; at the target it sells half and trails the rest; a time limit closes a trade that goes nowhere. Prices more than 15% away from the live price are ignored as bad ticks.</li>
+            <li><b>It decides straight away.</b> On start the AI reads four timeframes, the chart patterns, a study of the coin's own history, the scouts' reading and your past trades, then answers: <b>buy now</b>, buy at a level (a dip or a breakout), or stay out. It is asked again when its plan runs out, when the price leaves the plan's range, and after every trade.</li>
+            <li><b>Every trade aims for +10% after all fees.</b> The AI sets the exit and the target; an order aiming for less isn't used, and neither is one the AI's own numbers say loses money on average.</li>
+            <li><b>Each buy invests the agent's whole budget</b> (its budget plus what its own trades have made or lost).</li>
+            <li><b>No other limits.</b> There is no daily loss limit, cool-down, losing-streak pause or emergency stop on agents. <b>The budget is the only limit</b>: the agent stops when its budget is used up. Give it only what you're ready to lose.</li>
+            <li><b>Exits</b>: stop-loss first (the AI is asked once at the stop whether to hold, with a capped last exit); from +8% the exit sits above the buy price and then keeps half the best gain; at the target it sells half and trails the rest; a time limit closes a trade that goes nowhere.</li>
+            <li><b>On the chart</b>: the AI's levels for the agent (BUY BELOW / BUY ABOVE, EXIT, TARGET); after it buys you see BOUGHT, EXIT and TARGET, and its buys and sells are marked on the candles. The AI Signal card shows the same plan.</li>
+            <li><b>Click an agent's card</b> to open its window: a running bar (AI deciding → Waiting for its price → In a trade), the AI's decision and reasons, budget and results, activity log and trades.</li>
+            <li><b>Top 10 opportunities</b> are scored by eight rule-based scouts: trend, volume, real traders, holders, dev wallet, liquidity, momentum and age. A coin with a deal-breaker is marked vetoed with the reason. Scores are not advice.</li>
+            <li><b>Cost</b>: each AI decision uses AI tokens from your plan (about one decision per plan, not per price check).</li>
             <li><b>Stop</b> on an agent's card or in its window switches it off; an open trade stays in Positions for you to close.</li>
           </ul>
         </>
