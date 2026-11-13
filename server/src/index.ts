@@ -15,6 +15,7 @@ import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import { searchCoins, coinList } from "./lists.js";
+import { AGENT_PASS, scanAgents } from "./agents.js";
 import { botLimit, can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
@@ -72,6 +73,11 @@ app.get(
   })),
 );
 app.get("/api/search", wrap(async (req) => searchPairs(String(req.query.q ?? ""))));
+// The agents' live scores for the busiest Solana coins (market data only, same for everyone).
+app.get("/api/agents", publicData(() => 30, async () => {
+  const s = await scanAgents();
+  return { at: s.at, scanned: s.scanned, pass: AGENT_PASS, coins: s.coins.slice(0, 12) };
+}));
 app.get("/api/search-coins", publicData(() => 30, async (req) => searchCoins(String(req.query.q ?? ""))));
 app.get("/api/pair/:chain/:pool", publicData(() => 5, async (req) => getPair(String(req.params.chain), String(req.params.pool))));
 // Returns the candle array; the X-Candle-Source header says where it came from.
@@ -246,7 +252,7 @@ app.post(
   needs("bot.run", async (req, res) => {
     // Auto-pick and risky mode need their own permissions.
     const a = (await auth.requestAuth(req))!;
-    if (req.body?.pick === "auto" && !can(a.plan, a.role, "bot.autopick"))
+    if ((req.body?.pick === "auto" || req.body?.pick === "agents") && !can(a.plan, a.role, "bot.autopick"))
       return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick. See Plans to upgrade.`, upgrade: true });
     if (req.body?.allowRisky && !can(a.plan, a.role, "bot.risky"))
       return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include risky mode. See Plans to upgrade.`, upgrade: true });

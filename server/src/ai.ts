@@ -350,3 +350,45 @@ Decide: sell now, or hold. Hold ONLY if the chart gives a concrete reason the dr
   const u: any = res.usage ?? {};
   return { ...res.parsed_output, tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) };
 }
+
+// ---------- Agents mode: the AI's one check before a buy ----------
+const AgentCheckSchema = z.object({
+  approve: z.boolean().describe("true = buy now with the given exit and target; false = skip this coin"),
+  winChancePct: z.number().describe("Honest chance (0-100) the price reaches the target before the exit"),
+  reason: z.string().describe("1-2 short sentences in plain words"),
+});
+export type AgentCheck = z.infer<typeof AgentCheckSchema> & { tokens: number };
+
+export async function reviewAgentPick(input: { pair: PairInfo; frames: Frame[]; agentReport: string; patterns: string; entry: number; stop: number; target: number; costPct: number }): Promise<AgentCheck> {
+  const { pair, frames, entry, stop, target } = input;
+  const sections = frames.map((f) => {
+    const rows = f.candles.slice(-Math.min(f.show, 48)).map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
+    const ind = f.snap ? `EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} volume ratio ${f.snap.volRatio.toFixed(2)}` : "";
+    return `## ${f.label}\n${ind}\n${JSON.stringify(rows)}`;
+  });
+  const prompt = `Scouting agents picked ${pair.symbol} (${pair.chain}) to buy now at about $${entry}.
+Proposed exit (stop-loss) $${stop} (${(((stop - entry) / entry) * 100).toFixed(1)}%), target $${target} (+${(((target - entry) / entry) * 100).toFixed(1)}%, which is +10% after the ${input.costPct.toFixed(1)}% round-trip costs). At the target the bot sells half and trails the rest.
+Liquidity $${Math.round(pair.liquidityUsd)}, change 5m ${pair.change.m5}% 1h ${pair.change.h1}% 24h ${pair.change.h24}%, last hour ${pair.buys1h ?? "?"} buys / ${pair.sells1h ?? "?"} sells.
+
+What the agents saw:
+${input.agentReport}
+
+${input.patterns}
+
+${sections.join("\n\n")}
+
+Approve only if reaching the target before the exit is realistic in the next few hours: room below resistance, momentum with real buyers, not a pump that is already fading. Most picks should be rejected unless the setup is clearly good. Be calibrated.`;
+  anthropic ??= new Anthropic();
+  const res = await anthropic.beta.messages.parse({
+    model: BOT_MODEL,
+    max_tokens: 2000,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    output_config: { effort: "low", format: betaZodOutputFormat(AgentCheckSchema) },
+    system: "You approve or reject a short-term crypto entry chosen by rule-based scouts. Protect capital first; reject anything unclear. Prices are USD, keep full precision.",
+    messages: [{ role: "user", content: prompt }],
+  });
+  if (!res.parsed_output) throw new Error(`no decision (${res.stop_reason})`);
+  const u: any = res.usage ?? {};
+  return { ...res.parsed_output, tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) };
+}

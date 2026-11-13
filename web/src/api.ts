@@ -22,7 +22,11 @@ export type ModelResult = { model: string; ok: true; signal: Signal; ms: number 
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
 export type Position = { id: string; botId?: string; imageUrl?: string; adopted?: boolean; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
 export type Trade = { id: string; botId?: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
-export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins"; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
+export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins" | "agents" | "agent"; budgetUsd?: number; agentAiCheck?: boolean; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
+// Agents: the eight scouts' reading of a coin, and what an agent learned from its coin's history.
+export type AgentCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; liquidity: number; ageMin: number | null; change5m: number; change1h: number; agents: Record<string, { score: number; note: string }>; total: number; vetoes: string[] };
+export type StratResult = { key: string; label: string; tf: string; trades: number; wins: number; avgNetPct: number; winChancePct: number };
+export type Learned = { at: number; netTargetPct: number; table: StratResult[]; best: StratResult | null; summary: string };
 export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
 export type AppState = {
   mode: "paper";
@@ -36,6 +40,7 @@ export type AppState = {
   equity: { t: number; v: number }[];
   settings: { feePct: number; slippagePct: number; continuous?: boolean };
   bot: {
+    learned?: Learned; // Agent: what it learned from its coin's history
     running: boolean;
     config: BotConfig | null;
     lastAnalysisAt: number;
@@ -166,6 +171,7 @@ export const api = {
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   setTradeMode: (mode: "paper" | "real") => req<{ user: User }>("/auth/trade-mode", { mode }),
   plans: () => req<PlanInfo[]>("/plans"),
+  agents: () => req<{ at: number; scanned: number; pass: number; coins: AgentCoin[] }>("/agents"),
   searchCoins: (q: string) => req<{ crypto: ListCoin[]; tokens: (ListCoin & { organic?: number })[]; address: boolean }>(`/search-coins?q=${encodeURIComponent(q)}`),
   wallet: (fresh = false) => req<WalletView>(`/wallet${fresh ? "?fresh=1" : ""}`),
   activity: (before = 0) => req<Page<AuditEntry>>(`/activity?before=${before}&limit=50`),

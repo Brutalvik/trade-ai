@@ -2,16 +2,19 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { audit, ledger, type AuditType } from "./audit.js";
-import { analyze, BOT_MODEL, CLAUDE_MODEL, reviewHold, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
+import { analyze, BOT_MODEL, CLAUDE_MODEL, reviewAgentPick, reviewHold, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
 import { findPatterns, patternsText, patternTags, type FramePatterns } from "./patterns.js";
-import { getCandles, getPair, getRecentTokenCandles, knownToken, type PairInfo, type Timeframe } from "./data.js";
-import { snapshot } from "./indicators.js";
+import { cachedJson, fromDexScreener, getCandles, getPair, getRecentTokenCandles, knownToken, type Candle, type PairInfo, type Timeframe } from "./data.js";
+import { atr, snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
+import { AGENT_KEYS, AGENT_PASS, scanAgents, type AgentCoin } from "./agents.js";
+import { firesNow, learn, type Learned } from "./learn.js";
+
 import { noteCommunityBuy } from "./lists.js";
 
 export type Position = {
@@ -40,13 +43,14 @@ export type Position = {
   // highest point since protection was switched on. Checked every 5 s, bot running or not.
   protectPct?: number;
   protectSince?: number;
-  strategy?: "newcoin"; // opened by the New coins mode (separate rules and scorecard)
+  strategy?: "newcoin" | "agents"; // opened by the New coins or Agents mode (their own rules)
   partialDone?: boolean; // new coins: half already sold at the first target
   extraSlipPct?: number; // extra slippage for thin liquidity, applied on the way out too
   realizedUsd?: number; // P&L already taken by partial sales (new coins: half at the first target)
   best?: number; // highest closing price since the buy (for the profit lock)
   locked?: boolean; // the stop is a profit lock (above break-even)
   patterns?: string[]; // chart patterns on screen when the bot bought
+  tokenMint?: string; // Agents mode: the token's mint (to avoid buying it twice)
   secondLook?: boolean; // the AI already kept this trade open once at its stop-loss
   firstStop?: number; // the stop-loss before the AI's second look moved it
   extensions?: number; // times the AI extended the holding time
@@ -71,7 +75,7 @@ export type Trade = {
   predictedWinPct?: number;
   reachedTarget?: boolean;
   auto?: boolean; // sold automatically by "Protect this trade"
-  strategy?: "newcoin";
+  strategy?: "newcoin" | "agents";
   botId?: string; // bot trades: which bot ("1" when missing)
   patterns?: string[]; // bot buys: chart patterns on screen when it bought
 };
@@ -92,7 +96,10 @@ export type BotConfig = {
   partialAtPct?: number; // sell half once the price is this % of the way to the target (default 75; 0 = off)
   goalUsd: number;
   // "this" = trade the coin above; "auto" = pick the best coin from Opportunities each round.
-  pick?: "this" | "auto" | "newcoins";
+  pick?: "this" | "auto" | "newcoins" | "agents" | "agent";
+  budgetUsd?: number; // Agent: the money it may invest (default $1,000)
+  agentMaxPerDay?: number; // Agents mode: most buys per day (default 6)
+  agentAiCheck?: boolean; // Agents mode: one AI check before each buy (default on)
   // New coins mode (fast, rule-based, no Claude): young coins that pass the rug-risk checks.
   newChain?: "solana" | "base";
   newCoinPct?: number; // % of the account per new coin (default 3)
@@ -181,6 +188,10 @@ type State = {
     lastWatch: { at: number; by: "scheduler" | "dashboard" | "local" } | null; // last wake-up, to show the bot is alive
     noted: Record<string, number>; // one-time log messages already written
     bounceLow?: Record<string, number>; // Strong mode: lowest price since a dip order was touched (per plan + order)
+    agentScan?: { at: number; scanned: number; top: AgentCoin[] }; // Agents mode: the latest scores (top 8)
+    agentLog?: AgentDecision[]; // Agents mode: recent picks and skips
+    learned?: Learned; // Agent: what it learned from its coin's history
+    lastFiredAt?: number; // Agent: the candle its pattern last fired on (one try per signal)
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -723,6 +734,8 @@ const isAuto = (cfg: BotConfig) => cfg.pick === "auto";
 export const isOff = (cfg: Pick<BotConfig, "disabled"> | null | undefined, key: string) => !!cfg?.disabled?.includes(key);
 const minWin = (cfg: BotConfig) => (isOff(cfg, "minConfidence") ? 0 : cfg.allowRisky ? Math.min(cfg.minConfidence, cfg.riskyMinWin ?? 30) : cfg.minConfidence);
 const isNew = (cfg: BotConfig) => cfg.pick === "newcoins";
+const isAgents = (cfg: BotConfig) => cfg.pick === "agents";
+const isCoinAgent = (cfg: BotConfig) => cfg.pick === "agent";
 // Extra slippage on thin liquidity: buying size S from a pool with liquidity L moves the
 // price roughly 2*S/L (each side of the pool holds about half). Clamped to 0.2-10%.
 const thinSlipPct = (usd: number, liquidityUsd: number) => Math.min(10, Math.max(0.2, (200 * usd) / Math.max(liquidityUsd, 1)));
@@ -792,7 +805,7 @@ function startBotHere(cfg: BotConfig) {
     cfg.autoCandidates = Math.min(5, Math.max(1, cfg.autoCandidates ?? 3));
     cfg.autoMinLiquidityUsd ??= 50_000;
   }
-  rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
+  rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : cfg.pick === "agents" ? "agents" : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
     symbol: cfg.symbol, pool: cfg.pool, pick: cfg.pick ?? "this", positionPct: cfg.positionPct, riskPerTradePct: cfg.riskPerTradePct, minConfidence: cfg.minConfidence,
     dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky, settingsOff: cfg.disabled ?? [], rewardRule: cfg.rewardRule !== false, strongMode: cfg.strongMode !== false,
   });
@@ -813,6 +826,8 @@ function startBotHere(cfg: BotConfig) {
   state.bot.askNow = false;
   state.bot.freshAfter = Date.now(); // never reuse a plan from before this start
   state.bot.startedAt = Date.now();
+  state.bot.learned = undefined; // an agent learns its (possibly new) coin afresh
+  state.bot.lastFiredAt = undefined;
   state.bot.stoppedAt = null;
   cfg.trailPct = clampNum(cfg.trailPct ?? 3, 0.5, 30);
   log(
@@ -1202,6 +1217,229 @@ function buyFillPrice(o: CheckedOrder, q: Quote) {
   return o.kind === "buy_breakout" ? Math.max(o.triggerPrice, q.price) : Math.min(o.triggerPrice, q.price);
 }
 
+// ---------- Agents mode ----------
+// Eight rule-based agents score every busy Solana coin (no AI cost); the best coin that passes
+// every veto and the chart check gets one AI check, then a market buy aiming for +10% after fees.
+export const AGENT_GUARD_AT = 8; // % up before the exit moves above the buy price
+export const AGENT_NET_TARGET = 10; // % profit after all fees at the target
+const AGENT_STOP_MIN = 4, AGENT_STOP_MAX = 7; // exit distance, % below the buy price
+export type AgentDecision = { at: number; symbol: string; mint: string; total: number; ok: boolean; why: string };
+const agentNotes = new Map<string, number>(); // mint -> skip until (failed chart / AI check)
+
+async function bestPool(mint: string): Promise<PairInfo | null> {
+  const pairs = await cachedJson<any[]>(`https://api.dexscreener.com/tokens/v1/solana/${mint}`, 60_000).catch(() => []);
+  const best = (pairs ?? []).filter((p) => p?.baseToken?.address === mint).sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+  return best ? fromDexScreener(best) : null;
+}
+
+function agentReport(c: AgentCoin) {
+  return [`Total score ${c.total}/100.`, ...AGENT_KEYS.map((k) => `- ${k.toUpperCase()} ${Math.round(c.agents[k].score)}: ${c.agents[k].note}`)].join("\n");
+}
+
+function noteDecision(d: AgentDecision) {
+  const list = (state.bot.agentLog ??= []);
+  list.unshift(d);
+  if (list.length > 20) list.length = 20;
+}
+
+async function agentsStep(cfg: BotConfig) {
+  const today = utcDay();
+  const mine = state.trades.filter((t) => t.strategy === "agents" && (t.botId ?? "1") === currentBotId());
+  const buysToday = mine.filter((t) => t.side === "BUY" && utcDay(t.time) === today).length;
+  const maxPerDay = cfg.agentMaxPerDay ?? 6;
+  if (buysToday >= maxPerDay) return setBlocked(`agents' limit reached (${buysToday} buys today, max ${maxPerDay}); resumes at 00:00 UTC`, `agentcap:${today}`);
+  if (strongOn(cfg)) {
+    const pausedTill = streakPauseUntil(state.trades);
+    if (pausedTill) return setBlocked(`${STREAK_LOSSES} losing trades in a row: no new buys until ${clock(pausedTill)}`, `astreak:${pausedTill}`);
+  }
+  setBlocked(null);
+  for (const [m, until] of agentNotes) if (until < Date.now()) agentNotes.delete(m);
+  const scan = await scanAgents(); // cached ~45 s
+  state.bot.agentScan = { at: scan.at, scanned: scan.scanned, top: scan.coins.slice(0, 8) };
+  // One trade per coin per day (no churning the same coin), nothing already held.
+  const tradedToday = new Set(state.trades.filter((t) => t.strategy === "agents" && utcDay(t.time) === today).map((t) => t.pool));
+  const held = new Set(state.positions.map((p) => p.tokenMint ?? p.pool));
+  const picks = scan.coins.filter((c) => !c.vetoes.length && c.total >= AGENT_PASS && !agentNotes.has(c.mint) && !held.has(c.mint)).slice(0, 3);
+  if (!picks.length) {
+    state.bot.target = null;
+    return noteOnce(`agentsidle:${Math.floor(Date.now() / 600_000)}`, `Agents: scanned ${scan.scanned} coins, none passed every check right now. Waiting.`);
+  }
+  for (const c of picks) {
+    const pair = await bestPool(c.mint).catch(() => null);
+    if (!pair || tradedToday.has(pair.pool) || coinBlock(cfg, pair.pool, pair.symbol) || state.positions.some((p) => p.pool === pair.pool)) { agentNotes.set(c.mint, Date.now() + 30 * 60_000); continue; }
+    state.bot.target = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, chosenAt: Date.now() };
+    // Chart check on 5-minute candles: enough movement to reach the target, no bearish pattern.
+    let candles: Candle[] = [];
+    try { candles = await getCandles(pair.chain, pair.pool, "5m", 300, pair); } catch { /* no chart */ }
+    const skip = (why: string, mins = 30) => {
+      agentNotes.set(c.mint, Date.now() + mins * 60_000);
+      noteDecision({ at: Date.now(), symbol: pair.symbol, mint: c.mint, total: c.total, ok: false, why });
+      log(`Agents: ${pair.symbol} (score ${c.total}) skipped: ${why}.`);
+    };
+    if (candles.length < 60) { skip("not enough chart history"); continue; }
+    const price = candles.at(-1)!.close;
+    const atrPct = (atr(candles) / price) * 100;
+    const pats = findPatterns("5m", candles);
+    const bad = pats.hits.find((h) => h.bias === "down");
+    if (bad) { skip(`5-min chart shows ${bad.label.toLowerCase()}`); continue; }
+    if (atrPct < 0.8) { skip(`moves too little (${atrPct.toFixed(2)}% per 5 min) to reach +${AGENT_NET_TARGET}% after fees`); continue; }
+    const cost = roundTripCostPct();
+    const swingLow = Math.min(...candles.slice(-12).map((x) => x.low));
+    const stopPct = Math.min(AGENT_STOP_MAX, Math.max(AGENT_STOP_MIN, ((price - (swingLow - atr(candles) * 0.5)) / price) * 100));
+    const stop = price * (1 - stopPct / 100);
+    const target = price * (1 + (AGENT_NET_TARGET + cost) / 100);
+    const high50 = Math.max(...candles.slice(-50).map((x) => x.high));
+    if (high50 > price * 1.02 && high50 < target * 0.97 && !pats.hits.some((h) => h.key === "range_breakout" || h.key === "bull_flag")) {
+      skip(`a recent high at ${fmt(high50)} sits below the +${AGENT_NET_TARGET}% target`, 20);
+      continue;
+    }
+    // One AI check (cheap model, quick): approve or skip.
+    let ai = "";
+    if (cfg.agentAiCheck !== false && (await tokensLeft()) > 0) {
+      try {
+        const frames = await loadFrames(pair.chain, pair.pool, pair, ["5s", "5m", "1h"]);
+        const d = await Promise.race([
+          reviewAgentPick({ pair, frames, agentReport: agentReport(c), patterns: patternsText([pats]), entry: price, stop, target, costPct: cost }),
+          new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 40_000)),
+        ]);
+        await chargeTokens([{ model: BOT_MODEL, ok: false, error: "", ms: 0, tokens: d.tokens }]);
+        const p = Math.max(0, Math.min(100, d.winChancePct)) / 100;
+        const ev = p * AGENT_NET_TARGET - (1 - p) * (stopPct + cost);
+        if (!d.approve || ev <= 0) { skip(`AI check: ${d.approve ? `${d.winChancePct}% win chance doesn't pay after fees` : d.reason}`, 45); continue; }
+        ai = ` AI: ${d.winChancePct}% win chance. ${d.reason}`;
+      } catch (e: any) {
+        skip(`AI check unavailable (${e?.message ?? e})`, 10);
+        continue;
+      }
+    }
+    // Buy at the live price, sized so hitting the exit loses about your risk per trade.
+    let q: Quote;
+    try { q = await quote(pair.chain, pair.pool, Date.now() - 10_000); } catch { skip("no live price"); continue; }
+    if (!(q.price > 0)) { skip("no live price"); continue; }
+    const riskPct = isOff(cfg, "riskPerTradePct") ? 0 : (cfg.riskPerTradePct ?? 1.5);
+    const exitLossPct = stopPct + cost;
+    const bySize = riskPct > 0 ? (equity() * riskPct) / 100 / (exitLossPct / 100) : Infinity;
+    const usd = Math.floor(Math.min(state.cash, equity() * (Math.min(cfg.positionPct, cfg.allowRisky ? RISKY_MAX_POSITION_PCT : 100) / 100), bySize) * 100) / 100;
+    if (usd < 1) return log("Agents: not enough cash to open a position.", "bad");
+    const slip = thinSlipPct(usd, pair.liquidityUsd);
+    const t = buy({ ...q.pair, priceUsd: q.price }, usd, "bot", `Agents: score ${c.total}/100`, {
+      stopLoss: q.price * (1 - stopPct / 100),
+      target: q.price * (1 + (AGENT_NET_TARGET + cost) / 100),
+      takeProfit: q.price * (1 + (AGENT_NET_TARGET + cost) / 100),
+      trailPct: trailFor(cfg, atrPct),
+      botId: currentBotId(),
+      sellBy: Date.now() + 240 * 60_000,
+      strategy: "agents",
+      tokenMint: c.mint,
+      extraSlipPct: slip,
+    }, slip);
+    t.strategy = "agents";
+    noteDecision({ at: Date.now(), symbol: pair.symbol, mint: c.mint, total: c.total, ok: true, why: `bought: score ${c.total}.${ai}` });
+    const msg = `AGENTS BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (score ${c.total}/100). Exit ${fmt(q.price * (1 - stopPct / 100))} (-${stopPct.toFixed(1)}%), target ${fmt(q.price * (1 + (AGENT_NET_TARGET + cost) / 100))} (+${AGENT_NET_TARGET}% after fees).${ai}`;
+    log(msg, "good");
+    alert(`🛰 ${msg}`);
+    return;
+  }
+}
+
+// ---------- Agent: one coin, its own budget ----------
+// Learns from its coin's history which entry pattern really made +10% after fees (relearns every
+// hour), and buys when that pattern appears on the newest closed candle. One AI check before
+// each buy (if on). Exits: the agents' rules (protect from +8%, half at the target, trail the rest).
+export const AGENT_BUDGET_DEFAULT = 1000;
+const RELEARN_MS = 60 * 60_000;
+
+// The agent's money: its budget plus everything its trades have made or lost since it started.
+function agentFunds(cfg: BotConfig) {
+  const since = state.bot.startedAt ?? 0;
+  const pnl = state.trades.filter((t) => t.strategy === "agents" && (t.botId ?? "1") === currentBotId() && t.time >= since && t.side === "SELL").reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
+  return (cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT) + pnl;
+}
+
+async function coinAgentStep(cfg: BotConfig) {
+  const budget = cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT;
+  const funds = agentFunds(cfg);
+  if (funds < budget * 0.5) {
+    stopBot(`Agent stopped: it lost half its $${budget} budget. Its trades are in your history.`);
+    alert(`⏹ Agent on ${cfg.symbol} stopped: it lost half its $${budget} budget.`);
+    return;
+  }
+  const cost = roundTripCostPct();
+  let L = state.bot.learned;
+  if (!L || Date.now() - L.at > RELEARN_MS) {
+    const pair = await getPair(cfg.chain, cfg.pool);
+    const [c5, c1] = await Promise.all([
+      getCandles(cfg.chain, cfg.pool, "5m", 300, pair).catch(() => []),
+      getCandles(cfg.chain, cfg.pool, "1h", 300, pair).catch(() => []),
+    ]);
+    L = state.bot.learned = learn([{ tf: "5m", candles: c5 }, { tf: "1h", candles: c1 }], cost, AGENT_NET_TARGET);
+    log(`${cfg.symbol} agent: ${L.summary}`, L.best ? "good" : "info");
+    acct().dirty = true;
+  }
+  if (!L.best) return setBlocked(null);
+  const block = coinBlock(cfg, cfg.pool, cfg.symbol);
+  if (block) return setBlocked(block, `ablock:${block}`);
+  if (strongOn(cfg)) {
+    const pausedTill = streakPauseUntil(state.trades);
+    if (pausedTill) return setBlocked(`${STREAK_LOSSES} losing trades in a row: no new buys until ${clock(pausedTill)}`, `astreak:${pausedTill}`);
+  }
+  setBlocked(null);
+  const best = L.best;
+  const pair0 = await getPair(cfg.chain, cfg.pool);
+  const candles = await getCandles(cfg.chain, cfg.pool, best.tf as Timeframe, 300, pair0).catch(() => [] as Candle[]);
+  if (candles.length < 60) return;
+  const f = firesNow(best, candles);
+  if (!f.yes || f.closedAt <= (state.bot.lastFiredAt ?? 0)) return;
+  state.bot.lastFiredAt = f.closedAt;
+  acct().dirty = true;
+  const price = pair0.priceUsd;
+  const stop = price * (1 - f.stopPct / 100);
+  const target = price * (1 + (AGENT_NET_TARGET + cost) / 100);
+  log(`${cfg.symbol} agent: "${best.label}" just appeared on the ${best.tf} chart (it paid ${best.wins} of ${best.trades} times here).`);
+  let ai = "";
+  if (cfg.agentAiCheck !== false && (await tokensLeft()) > 0) {
+    try {
+      const frames = await loadFrames(cfg.chain, cfg.pool, pair0, ["5s", "5m", "1h"]);
+      const pats = frames.filter((x) => x.tf === "5m").map((x) => findPatterns(x.tf, x.candles));
+      const d = await Promise.race([
+        reviewAgentPick({ pair: pair0, frames, agentReport: `${L.summary}\nPast results of each pattern on this coin:\n${L.table.slice(0, 5).map((t) => `- ${t.label} (${t.tf}): ${t.trades} trades, ${t.wins} wins, average ${t.avgNetPct.toFixed(1)}%`).join("\n")}`, patterns: patternsText(pats), entry: price, stop, target, costPct: cost }),
+        new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 40_000)),
+      ]);
+      await chargeTokens([{ model: BOT_MODEL, ok: false, error: "", ms: 0, tokens: d.tokens }]);
+      const p = Math.max(0, Math.min(100, d.winChancePct)) / 100;
+      const ev = p * AGENT_NET_TARGET - (1 - p) * (f.stopPct + cost);
+      if (!d.approve || ev <= 0) {
+        log(`${cfg.symbol} agent: the AI check said skip (${d.approve ? `${d.winChancePct}% win chance doesn't pay after fees` : d.reason}). Waiting for the next signal.`);
+        return;
+      }
+      ai = ` AI: ${d.winChancePct}% win chance. ${d.reason}`;
+    } catch (e: any) {
+      log(`${cfg.symbol} agent: AI check unavailable (${e?.message ?? e}); skipping this signal.`, "bad");
+      return;
+    }
+  }
+  let q: Quote;
+  try { q = await quote(cfg.chain, cfg.pool, Date.now() - 10_000); } catch { return; }
+  if (!(q.price > 0)) return;
+  const usd = Math.floor(Math.min(state.cash, funds) * 100) / 100;
+  if (usd < 1) return noteOnce(`agcash:${utcDay()}`, `${cfg.symbol} agent: not enough cash in the account for its budget.`, "bad");
+  const slip = thinSlipPct(usd, q.pair.liquidityUsd);
+  const t = buy({ ...q.pair, priceUsd: q.price }, usd, "bot", `Agent: ${best.label} (${best.tf})`, {
+    stopLoss: q.price * (1 - f.stopPct / 100),
+    target: q.price * (1 + (AGENT_NET_TARGET + cost) / 100),
+    takeProfit: q.price * (1 + (AGENT_NET_TARGET + cost) / 100),
+    trailPct: trailFor(cfg, (atr(candles) / q.price) * 100),
+    botId: currentBotId(),
+    sellBy: Date.now() + (best.tf === "1h" ? 12 : 4) * 60 * 60_000,
+    strategy: "agents",
+    extraSlipPct: slip,
+  }, slip);
+  t.strategy = "agents";
+  const msg = `AGENT BUY ${cfg.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${best.label}, ${best.tf}). Exit ${fmt(q.price * (1 - f.stopPct / 100))} (-${f.stopPct.toFixed(1)}%), target ${fmt(q.price * (1 + (AGENT_NET_TARGET + cost) / 100))} (+${AGENT_NET_TARGET}% after fees).${ai}`;
+  log(msg, "good");
+  alert(`🛰 ${msg}`);
+}
+
 // New coins mode: one fast, rule-based step (no AI). Picks the best young coin that
 // passes the rug-risk checks and entry rules, buys a small amount at the live price.
 const unpriceable = new Map<string, number>(); // pool -> skip until (no live price available yet)
@@ -1286,7 +1524,9 @@ async function tickBot(persist: boolean) {
       // Profit guard: once the trade is far enough up, the stop jumps to a small locked-in profit
       // after fees, so a winner can't turn into a loss. It starts at your "protect" setting, but at
       // the latest once up fees + 1.5% (new coins: only after their half-profit sale).
-      const guardAt = protectAt(cfg, cost);
+      // Agents trades aim for +10% after fees: protection starts later (+8%), so normal swings
+      // don't close them at break-even (most "profit guard" exits lost money to fees).
+      const guardAt = pos.strategy === "agents" ? Math.max(AGENT_GUARD_AT, protectAt(cfg, cost)) : protectAt(cfg, cost);
       const floor = pos.entryPrice * (1 + (cost + GUARD_PROFIT_PCT) / 100);
       const guardOn = !isOff(cfg, "breakEvenAtPct");
       if (guardOn && gainPct >= guardAt && (pos.strategy !== "newcoin" || pos.partialDone)) {
@@ -1327,7 +1567,7 @@ async function tickBot(persist: boolean) {
         }
       }
       // Take half before the target: targets often sit at resistance, where a run can stall.
-      const partialAt = isOff(cfg, "partialAtPct") ? 0 : (cfg.partialAtPct ?? 100);
+      const partialAt = pos.strategy === "agents" ? 100 : isOff(cfg, "partialAtPct") ? 0 : (cfg.partialAtPct ?? 100);
       if (pos.strategy !== "newcoin" && partialAt > 0 && !pos.partialDone && pos.target && pos.target > pos.entryPrice) {
         const level = pos.entryPrice + (pos.target - pos.entryPrice) * (partialAt / 100);
         const be = pos.entryPrice * (1 + cost / 100);
@@ -1445,6 +1685,8 @@ async function tickBot(persist: boolean) {
       return setBlocked(daily, `daily:${utcDay()}`);
     }
     if (isNew(cfg)) return await newCoinsStep(cfg);
+    if (isAgents(cfg)) return await agentsStep(cfg);
+    if (isCoinAgent(cfg)) return await coinAgentStep(cfg);
     if (isAuto(cfg) && state.bot.target && coinBlock(cfg, state.bot.target.pool, state.bot.target.symbol)) {
       state.bot.target = null; // pick another coin
       state.lastSignal = null;

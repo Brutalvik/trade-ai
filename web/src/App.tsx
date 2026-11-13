@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { type ListCoin, type FramePatterns, aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { type FramePatterns, aiText, allBots, api, SIGNIN_EVENT, stateForBot, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type BotConfig, type Candle, type PairInfo, type ScanChain, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
+import { CoinSearch } from "./CoinSearch";
+import { AgentsPanel } from "./Agents";
 import { WalletButton } from "./Wallet";
-import { findCoinPair, Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
+import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
 import { paperCsv, paperPdf, realCsv, realPdf } from "./exportTrades";
 import { AccessCtx, AccountButton, SIGNIN_PENDING, AdminModal, LockChip, Modal, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
@@ -45,6 +47,8 @@ export default function App() {
     setHash("");
   };
   const [adminOpen, setAdminOpen] = useState(false);
+  // The right column shows Agents; the older bot card stays reachable ("Classic bot view").
+  const [classicBot, setClassicBot] = useState(false);
   // Arrived from the landing page's "Start free" / "Sign in": open the sign-in window once.
   useEffect(() => {
     const u = new URL(window.location.href);
@@ -291,11 +295,15 @@ export default function App() {
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
-          {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
+          {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : !classicBot ? (
+            <AgentsPanel state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} onClassic={() => setClassicBot(true)}
+              defaults={{ positionPct: 100, minConfidence: PRESETS.balanced.minConfidence, analyzeEverySec: PRESETS.balanced.analyzeMin * 60, maxDrawdownPct: PRESETS.balanced.maxDrawdownPct, breakEvenAtPct: PRESETS.balanced.breakEvenAtPct, trailPct: PRESETS.balanced.trailPct, cooldownMin: PRESETS.balanced.cooldownMin, dailyLossPct: PRESETS.balanced.dailyLossPct, maxDrop1hPct: PRESETS.balanced.maxDrop1hPct, riskPerTradePct: 0, lockPct: 50 }} />
+          ) : (
             <BotTabs state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} onOpen={openPool} pairPool={pair?.pool}>
               {(botId) => <BotPanel key={botId} botId={botId} pair={pair} tf={tf} state={stateForBot(state, botId)} notify={notify} refresh={() => api.state().then(setState)} multi={!!(status?.claude && status?.openai)} onOpen={openPool} alerts={status?.alerts ?? null} riskReasons={planRisk} />}
             </BotTabs>
           )}
+          {classicBot && me?.tradeMode !== "real" ? <button className="link agents-classic back" onClick={() => setClassicBot(false)}>← Back to Agents</button> : null}
         </aside>
 
         <section className="panel bottom">
@@ -361,67 +369,6 @@ function SoundToggle() {
 }
 
 function TopBar({ status, state, onSelect, notify, refresh }: { status: Status | null; state: AppState | null; onSelect: (p: PairInfo) => void; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {
-  const [q, setQ] = useState("");
-  const [res, setRes] = useState<PairInfo[]>([]); // an address: its markets
-  const [coins, setCoins] = useState<{ crypto: ListCoin[]; tokens: ListCoin[] }>({ crypto: [], tokens: [] });
-  const [searching, setSearching] = useState(false);
-  const [opening, setOpening] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
-
-  // Like fomo: real coins first (Crypto by rank, then Solana tokens with verified ones on top);
-  // a pasted token or pool address shows its markets instead.
-  useEffect(() => {
-    const term = q.trim();
-    if (term.length < 2) { setRes([]); setCoins({ crypto: [], tokens: [] }); return; }
-    setSearching(true);
-    const id = setTimeout(async () => {
-      try {
-        const r = await api.searchCoins(term);
-        if (r.address) {
-          setCoins({ crypto: [], tokens: [] });
-          setRes(await api.search(term));
-        } else {
-          setRes([]);
-          setCoins({ crypto: r.crypto, tokens: r.tokens });
-        }
-      } catch {
-        setRes([]);
-        setCoins({ crypto: [], tokens: [] });
-      } finally {
-        setSearching(false);
-      }
-    }, 250);
-    return () => clearTimeout(id);
-  }, [q]);
-  const pick = async (c: ListCoin) => {
-    setOpening(c.mint);
-    try {
-      const p = await findCoinPair(c);
-      if (p) {
-        onSelect(p);
-        setQ("");
-        setOpen(false);
-      } else notify(`No chart found for ${c.symbol} yet`, true);
-    } catch (e: any) {
-      notify(e.message, true);
-    } finally {
-      setOpening(null);
-    }
-  };
-  const coinRow = (c: ListCoin) => (
-    <button key={c.mint} className="sr-row" onMouseDown={(e) => e.preventDefault()} onClick={() => void pick(c)} disabled={opening === c.mint}>
-      {c.icon ? <img src={c.icon} alt="" /> : <span className="sr-noicon">{c.symbol.slice(0, 1)}</span>}
-      <span className="sr-name">
-        <b>{c.symbol}{c.verified ? <span className="sr-verified" title="Verified by Jupiter">✓</span> : null}{c.rank ? <span className="sr-rank">#{c.rank}</span> : null}</b>
-        <small>{c.name}{c.mint.startsWith("cg:") ? "" : ` · ${c.mint.slice(0, 4)}…${c.mint.slice(-4)}`}</small>
-      </span>
-      <span className="sr-cell"><small>MC</small>{fmtBig(c.mcap)}</span>
-      <span className="sr-cell num">{fmtPrice(c.priceUsd)}</span>
-      <span className={`sr-cell num ${c.change24h >= 0 ? "up" : "down"}`}>{c.change24h >= 0 ? "+" : ""}{c.change24h.toFixed(2)}%</span>
-      <span className="sr-cell"><small>VOL</small>{fmtBig(c.volume24h ?? 0)}</span>
-    </button>
-  );
-  const anyCoins = coins.crypto.length + coins.tokens.length > 0;
 
   const { me } = useAccess();
   const real = me?.tradeMode === "real";
@@ -442,34 +389,7 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
         <span className="logo">◢◤</span>
         <span>TRADING<b>//</b>RUST</span>
       </div>
-      <div className="search">
-        <input placeholder="Search ticker, name or token address..." value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)} />
-        {open && q.trim().length >= 2 && (anyCoins || (searching && !res.length)) && (
-          <div className="dropdown search-results">
-            {searching && !anyCoins ? <div className="sr-empty muted small">Searching…</div> : null}
-            {coins.crypto.length ? <div className="sr-group">Crypto</div> : null}
-            {coins.crypto.map(coinRow)}
-            {coins.tokens.length ? <div className="sr-group">Tokens</div> : null}
-            {coins.tokens.map(coinRow)}
-          </div>
-        )}
-        {open && q.trim().length >= 2 && !searching && !anyCoins && !res.length && (
-          <div className="dropdown search-results"><div className="sr-empty muted small">No coins found for "{q.trim()}"</div></div>
-        )}
-        {open && res.length > 0 && (
-          <div className="dropdown">
-            {res.map((p) => (
-              <button key={p.pool} onClick={() => { onSelect(p); setQ(""); setOpen(false); }}>
-                {p.imageUrl ? <img src={p.imageUrl} alt="" /> : <span className="dot" />}
-                <span className="sym">{p.symbol}</span>
-                <span className="muted small">{p.chain} · {p.dex} · {p.tokenAddress.slice(0, 4)}…{p.tokenAddress.slice(-4)}</span>
-                <span className="right">{fmtPrice(p.priceUsd)}</span>
-                <span className="muted small">liq {fmtBig(p.liquidityUsd)}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <CoinSearch onSelect={onSelect} notify={notify} />
       <div className="stats">
         {me && <SettingsButton alerts={status?.alerts ?? null} continuous={!!state?.settings.continuous} onSaved={refresh} notify={notify} />}
         <SoundToggle />
@@ -640,6 +560,8 @@ function PredictionInfo({ pct }: { pct: number }) {
 function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; botPlanning?: boolean; botPaused?: string | null; analyzedAt?: number; patterns?: FramePatterns[]; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
   const access = useAccess();
   const { pair, tf, sig, results, cost, onResult, price, botOnThisCoin, analyzedAt, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
+  // Small by default (the Agents panel sits below it); the arrow in the title shows the full plan.
+  const [small, setSmall] = useState(() => localStorage.getItem("nexus-signal-small") !== "0");
   const [loading, setLoading] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [glow, setGlow] = useState(false);
@@ -729,7 +651,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
     run(true);
   }, [stale, pair?.pool, hasAI, botOnThisCoin]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <div className="panel">
+    <div className={`panel signal-panel ${small ? "small" : ""}`}>
       <div className="panel-title ai-title">
         <span className="ai-title-left">
           <span>AI SIGNAL</span>
@@ -741,6 +663,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               </button>
             );
           })()}
+          <button className="info-btn size-btn" onClick={() => { const v = !small; setSmall(v); localStorage.setItem("nexus-signal-small", v ? "1" : "0"); }} aria-pressed={!small} aria-label={small ? "Show the full AI plan" : "Make the AI panel smaller"} title={small ? "Show the full plan" : "Make this smaller"}>{small ? "▾" : "▴"}</button>
         </span>
         {loading ? (
           // While the AI works, the rest of the header becomes an animated "analyzing" bar.
@@ -1246,7 +1169,7 @@ function BotPanel({ botId = "1", pair, tf, state, notify, refresh, multi, onOpen
       lastRun.current = null;
       setCfg(used);
       setCustom(!matchPreset(used));
-      setMode(a.pick ?? "this");
+      setMode(a.pick === "auto" || a.pick === "newcoins" ? a.pick : "this");
       if (a.newChain) setNewChain(a.newChain);
       if (a.autoChain) setAutoChain(a.autoChain);
       setWaitForHold(!!a.waitForHold);

@@ -136,6 +136,23 @@ export function GuidePage({ presets, plans, onClose }: { presets: Record<string,
       ),
     },
     {
+      id: "agents", title: "Agents", show: bot,
+      body: (
+        <>
+          <p>An agent trades <b>one coin</b> with the money you give it. Press <b>+ New Agent</b> in the Agents panel, pick a coin from the <b>top 10 opportunities</b> or the search box, set a budget (default $1,000) and start it.{bots > 1 ? ` Your plan runs up to ${bots} agents at once, each on its own coin.` : ""}</p>
+          <ul>
+            <li><b>It learns first.</b> The agent replays five entry patterns over the coin's own history (breakout with volume, pullback to the trend line, tight-range breakout, bull flag, RSI rebound) with the exact rules it trades by, and keeps the one that really made money there. It relearns every hour. "What it learned" on its card shows every pattern's record.</li>
+            <li><b>It only trades with proof.</b> If no pattern has at least 3 past trades that made money on average, the agent waits. Waiting is the agent working, not a fault.</li>
+            <li><b>Every trade aims for +10% after all fees.</b> The exit sits 4–7% below the buy price. From +8% the exit moves above the buy price; at the target it sells half and trails the rest.</li>
+            <li><b>One AI check before each buy</b> (optional): a small AI call per trade, not per scan.</li>
+            <li><b>Its budget is its limit.</b> It invests only its budget plus what its own trades have made. If it loses half its budget, it stops itself.</li>
+            <li><b>Top 10 opportunities</b> are scored by eight rule-based scouts: trend, volume, real traders, holders, dev wallet, liquidity, momentum and age. A coin with a deal-breaker (for example the dev holds too much, or liquidity is being pulled) is marked vetoed with the reason. Scores are not advice.</li>
+            <li><b>Stop</b> on an agent's card switches it off; an open trade stays in Positions for you to close. The older bot card is under <b>Classic bot view</b>.</li>
+          </ul>
+        </>
+      ),
+    },
+    {
       id: "bot", title: "Auto-pilot: the AI bot", show: bot,
       body: (
         <>
