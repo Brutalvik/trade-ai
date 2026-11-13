@@ -113,7 +113,7 @@ function Hero({ coins }: { coins: ListCoin[] }) {
           <Stat value="5s" label="price checks" />
           <Stat value="4" label="timeframes read" />
           <Stat value="9" label="chart patterns" />
-          <Stat value="3" label="agents at once" />
+          <Stat value="10" label="agents at once" />
         </div>
       </div>
       <div className="lp-hero-art" ref={stage} onPointerMove={onMove} onPointerLeave={() => { stage.current?.style.setProperty("--rx", "0deg"); stage.current?.style.setProperty("--ry", "0deg"); }}>
@@ -513,7 +513,7 @@ const FEATURES: { icon: string; title: string; text: string }[] = [
   { icon: "▤", title: "Learns from your trades", text: "A trade journal of your bots' real results goes into every plan, so the AI leans toward what actually works for you." },
   { icon: "⛨", title: "Eight scouts", text: "Trend, volume, real traders, holders, dev wallet, liquidity, momentum and age: every busy coin scored, deal-breakers flagged." },
   { icon: "↺", title: "AI second look", text: "When a trade touches its stop, the AI checks once more and holds only with a strict, capped last exit." },
-  { icon: "⚡", title: "Up to 3 agents", text: "Each trades one coin with its own budget; its AI decides, and prices are checked every 5 seconds, even with the page closed." },
+  { icon: "⚡", title: "Up to 10 agents", text: "Each trades one coin with its own budget; its AI decides, and prices are checked every 5 seconds, even with the page closed." },
   { icon: "◈", title: "Your own Solana wallet", text: "Switch to Real mode and trade from a wallet only you control. You approve every swap." },
   { icon: "✎", title: "Pro chart tools", text: "Indicators, drawing tools, Fibonacci, measure, price or market-cap scale and screenshots." },
 ];
@@ -545,9 +545,8 @@ function perks(p: PlanInfo): string[] {
   out.push("Live charts and coin lists", "Paper trading with real prices");
   if (has("trade.limit")) out.push("Limit orders and Protect this trade");
   if (has("ai.analyze")) out.push(`AI plans · ${p.aiTokens >= 1e6 ? `${p.aiTokens / 1e6}M` : p.aiTokens} AI tokens a month`);
-  if (has("bot.run")) out.push(`${p.bots ?? 1} AI bot${(p.bots ?? 1) > 1 ? "s" : ""} at once`);
-  if (has("bot.autopick")) out.push("Auto-pick and risky mode");
-  out.push(p.feePct === 0 ? "No transaction charges" : p.freeTrades > 0 ? `${p.freeTrades} trades a month free, then ${p.feePct}%` : `${p.feePct}% per trade`);
+  if (has("bot.run")) out.push(`${p.bots ?? 1} AI agent${(p.bots ?? 1) > 1 ? "s" : ""} at once`);
+    out.push(p.feePct === 0 ? "No transaction charges" : p.freeTrades > 0 ? `${p.freeTrades} trades a month free, then ${p.feePct}%` : `${p.feePct}% per trade`);
   return out;
 }
 function Pricing({ plans }: { plans: PlanInfo[] }) {

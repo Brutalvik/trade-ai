@@ -49,18 +49,18 @@ export const PLANS: Record<PlanId, Plan> = {
   },
   starter: {
     id: "starter", name: "AI Starter", priceUsd: 19,
-    blurb: "Member benefits plus AI plans and the AI bot on one coin.",
+    blurb: "Member benefits plus AI plans and one AI agent on a coin.",
     aiTokens: 1_000_000, feePct: 0.1, freeTrades: 300, bots: 1, permissions: [...TRADING, ...AI],
   },
   pro: {
     id: "pro", name: "AI Pro", priceUsd: 49,
-    blurb: "More AI, 2 bots at once, auto-pick and risky mode. No transaction charges.",
+    blurb: "More AI and 2 agents at once. No transaction charges.",
     aiTokens: 5_000_000, feePct: 0, freeTrades: Infinity, bots: 2, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
   },
   max: {
     id: "max", name: "AI Max", priceUsd: 129,
-    blurb: "The most AI and 3 bots at once, each on its own coin. No transaction charges.",
-    aiTokens: 15_000_000, feePct: 0, freeTrades: Infinity, bots: 3, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
+    blurb: "The most AI and 10 agents at once, each on its own coin. No transaction charges.",
+    aiTokens: 15_000_000, feePct: 0, freeTrades: Infinity, bots: 10, permissions: [...TRADING, ...AI, "bot.autopick", "bot.risky"],
   },
 };
 export const PLAN_ORDER: PlanId[] = ["free", "member", "starter", "pro", "max"];
@@ -82,8 +82,9 @@ export const permissionsFor = (plan?: string | null, role?: string | null): Perm
 export const can = (plan: string | null | undefined, role: string | null | undefined, p: Permission) => permissionsFor(plan, role).includes(p);
 // Admins aren't limited by AI tokens (they run the platform's own bot).
 export const tokenLimit = (plan?: string | null, role?: string | null) => (role === "admin" ? Infinity : planOf(plan).aiTokens);
-// How many bots can run at once (admins: the most any plan has).
-export const botLimit = (plan?: string | null, role?: string | null) => (role === "admin" ? 3 : planOf(plan).bots);
+// How many agents can run at once (admins: the most any plan has).
+export const MAX_AGENTS = 10;
+export const botLimit = (plan?: string | null, role?: string | null) => (role === "admin" ? MAX_AGENTS : planOf(plan).bots);
 export const month = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 7); // "2026-11"
 
 // For the plans page (JSON can't hold Infinity).

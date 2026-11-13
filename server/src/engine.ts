@@ -280,6 +280,8 @@ type Account = {
   pending: Promise<void>; // queued writes and alerts
   dirty: boolean; // something worth saving happened (a trade, a log line, a moved stop)
   busy: boolean; // a bot step is running: don't swap the state under it
+  busyIds?: Set<string>; // which agents' steps are running (each agent runs its own, side by side)
+  steps?: Set<Promise<unknown>>; // rounds of agent steps still in flight
   guarding: boolean;
   active?: boolean; // last value written to the active-accounts list
   activeCheckedAt?: number; // when that list was last read (other servers may have changed it)
@@ -744,13 +746,14 @@ const isCoinAgent = (cfg: BotConfig) => cfg.pick === "agent";
 // price roughly 2*S/L (each side of the pool holds about half). Clamped to 0.2-10%.
 const thinSlipPct = (usd: number, liquidityUsd: number) => Math.min(10, Math.max(0.2, (200 * usd) / Math.max(liquidityUsd, 1)));
 
-// Start bot `botId` ("1", "2" or "3"). Bots 2 and 3 are created on first start.
+// Start agent `botId` ("1" to "10"). Slots after the first are created on first start.
 // maxBots comes from the plan; two bots never trade the same coin.
-export function startBot(cfg: BotConfig, botId = "1", maxBots = 3) {
-  const id = ["1", "2", "3"].includes(botId) ? botId : "1";
+export function startBot(cfg: BotConfig, botId = "1", maxBots = 10) {
+  if (!/^(?:[1-9]|10)$/.test(botId)) throw new Error("No free agent slot. Stop an agent first.");
+  const id = botId;
   const st = acct().state;
   const others = runningIds(st).filter((x) => x !== id);
-  if (others.length + 1 > maxBots) throw new Error(maxBots <= 1 ? "Your plan includes 1 bot. Stop it first, or see Plans for more bots." : `Your plan includes ${maxBots} bots and they're all running. Stop one first, or see Plans for more.`);
+  if (others.length + 1 > maxBots) throw new Error(maxBots <= 1 ? "Your plan includes 1 agent. Stop it first, or see Plans for more." : `Your plan includes ${maxBots} agents and they're all running. Stop one first, or see Plans for more.`);
   if (cfg.pick !== "auto" && cfg.pool)
     for (const o of others) {
       const ob = o === "1" ? st.bot : slotOf(st, o)!.bot;
@@ -1475,13 +1478,28 @@ function noteKey(pos: Position, gainPct: number) {
   return true;
 }
 
+// Every running agent is checked at the same time, so one agent waiting for its AI (10-30 s)
+// never delays the price checks, stops and exits of the others.
 export async function tick(persist = true) {
-  for (const id of runningIds()) await withBot(id, () => tickBot(persist));
+  const a = acct();
+  const all = Promise.allSettled(runningIds().map((id) => withBot(id, () => tickBot(persist))));
+  const steps = (a.steps ??= new Set());
+  steps.add(all);
+  void all.finally(() => steps.delete(all));
+  // The 5-second loop doesn't wait for an agent that is waiting on its AI: that step finishes on
+  // its own (it can't start twice), and the next round checks everyone else on time.
+  await Promise.race([all, new Promise((r) => setTimeout(r, 4_000))]);
+}
+// Wait for steps still in flight (before a watch window ends, so nothing is cut off mid-trade).
+export async function settleSteps() {
+  await Promise.allSettled([...(acct().steps ?? [])]);
 }
 
 async function tickBot(persist: boolean) {
   const cfg = state.bot.config;
-  if (!state.bot.running || !cfg || acct().busy) return;
+  const me = currentBotId();
+  const busyIds = (acct().busyIds ??= new Set<string>());
+  if (!state.bot.running || !cfg || busyIds.has(me)) return; // this agent's previous step is still running
   if (isCoinAgent(cfg)) {
     // An agent's AI is in charge: no daily loss limit, cool-down, losing-streak pause, emergency
     // stop, minimum win chance or falling-coin filter. Its budget is its only limit.
@@ -1492,6 +1510,7 @@ async function tickBot(persist: boolean) {
     cfg.disabled = [...new Set([...(cfg.disabled ?? []), "dailyLossPct", "cooldownMin", "maxDrawdownPct", "minConfidence", "maxDrop1hPct", "riskPerTradePct"])];
     if (state.bot.blocked) setBlocked(null);
   }
+  busyIds.add(me);
   acct().busy = true;
   // Look at candles since the previous check (at most the last minute).
   const windowStart = Math.max(Date.now() - 60_000, (state.bot.lastTickAt || Date.now()) - CHECK_MS);
@@ -1866,7 +1885,8 @@ async function tickBot(persist: boolean) {
   } catch (e: any) {
     log(`Tick error: ${e?.message ?? e}`, "bad");
   } finally {
-    acct().busy = false;
+    busyIds.delete(me);
+    acct().busy = busyIds.size > 0;
     if (persist || acct().dirty) save();
   }
 }
@@ -1915,6 +1935,7 @@ export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dash
     }
     return { ticks, reason: botOn() || hasProtected() ? (watching() ? "window ended" : "nothing to watch") : "bot stopped" };
   } finally {
+    await settleSteps();
     await flush();
     await store.unlock(lockName);
   }
