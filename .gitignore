@@ -6,3 +6,7 @@ dist/
 server/data/
 .DS_Store
 *.log
+
+# Private notes / keys: never commit
+privy.rtf
+*.rtf
