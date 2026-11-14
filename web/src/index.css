@@ -1182,10 +1182,23 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .run-bar.paused .run-steps em { color: #ffc857; } .run-bar.paused .run-steps em::before { animation: none; }
 @keyframes lp-ping { 0% { box-shadow: 0 0 0 0 rgba(0, 245, 160, 0.6); } 100% { box-shadow: 0 0 0 9px rgba(0, 245, 160, 0); } }
 /* Agent window */
-.agent-modal { display: flex; flex-direction: column; gap: 12px; }
+.agent-modal { display: flex; flex-direction: column; gap: 14px; }
+/* The agent's window is read, not glanced at: larger text than the side-panel cards. */
+.agent-modal .agent-name b { font-size: 16px; }
+.agent-modal .agent-name small { font-size: 12.5px; }
+.agent-modal .label-sm { font-size: 12px; }
+.agent-modal .agent-learned { font-size: 13.5px; line-height: 1.55; padding: 10px 12px; }
+.agent-modal .agent-table { font-size: 13px; }
+.agent-modal .agent-table th, .agent-modal .agent-table td { padding: 6px 6px; }
+.agent-modal .agent-table th { font-size: 11.5px; letter-spacing: 0.4px; }
+.agent-modal .agent-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.agent-modal .agent-stats small { font-size: 12.5px; }
+.agent-modal .agent-stats b { font-size: 15px; white-space: normal; overflow-wrap: anywhere; }
+.agent-modal .agent-log { font-size: 13.5px; line-height: 1.5; max-height: 230px; }
+.agent-modal .fc-votes { gap: 5px; }
 .agent-avatar.big { width: 46px; height: 46px; font-size: 17px; }
-.agent-pnl.big { font-size: 20px; } .agent-pnl.big small { font-size: 11px; }
-.agent-now { margin: 0; font-size: 14px; line-height: 1.5; }
+.agent-pnl.big { font-size: 22px; } .agent-pnl.big small { font-size: 12.5px; }
+.agent-now { margin: 0; font-size: 15.5px; line-height: 1.5; }
 .agent-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
 .agent-stats > div { padding: 9px 11px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.03); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .agent-stats small { font-size: 11px; color: var(--muted); }

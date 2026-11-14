@@ -450,7 +450,9 @@ export type FcKey = "ai" | "panel" | "worlds" | "lookalikes" | "baseRate" | "com
 export const FC_LABEL: Record<FcKey, string> = { ai: "The agent's AI", panel: "AI forecaster panel", worlds: "Simulated paths", lookalikes: "Look-alike moments", baseRate: "This coin lately", combined: "Combined" };
 // Running totals per forecaster; older forecasts fade slowly (each new one multiplies the rest by FADE: about the last 200 count).
 export type FcStat = { n: number; sumP: number; hits: number; brier: number };
-export type FcStats = Partial<Record<FcKey, FcStat>> & { taken?: { n: number; hits: number }; refused?: { n: number; hits: number }; scored?: number };
+// taken = trades the agents really made (real results); refused = orders they did not buy (what the
+// chart shows would have happened). v = 2 once `taken` holds real results only (see engine migrate).
+export type FcStats = Partial<Record<FcKey, FcStat>> & { taken?: { n: number; hits: number }; refused?: { n: number; hits: number }; scored?: number; v?: number };
 const FADE = 0.995;
 export type Part = { key: FcKey; label: string; pct: number; weight: number; adjPct: number; note?: string };
 export type Combined = { pWin: number; parts: Part[]; needPct?: number };
@@ -480,7 +482,10 @@ export function combineChance(aiPct: number, panelPct: number | null, f: Forecas
   parts.forEach((p, i) => {
     const r = recs[i];
     if (!r) return;
-    p.adjPct = clamp(p.pct + r.bias * 100, 1, 99);
+    // Marked down for a record of over-calling, never marked up. An hour in which everything ran
+    // makes every forecaster look too cautious; raising their chances on that is chasing what just
+    // happened (it lifted a 46% order to 59% on its first evening), so a good streak earns nothing.
+    p.adjPct = clamp(p.pct + Math.min(0, r.bias) * 100, 1, 99);
     p.weight *= Math.exp(-6 * (r.brier - bestBrier) * r.trust);
   });
   const tot = parts.reduce((s, p) => s + p.weight, 0) || 1;
@@ -519,7 +524,9 @@ export function resolve(rec: ForecastRec, candles: Candle[], stepSec: number): O
   const immediate = rec.kind === "buy_now" || rec.waitMin <= 0;
   return replay(candles, i, { immediate, dip: rec.kind === "buy_dip", entry: rec.entry, stop: rec.stop, level: rec.level, wait: immediate ? 0 : Math.max(1, Math.ceil(rec.waitMin / stepMin)), hold: Math.max(1, Math.ceil(rec.holdMin / stepMin)) });
 }
-export function score(stats: FcStats, rec: ForecastRec, out: Exclude<Outcome, "unfilled">): FcStats {
+// real = the outcome of a trade the agent really made (otherwise: what the candles show would
+// have happened to an order it did not buy, which is kinder than a real fill).
+export function score(stats: FcStats, rec: ForecastRec, out: Exclude<Outcome, "unfilled">, real = false): FcStats {
   const y = out === "win" ? 1 : 0;
   const next: FcStats = { ...stats, scored: (stats.scored ?? 0) + 1 };
   for (const k of Object.keys(FC_LABEL) as FcKey[]) {
@@ -528,7 +535,7 @@ export function score(stats: FcStats, rec: ForecastRec, out: Exclude<Outcome, "u
     const faded = old ? { n: old.n * FADE, sumP: old.sumP * FADE, hits: old.hits * FADE, brier: old.brier * FADE } : { n: 0, sumP: 0, hits: 0, brier: 0 };
     next[k] = typeof p === "number" ? { n: faded.n + 1, sumP: faded.sumP + p / 100, hits: faded.hits + y, brier: faded.brier + (p / 100 - y) ** 2 } : faded;
   }
-  const side = rec.passed ? "taken" : "refused";
+  const side = real ? "taken" : "refused";
   const o = stats[side] ?? { n: 0, hits: 0 };
   next[side] = { n: o.n * FADE + 1, hits: o.hits * FADE + y };
   return next;

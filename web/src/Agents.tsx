@@ -191,7 +191,7 @@ function Prediction({ a, state }: { a: ReturnType<typeof useAgent>; state: AppSt
               {p.parts.map((x) => (
                 <tr key={x.key}>
                   <td>{FC_NAME[x.key]}</td>
-                  <td className="num">{pc(x.pct)}{Math.abs(x.adjPct - x.pct) >= 1 ? <span className="muted" title="Corrected for this forecaster's record on your account"> → {pc(x.adjPct)}</span> : null}</td>
+                  <td className="num">{pc(x.pct)}{Math.abs(x.adjPct - x.pct) >= 1 ? <span className="muted" title="Marked down: this forecaster has been saying more than really happened on your account"> → {pc(x.adjPct)}</span> : null}</td>
                   <td className="num">{pc(x.weight * 100)}</td>
                   <td className="basis">{basis(x)}</td>
                 </tr>
@@ -232,10 +232,10 @@ function Prediction({ a, state }: { a: ReturnType<typeof useAgent>; state: AppSt
       ) : null}
       <div className="agent-learned">
         <b>Scoreboard</b> (all your agents): {scored ? `${scored} forecast${scored === 1 ? "" : "s"} checked against what really happened` : "every forecast is checked against what really happens next; none has finished yet"}{fc?.waiting ? ` · ${fc.waiting} waiting for ${fc.waiting === 1 ? "its" : "their"} outcome` : ""}.
-        {scored && (side(fc?.stats.taken) || side(fc?.stats.refused)) ? ` Orders that passed: ${side(fc?.stats.taken) ?? "none yet"} reached +5%. Orders it refused: ${side(fc?.stats.refused) ?? "none yet"} would have reached it.` : ""}
+        {scored && (side(fc?.stats.taken) || side(fc?.stats.refused)) ? ` Trades it made: ${side(fc?.stats.taken) ?? "none scored yet"} reached +5% (real results). Orders it did not buy: ${side(fc?.stats.refused) ?? "none yet"} would have reached it on the chart (a real order can fill worse than the chart shows). A forecaster that says more than really happens is marked down; a good streak never marks one up.` : ""}
         {rows.length ? (
           <table className="agent-table fc-table">
-            <thead><tr><th>Forecaster</th><th className="num">Said on average</th><th className="num">Really happened</th><th className="num">Forecasts</th></tr></thead>
+            <thead><tr><th>Forecaster</th><th className="num">Said on average</th><th className="num">Happened on the chart</th><th className="num">Forecasts</th></tr></thead>
             <tbody>
               {rows.map(({ k, s }) => (
                 <tr key={k}><td>{FC_NAME[k]}</td><td className="num">{pc((s!.sumP / s!.n) * 100)}</td><td className="num">{pc((s!.hits / s!.n) * 100)}</td><td className="num">{Math.round(s!.n)}</td></tr>

@@ -218,7 +218,7 @@ type State = {
   // forecaster's running record, and the last few that were scored.
   fc?: { pending: ForecastRec[]; stats: FcStats; last: Scored[] };
 };
-export type Scored = { at: number; symbol: string; kind: string; pWin: number; aiPct: number; passed: boolean; out: "win" | "stop" | "none" };
+export type Scored = { at: number; symbol: string; kind: string; pWin: number; aiPct: number; passed: boolean; out: "win" | "stop" | "none"; real?: boolean };
 // The forecast desk as shown in the agent window: where the simulated paths put the price, and
 // the chance of reaching the minimum profit first for a buy right now at three stop distances.
 export type DeskView = {
@@ -249,6 +249,8 @@ function fresh(startCash = 10): State {
   };
 }
 
+// When agents' orders began to be judged by the prediction engine (v0.54.0 went live).
+const PREDICTIONS_SINCE = Date.UTC(2026, 10, 14, 1, 58, 37);
 // Fill in fields added in later versions so older saved states keep working.
 function migrate(s: State): State {
   s.bot = { ...fresh().bot, ...s.bot };
@@ -285,6 +287,23 @@ function migrate(s: State): State {
   if (!s.bot.day) {
     const dayStart = Date.parse(utcDay() + "T00:00:00Z");
     s.bot.day = { date: utcDay(), startEquity: s.equity.find((e) => e.t >= dayStart)?.v ?? s.startCash };
+  }
+  // The scoreboard's "trades it made" used to be scored from the chart, which is kinder than a
+  // real fill (it said 5 of 7 reached +5% when 1 of 5 real trades had). It now holds real results
+  // only: rebuilt once from the agents' own closed trades bought since predictions began.
+  if (s.fc && s.fc.stats.v !== 2) {
+    const boughtAt = new Map<string, number>();
+    let n = 0, hits = 0;
+    for (const tr of s.trades.slice().reverse()) {
+      if (tr.strategy !== "agents" || tr.source !== "bot") continue;
+      const k = `${tr.botId ?? "1"}:${tr.pool}`;
+      if (tr.side === "BUY") boughtAt.set(k, tr.time);
+      else if ((boughtAt.get(k) ?? 0) >= PREDICTIONS_SINCE) {
+        n++;
+        if (tr.reachedTarget) hits++;
+      }
+    }
+    s.fc.stats = { ...s.fc.stats, taken: { n, hits }, v: 2 };
   }
   // Plans saved before standing orders existed have no "orders": drop them so
   // the bot asks Claude for a new-style plan instead of erroring every second.
@@ -862,18 +881,35 @@ function settleForecasts(pool: string, c1: Candle[], c5: Candle[]) {
   if (keep.length !== fc.pending.length) acct().dirty = true;
   fc.pending = keep;
 }
+// A trade the agent made has closed: the prediction it was bought on is scored with what really
+// happened to the trade (it reached the minimum profit, or it did not), which is what the money
+// depends on. The chart is not asked: a real order can fill worse than the chart shows.
+function scoreTrade(pos: Position, reached: boolean) {
+  const p = pos.prediction;
+  if (!p) return; // bought without a prediction (too little history for the desk): nothing to score
+  const fc = (state.fc ??= { pending: [], stats: { v: 2 }, last: [] });
+  const each: ForecastRec["p"] = { combined: p.pWin };
+  for (const part of p.parts) each[part.key] = part.pct;
+  const out = reached ? "win" : "stop";
+  const made: ForecastRec = { id: uid(), at: pos.openedAt, pool: pos.pool, symbol: pos.symbol, kind: "buy_now", entry: pos.entryPrice, stop: pos.stopLoss ?? 0, level: pos.entryPrice, waitMin: 0, holdMin: 0, p: each, passed: true };
+  fc.stats = score(fc.stats, made, out, true);
+  fc.last.unshift({ at: made.at, symbol: made.symbol, kind: "trade", pWin: Math.round(p.pWin), aiPct: Math.round(each.ai ?? 0), passed: true, out, real: true });
+  if (fc.last.length > 12) fc.last.length = 12;
+  acct().dirty = true;
+}
 // Remembers each predicted order so it can be scored later, whether or not it was bought (one
-// per coin, kind and verdict every 45 minutes: looks a few minutes apart are the same evidence).
+// per coin, kind and verdict per holding window: looks a few minutes apart are the same evidence).
 function recordForecasts(pair: PairInfo, consensus: Consensus, cost: number) {
   const now = Date.now();
   const validMin = Math.max(5, Math.round((consensus.expiresAt - now) / 60_000));
-  const fc = (state.fc ??= { pending: [], stats: {}, last: [] });
+  const fc = (state.fc ??= { pending: [], stats: { v: 2 }, last: [] });
   for (const o of consensus.orders) {
     const p = o.prediction;
     if (!p) continue;
     const passed = !o.warning;
-    if (fc.pending.some((r) => r.pool === pair.pool && r.kind === o.kind && r.passed === passed && now - r.at < 45 * 60_000)) continue;
     const sh = shapeOf(o, pair.priceUsd, cost, validMin);
+    const every = Math.min(180, Math.max(45, sh.holdMin)) * 60_000;
+    if (fc.pending.some((r) => r.pool === pair.pool && r.kind === (sh.immediate ? "buy_now" : o.kind) && r.passed === passed && now - r.at < every)) continue;
     const each: ForecastRec["p"] = { combined: p.pWin };
     for (const part of p.parts) each[part.key] = part.pct;
     fc.pending.push({ id: uid(), at: now, pool: pair.pool, symbol: pair.symbol, kind: sh.immediate ? "buy_now" : o.kind, entry: sh.entry, stop: o.stopLoss, level: sh.entry * (1 + (cost + AGENT_NET_TARGET) / 100), waitMin: sh.waitMin, holdMin: Math.min(sh.holdMin, 420), p: each, passed });
@@ -2164,6 +2200,7 @@ async function tickBot(persist: boolean) {
         if (pos.strategy) t.strategy = pos.strategy;
         t.predictedWinPct = pos.predictedWinPct;
         t.reachedTarget = Boolean(pos.trailing || pos.pm); // the target (or an agent's minimum profit) was reached before it closed
+        if (pos.strategy === "agents") scoreTrade(pos, t.reachedTarget);
         const cs = (state.bot.coinStats[pos.pool] ??= { losses: 0, lastLossAt: 0, lossDay: utcDay() });
         if (t.pnlUsd! < 0) {
           cs.losses = cs.lossDay === utcDay() ? cs.losses + 1 : 1;
@@ -2408,6 +2445,12 @@ async function tickBot(persist: boolean) {
       const usd = isCoinAgent(cfg) ? Math.floor(Math.min(state.cash, availableCash(acct().state, currentBotId()), agentFunds(cfg)) * 100) / 100 : Math.floor(Math.min(cap, bySize) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
+      // The forecast that becomes this trade is no longer an order the agent "did not buy": it leaves
+      // the waiting list here, and the trade's real result is scored when it closes (scoreTrade).
+      if (isCoinAgent(cfg) && o.prediction && state.fc) {
+        const mine = state.fc.pending.filter((r) => r.pool === pair.pool && r.passed).sort((a, b) => b.at - a.at)[0];
+        if (mine) state.fc.pending = state.fc.pending.filter((r) => r !== mine);
+      }
       // Fill like a real order at the trigger price (or better/worse, see buyFillPrice).
       const t = buy({ ...pair, priceUsd: entryPrice ?? buyFillPrice(o, q) }, usd, "bot", `AI plan: ${label}${entryPrice ? " (after a bounce)" : ""}`, {
         stopLoss: o.stopLoss,
