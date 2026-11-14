@@ -169,7 +169,9 @@ export async function getPair(chain: string, pool: string): Promise<PairInfo> {
 // 4. The last candles that loaded successfully
 
 export type CandleSource = "GeckoTerminal" | "CoinMarketCap" | "Coinbase" | "OKX" | "cached";
-export type CandleResult = { candles: Candle[]; source: CandleSource; note?: string };
+// origin = the source the candles were first read from (for "cached" answers: where the cached
+// candles came from), so a chart can refuse to mix two sources whose prices differ.
+export type CandleResult = { candles: Candle[]; source: CandleSource; origin: CandleSource; note?: string };
 
 const sortCandles = (c: Candle[]) => c.filter((x) => Number.isFinite(x.close) && x.close > 0).sort((a, b) => a.time - b.time);
 const fromOhlcvList = (data: any): Candle[] =>
@@ -235,6 +237,11 @@ async function fromOkx(sym: string, tf: Timeframe, limit: number) {
 }
 
 const lastGood = new Map<string, Candle[]>();
+const lastGoodFrom = new Map<string, { at: number; source: CandleSource }>();
+// How long a source's last answer stands in for it while it is briefly busy (rate limit), before
+// another source is tried: other sources price the same coin a few percent differently, and a
+// chart that hops between them looks like its candles are changing.
+const STICKY_MS = 90_000;
 
 const TF_SECONDS: Record<Timeframe, number> = { "1s": 1, "5s": 5, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 };
 type Hint = { symbol: string; priceUsd: number; tokenAddress?: string };
@@ -250,7 +257,14 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
   const errors: string[] = [];
   const done = (candles: Candle[], source: CandleSource, note?: string): CandleResult => {
     lastGood.set(key, candles);
-    return { candles, source, note };
+    lastGoodFrom.set(key, { at: Date.now(), source });
+    return { candles, source, origin: source, note };
+  };
+  // The first-choice source answered a moment ago and is only busy right now: keep showing its
+  // candles rather than switching to another source's (different) prices.
+  const sticky = (from: CandleSource): CandleResult | null => {
+    const m = lastGoodFrom.get(key), c = lastGood.get(key);
+    return m && c?.length && m.source === from && Date.now() - m.at < STICKY_MS ? { candles: c, source: "cached", origin: from, note: `${from} is busy for a moment; showing its last candles.` } : null;
   };
 
   // Token address + live pool price, used by CoinMarketCap and the sanity checks.
@@ -316,7 +330,7 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
   };
 
   // 1-2. CoinMarketCap (by token, has second candles) and GeckoTerminal (exact pool).
-  for (const step of primary === "cmc" ? [viaCmc, viaGecko] : [viaGecko]) {
+  for (const step of primary === "cmc" ? [viaCmc, () => Promise.resolve(sticky("CoinMarketCap")), viaGecko] : [viaGecko]) {
     const r = await step();
     if (r) return r;
   }
@@ -335,28 +349,29 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
 
   // 4. Whatever loaded last.
   const stale = lastGood.get(key);
-  if (stale?.length) return { candles: stale, source: "cached", note: "Showing the last candles that loaded; live sources are busy." };
+  if (stale?.length) return { candles: stale, source: "cached", origin: lastGoodFrom.get(key)?.source ?? "cached", note: "Showing the last candles that loaded; live sources are busy." };
   throw new Error(`No candle data right now (${errors.join("; ")})`);
 }
 
 // Scrolling a chart back in time: the candles just older than `beforeSec`, oldest first.
 // CoinMarketCap pages back on every timeframe (seconds included); GeckoTerminal is the fallback
 // for minute candles and up. An empty answer means the coin has no older history.
-export async function getOlderCandles(chain: string, pool: string, tf: Timeframe, beforeSec: number): Promise<Candle[]> {
+// `want` = the source the chart's candles came from: history is only taken from the same one.
+export async function getOlderCandles(chain: string, pool: string, tf: Timeframe, beforeSec: number, want?: string): Promise<{ candles: Candle[]; source: CandleSource }> {
   if (!TF_MAP[tf]) tf = "5m";
   const older = (c: Candle[]) => c.filter((x) => x.time < beforeSec);
   const token = knownToken(pool) ?? (await getPair(chain, pool).catch(() => null))?.tokenAddress;
   let failed: unknown = null;
-  if (token && CMC_PLATFORM[chain]) {
+  if (token && CMC_PLATFORM[chain] && (!want || want === "CoinMarketCap")) {
     try {
-      return older(await fromCoinMarketCap(chain, token, tf, 600, beforeSec * 1000 - 1));
+      return { candles: older(await fromCoinMarketCap(chain, token, tf, 600, beforeSec * 1000 - 1)), source: "CoinMarketCap" };
     } catch (e) {
       failed = e;
     }
   }
-  if (!isSecondsTf(tf)) {
+  if (!isSecondsTf(tf) && (!want || want === "GeckoTerminal")) {
     try {
-      return older(await fromGeckoTerminal(GT_NETWORK[chain] ?? chain, pool, tf, 1000, beforeSec));
+      return { candles: older(await fromGeckoTerminal(GT_NETWORK[chain] ?? chain, pool, tf, 1000, beforeSec)), source: "GeckoTerminal" };
     } catch (e) {
       failed = e;
     }

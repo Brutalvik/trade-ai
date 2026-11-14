@@ -175,11 +175,14 @@ export const api = {
   list: (kind: ListKind) => req<{ kind: ListKind; coins: ListCoin[] }>(`/lists/${kind}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
   // before = unix seconds: the page of candles just older than that (for scrolling back in time).
-  candles: async (chain: string, pool: string, tf: Timeframe, before?: number) => {
-    const res = await fetch(`/api/candles/${chain}/${pool}?tf=${tf}${before ? `&before=${Math.floor(before)}` : ""}`);
+  // from = the source the chart's candles came from, so older pages come from the same one.
+  // origin (in the answer) = where the candles were really read from, even when served from a cache.
+  candles: async (chain: string, pool: string, tf: Timeframe, before?: number, from?: string) => {
+    const res = await fetch(`/api/candles/${chain}/${pool}?tf=${tf}${before ? `&before=${Math.floor(before)}` : ""}${before && from ? `&from=${encodeURIComponent(from)}` : ""}`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
-    return { candles: data as Candle[], source: res.headers.get("X-Candle-Source") ?? "unknown", note: res.headers.get("X-Candle-Note") ?? "" };
+    const source = res.headers.get("X-Candle-Source") ?? "unknown";
+    return { candles: data as Candle[], source, origin: res.headers.get("X-Candle-Origin") ?? source, note: res.headers.get("X-Candle-Note") ?? "" };
   },
   scan: (chain: ScanChain) => req<ScanResult>(`/scan?chain=${chain}`),
   newcoins: (chain: "solana" | "base") => req<NewCoin[]>(`/newcoins?chain=${chain}`),

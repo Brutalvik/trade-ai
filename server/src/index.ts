@@ -87,14 +87,18 @@ app.get(
     // ?before=<unix seconds>: the page of candles just older than that (the chart scrolling back).
     const before = Math.floor(Number(req.query.before));
     if (before > 0) {
-      const older = await getOlderCandles(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m", before);
+      const from = typeof req.query.from === "string" && /^[A-Za-z]{3,20}$/.test(req.query.from) ? req.query.from : undefined;
+      const page = await getOlderCandles(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m", before, from);
+      const older = page.candles;
       res.setHeader("X-Candle-Source", "history");
+      res.setHeader("X-Candle-Origin", page.source);
       const seen = new Map<number, (typeof older)[number]>();
       for (const c of older) seen.set(c.time, c);
       return [...seen.values()].sort((a, b) => a.time - b.time);
     }
     const r = await getCandlesWithSource(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m");
     res.setHeader("X-Candle-Source", r.source);
+    res.setHeader("X-Candle-Origin", r.origin);
     if (r.note) res.setHeader("X-Candle-Note", r.note);
     // One candle per time, oldest first (sources can overlap when merged from a cache).
     const byTime = new Map<number, (typeof r.candles)[number]>();

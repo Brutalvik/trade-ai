@@ -151,6 +151,9 @@ export default function App() {
   // live ones, like TradingView. `done` = the coin has no older history on this timeframe.
   const candlesRef = useRef<Candle[]>([]);
   candlesRef.current = candles;
+  // One data source per chart: sources price the same coin a few percent apart, so candles
+  // from a different one are not mixed in. `awaySince` = when ours first failed to answer.
+  const feed = useRef({ key: "", origin: "", awaySince: 0 });
   const hist = useRef({ key: "", busy: false, done: false, failAt: 0, lastAt: 0 });
   const [histUi, setHistUi] = useState({ key: "", busy: false, done: false, retry: 0 });
   const loadOlder = useCallback(() => {
@@ -170,10 +173,12 @@ export default function App() {
     h.lastAt = Date.now();
     setHistUi((u) => ({ key, busy: true, done: false, retry: u.retry }));
     const before = cur[0].time;
+    const from = feed.current.key === key ? feed.current.origin : "";
     api
-      .candles(pair.chain, pair.pool, tf, before)
+      .candles(pair.chain, pair.pool, tf, before, /^[A-Za-z]+$/.test(from) && from !== "cached" ? from : undefined)
       .then((r) => {
         if (hist.current !== h || showing.current !== key) return;
+        if (from && r.origin !== from) throw new Error("older candles came from another source"); // never mix sources: try again later
         const add = r.candles.filter((c) => c.time < before);
         if (!add.length) { h.done = true; return; }
         setCandles((prev) => (prev.length && prev[0].time === before ? add.concat(prev) : prev));
@@ -196,9 +201,27 @@ export default function App() {
       .candles(pair.chain, pair.pool, tf)
       .then((r) => {
         if (showing.current !== want) return; // you've moved on: don't show this coin's candles
-        setCandles((prev) => withLatest(prev, r.candles));
+        if (feed.current.key !== want) feed.current = { key: want, origin: "", awaySince: 0 };
+        const f = feed.current;
+        if (f.origin && r.origin !== f.origin && candlesRef.current.length) {
+          // Another source answered (ours is busy for a moment). Its prices differ, so the chart
+          // keeps what it has; only if ours stays away for 45 s does the chart move over for good.
+          if (!f.awaySince) f.awaySince = Date.now();
+          if (Date.now() - f.awaySince < 45_000) return setSource({ source: f.origin, note: "Live data is busy for a moment; the chart keeps its last candles." });
+          f.origin = r.origin;
+          f.awaySince = 0;
+          hist.current = { key: want, busy: false, done: false, failAt: 0, lastAt: 0 };
+          setHistUi((u) => ({ key: want, busy: false, done: false, retry: u.retry }));
+          setCandles(r.candles);
+        } else {
+          // The first live answer for this chart replaces the remembered candles outright (they may be from another source).
+          const first = !f.origin;
+          f.origin = r.origin;
+          f.awaySince = 0;
+          setCandles((prev) => (first ? r.candles : withLatest(prev, r.candles)));
+        }
         setSource({ source: r.source, note: r.note });
-        saveChart(pair.pool, tf, r.candles, r.source);
+        if (r.source !== "cached") saveChart(pair.pool, tf, r.candles, r.source);
       })
       .catch((e) => setSource({ source: "unavailable", note: e.message }));
     api.pair(pair.chain, pair.pool).then((p) => setPair((cur) => (cur && cur.pool === p.pool ? { ...cur, ...p } : cur))).catch(() => {});
@@ -538,6 +561,7 @@ const MAX_CANDLES = 15_000;
 // drops the old history, so the chart never shows a jump in time.
 function withLatest(prev: Candle[], latest: Candle[]): Candle[] {
   if (!latest.length || !prev.length) return latest.length ? latest : prev;
+  if (latest[latest.length - 1].time < prev[prev.length - 1].time) return prev; // older than what is shown (a slow or cached answer): don't roll the chart back
   const first = latest[0].time;
   if (prev[prev.length - 1].time < first) return latest;
   let i = prev.length;
