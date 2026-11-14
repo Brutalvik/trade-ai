@@ -135,5 +135,57 @@ export async function scanAgents(): Promise<AgentScan> {
     .filter((t) => !STABLE.test(t.symbol ?? "") && !(t.tags ?? []).some((g: string) => /xstock|stock|rwa/i.test(g)) && n(t.mcap) < MAX_MCAP)
     .map((t) => scoreCoin(t, rank.get(t.id) ?? null))
     .sort((a, b) => (a.vetoes.length ? 1 : 0) - (b.vetoes.length ? 1 : 0) || b.total - a.total);
-  return { at: Date.now(), coins, scanned: seen.size };
+  lastScan = { at: Date.now(), coins, scanned: seen.size };
+  return lastScan;
+}
+// The last scan, if it is recent: read without asking the data source again (an agent's AI look
+// must not wait behind four list requests for a reading it can work out from the coin itself).
+let lastScan: AgentScan | null = null;
+export const recentScan = (maxAgeMs = 5 * 60_000): AgentScan | null => (lastScan && Date.now() - lastScan.at < maxAgeMs ? lastScan : null);
+
+// ---------- One coin's live data (for an agent's AI) ----------
+// The same Jupiter record the scouts use, looked up for a single token, so every agent's AI
+// gets buyers vs sellers, holders and safety data even when its coin isn't in the trending lists.
+export const SOL_MINT = "So11111111111111111111111111111111111111112";
+// One request returns the coin and SOL together (Jupiter accepts several mints, comma-separated),
+// so the coin's data and the market backdrop cost a single lookup.
+async function lookup(mint: string): Promise<any[]> {
+  const q = mint === SOL_MINT ? SOL_MINT : `${encodeURIComponent(mint)},${SOL_MINT}`;
+  const d = await cachedJson<any[]>(`https://api.jup.ag/tokens/v2/search?query=${q}`, 30_000, { headers: jupHeaders(), retries: 0 });
+  return Array.isArray(d) ? d : [];
+}
+export async function tokenInfo(mint: string): Promise<any | null> {
+  if (!mint) return null;
+  try {
+    return (await lookup(mint)).find((t) => t?.id === mint) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const usd = (v: number) => (v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : `$${Math.round(v)}`);
+const sgn = (v: number, d = 1) => `${v >= 0 ? "+" : ""}${v.toFixed(d)}%`;
+function window(label: string, s: any): string | null {
+  if (!s) return null;
+  const buy = n(s.buyVolume), sell = n(s.sellVolume);
+  if (!(buy + sell > 0)) return null;
+  return `- ${label}: price ${sgn(n(s.priceChange))}; ${usd(buy)} bought vs ${usd(sell)} sold (${Math.round((buy / (buy + sell)) * 100)}% buys); ${n(s.numBuys)} buys / ${n(s.numSells)} sells by ${n(s.numTraders)} traders; net buyers ${n(s.numNetBuyers) >= 0 ? "+" : ""}${n(s.numNetBuyers)}; real (organic) buyers ${n(s.numOrganicBuyers)}; volume ${sgn(n(s.volumeChange), 0)} vs the previous window; liquidity ${sgn(n(s.liquidityChange))}; holders ${sgn(n(s.holderChange))}`;
+}
+// Buyers vs sellers, holders and safety for one token, as text for the AI.
+export function flowText(t: any): string {
+  const audit = t.audit ?? {};
+  const lines = [window("last 5 min", t.stats5m), window("last hour", t.stats1h), window("last 6 hours", t.stats6h)].filter(Boolean);
+  const safety = `Holders ${n(t.holderCount).toLocaleString()}; top 10 wallets own ${n(audit.topHoldersPercentage).toFixed(0)}%; dev holds ${n(audit.devBalancePercentage).toFixed(1)}% (${n(audit.devMints)} launches by this dev); organic score ${Math.round(n(t.organicScore))}/100; total liquidity ${usd(n(t.liquidity))}; mint authority ${audit.mintAuthorityDisabled === false ? "STILL ENABLED" : "disabled"}, freeze authority ${audit.freezeAuthorityDisabled === false ? "STILL ENABLED" : "disabled"}.`;
+  return `Buyers vs sellers (on-chain, all pools):\n${lines.join("\n") || "- no flow data"}\n${safety}`;
+}
+// What the wider market is doing: most Solana tokens follow SOL's mood.
+// Pass the coin being looked at so both come from the same request.
+export async function marketText(withMint = SOL_MINT): Promise<string> {
+  let sol: any = null;
+  try {
+    sol = (await lookup(withMint || SOL_MINT)).find((t) => t?.id === SOL_MINT) ?? null;
+  } catch { /* optional */ }
+  if (!sol) return "";
+  const p = (s: any) => sgn(n(s?.priceChange));
+  return `Market backdrop: SOL $${n(sol.usdPrice).toFixed(2)}: ${p(sol.stats5m)} in 5 min, ${p(sol.stats1h)} in 1h, ${p(sol.stats6h)} in 6h, ${p(sol.stats24h)} in 24h.`;
 }

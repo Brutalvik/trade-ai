@@ -407,11 +407,15 @@ function simulate(s: Scenario) {
     }
     best = Math.max(best, v);
     const net = ((best - entry) / entry) * 100 - COST;
-    if (net >= MIN && Math.floor(net) > step) {
+    if (net >= MIN) {
+      // +5% reached: that minimum is locked, then the exit follows the price 3% behind its high.
       const first = step === 0;
-      step = Math.floor(net);
-      stop = entry * (1 + (COST + step) / 100);
-      if (first || step % 3 === 0) ev.push({ i, text: `Up ${step}% after fees: that profit is locked. Waiting for ${step + 1}%.`, tone: "good" });
+      const exit = Math.max(entry * (1 + (COST + MIN) / 100), best * 0.97);
+      if (first) ev.push({ i, text: "Up 5% after fees: the minimum is locked. The AI now decides how long to hold.", tone: "good" });
+      if (exit > stop) stop = exit;
+      const whole = Math.floor(net);
+      if (!first && whole > step && whole % 4 === 0) ev.push({ i, text: `Up ${whole}% after fees: the AI holds for more; the exit follows the price up.`, tone: "ai" });
+      step = Math.max(step, whole);
     }
     if (v <= stop) {
       if (s === "second" && !looked && step === 0) {
@@ -420,7 +424,7 @@ function simulate(s: Scenario) {
       } else {
         marks.push({ i, kind: "sell", v });
         ev.push(step
-          ? { i, text: `Price fell back to the +${step}% step: sells at ${v.toFixed(3)}, keeping about +${step}% after fees.`, tone: "good" }
+          ? { i, text: `The move turned: sells at ${v.toFixed(3)}, keeping about +${(((v - entry) / entry) * 100 - COST).toFixed(1)}% after fees (best was +${(((best - entry) / entry) * 100 - COST).toFixed(1)}%).`, tone: "good" }
           : { i, text: `Stop-loss: sells at ${v.toFixed(3)} (${(((v - entry) / entry) * 100 - COST).toFixed(1)}% after fees).`, tone: "bad" });
         done = true;
       }
@@ -466,7 +470,7 @@ function BotSim() {
       <div className="lp-head">
         <span className="lp-kicker">Bot replay</span>
         <h2>See exactly how the bot trades</h2>
-        <p>Play a trade from plan to sale. Once it is up 5% after fees, watch the exit (red) climb one percent at a time behind the price, then sell when the price turns back.</p>
+        <p>Play a trade from plan to sale. Once it is up 5% after fees that minimum is locked; from there the AI decides how long to hold, the exit (red) follows the price up, and it sells when the move turns.</p>
       </div>
       <div className="lp-sim" ref={box}>
         <div className="lp-sim-bar">

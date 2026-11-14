@@ -2,7 +2,7 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { audit, ledger, type AuditType } from "./audit.js";
-import { analyze, BOT_MODEL, CLAUDE_MODEL, reviewAgentPick, reviewHold, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
+import { analyze, BOT_MODEL, CLAUDE_MODEL, reviewAgentPick, reviewHold, reviewProfit, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
 import { findPatterns, patternsText, patternTags, type FramePatterns } from "./patterns.js";
 import { cachedJson, fromDexScreener, getCandles, getPair, getRecentTokenCandles, knownToken, type Candle, type PairInfo, type Timeframe } from "./data.js";
 import { atr, snapshot } from "./indicators.js";
@@ -12,7 +12,7 @@ import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type 
 import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
-import { AGENT_KEYS, AGENT_PASS, scanAgents, type AgentCoin } from "./agents.js";
+import { AGENT_KEYS, AGENT_PASS, flowText, marketText, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin } from "./agents.js";
 import { learn, type Learned, type Watch } from "./learn.js";
 
 import { noteCommunityBuy } from "./lists.js";
@@ -54,7 +54,8 @@ export type Position = {
   secondLook?: boolean; // the AI already kept this trade open once at its stop-loss
   firstStop?: number; // the stop-loss before the AI's second look moved it
   extensions?: number; // times the AI extended the holding time
-  ladderStep?: number; // Agents: the highest whole % of profit after fees locked so far
+  ladderStep?: number; // (older trades) the highest whole % of profit after fees locked
+  pm?: ProfitPlan; // Agents: how this trade's profit is being managed once the minimum is reached
 };
 
 export type Trade = {
@@ -154,6 +155,11 @@ export type LimitOrder = {
   createdAt: number;
 };
 
+// Agents: a trade that reached its minimum profit. `floor` is the hard exit (starts at the locked
+// minimum; the AI can only raise it). `trailPct` is how far behind the highest close the exit
+// follows (the AI sets it each time it is asked; a fixed rule when it can't be asked).
+export type ProfitPlan = { floor: number; trailPct: number; by: "ai" | "rule"; asks: number; fails: number; step: number; at?: number; nextAt?: number; target?: number; note?: string; confidence?: number; lastPrice?: number; lastAction?: string };
+
 type State = {
   resetAt?: number; // when this account was last reset (older copies are never saved over it)
   mode: "paper";
@@ -193,6 +199,7 @@ type State = {
     agentScan?: { at: number; scanned: number; top: AgentCoin[] }; // Agents mode: the latest scores (top 8)
     agentLog?: AgentDecision[]; // Agents mode: recent picks and skips
     learned?: Learned; // Agent: what it learned from its coin's history
+    aiNotes?: { at: number; price: number; text: string }[]; // Agent: its AI's last decisions on this coin (given back to it next time)
     lastFiredAt?: number; // Agent: the candle its pattern last fired on (one try per signal)
     watch?: Watch | null; // Agent: the level it is watching (drawn on the chart)
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
@@ -284,6 +291,7 @@ type Account = {
   busy: boolean; // a bot step is running: don't swap the state under it
   busyIds?: Set<string>; // which agents' steps are running (each agent runs its own, side by side)
   steps?: Set<Promise<unknown>>; // rounds of agent steps still in flight
+  reviews?: Set<Promise<unknown>>; // AI profit checks still in flight
   guarding: boolean;
   active?: boolean; // last value written to the active-accounts list
   activeCheckedAt?: number; // when that list was last read (other servers may have changed it)
@@ -721,6 +729,7 @@ export function reset(startCash: number) {
 // What Claude sees for each plan: zoomed in for timing, zoomed out for the bigger picture.
 const PLAN_FRAMES: { tf: Timeframe; label: string; show: number }[] = [
   { tf: "5s", label: "5-second candles (last ~5 minutes): precise timing", show: 60 },
+  { tf: "1m", label: "1-minute candles (last ~90 minutes): the move happening now", show: 90 },
   { tf: "5m", label: "5-minute candles (last ~5 hours): today's swings, support and resistance", show: 60 },
   { tf: "1h", label: "1-hour candles (last ~2 days): the trend", show: 48 },
   { tf: "1d", label: "1-day candles (last ~month): the big picture", show: 30 },
@@ -802,7 +811,10 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     ]),
   ].filter(Boolean).join("\n");
   if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
-  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined, !!opts.agentBrief);
+  // Agents: what this account's managed winners (trades that reached the minimum profit) really made, once there are 5 or more.
+  const managed = opts.agentBrief ? state.trades.filter((t) => t.strategy === "agents" && t.side === "SELL" && t.reachedTarget && t.usd - (t.pnlUsd ?? 0) > 0) : [];
+  const measuredWinPct = managed.length >= 5 ? managed.reduce((s, t) => s + ((t.pnlUsd ?? 0) / (t.usd - (t.pnlUsd ?? 0))) * 100, 0) / managed.length : undefined;
+  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined, opts.agentBrief ? { minNetPct: AGENT_NET_TARGET, ...(measuredWinPct !== undefined ? { measuredWinPct } : {}) } : undefined);
   const appTokens = await chargeTokens(results);
   const model = opts.forBot ? BOT_MODEL : CLAUDE_MODEL;
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
@@ -927,6 +939,7 @@ function startBotHere(cfg: BotConfig) {
   state.bot.freshAfter = Date.now(); // never reuse a plan from before this start
   state.bot.startedAt = Date.now();
   state.bot.learned = undefined; // an agent learns its (possibly new) coin afresh
+  state.bot.aiNotes = [];
   state.bot.lastFiredAt = undefined;
   state.bot.watch = null;
   state.bot.stoppedAt = null;
@@ -1141,7 +1154,7 @@ async function secondLook(cfg: BotConfig, pos: Position, price: number, why: "st
   if (why === "stop" && (!(risk > 0) || price <= hardFloor)) return false;
   try {
     const pair = await getPair(pos.chain, pos.pool);
-    const frames = await loadFrames(pos.chain, pos.pool, pair, ["5s", "5m", "1h"]);
+    const frames = await loadFrames(pos.chain, pos.pool, pair, ["5s", "1m", "5m", "1h"]);
     const pats = frames.map((f) => findPatterns(f.tf, f.candles));
     const cost = roundTripCostPct();
     const d = await Promise.race([
@@ -1494,24 +1507,89 @@ async function agentPrep(cfg: BotConfig): Promise<boolean> {
 async function agentBrief(cfg: BotConfig): Promise<string> {
   const cost = roundTripCostPct();
   const L = state.bot.learned;
+  const managed = state.trades.filter((t) => t.strategy === "agents" && t.side === "SELL" && t.reachedTarget && t.usd - (t.pnlUsd ?? 0) > 0);
+  const managedNote = managed.length >= 5
+    ? `+${(managed.reduce((s, t) => s + ((t.pnlUsd ?? 0) / (t.usd - (t.pnlUsd ?? 0))) * 100, 0) / managed.length).toFixed(1)}% (what this account's ${managed.length} managed winners really made on average after costs)`
+    : `+${AGENT_NET_TARGET}% plus 30% of the extra distance from there to your target, with the target counted up to +20% (winners are held for more, but not all of the extra is captured)`;
   const lines = [
     `You are this coin's dedicated trading agent. Budget $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} (funds now $${agentFunds(cfg).toFixed(2)}); each buy invests all of it.`,
     `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you WILL buy at (buy_dip and/or buy_breakout), close enough to be reached in the next 10-30 minutes. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them. You will be asked again within 10 minutes, or sooner if the price moves ${AGENT_MOVE_PCT}%.`,
-    `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. Put the stop where the idea is proved wrong.`,
-    `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. An order is used unless your own numbers say it loses money on average after costs.`,
-    `After buying: the stop is yours until the trade is up +${AGENT_NET_TARGET}% after costs. From there the bot locks each whole percent of profit as the exit and waits for the next (${AGENT_NET_TARGET}%, ${AGENT_NET_TARGET + 1}%, ${AGENT_NET_TARGET + 2}% ...), selling when the price falls back to the last locked step. So a small first target that is reached is worth more than a big one that isn't; at the stop you are asked once whether to hold.`,
+    `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. That level is the MINIMUM-PROFIT level: winChancePct is your chance of reaching it before the stop. target is where you realistically expect the move to go (at or above that level). Put the stop where the idea is proved wrong.`,
+    `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. How an order is judged: a win (reaching the minimum-profit level) counts as ${managedNote}; a loss counts as the distance to your stop plus costs. The order is used only if winChance x win - (1 - winChance) x loss is above zero. So a closer stop, a higher honest win chance or a realistic higher target all help; inflating any of them will show up in your track record below.`,
+    `After buying: the stop is yours until the trade is up +${AGENT_NET_TARGET}% after costs. At that point the minimum profit is locked as the exit and you are asked again and again to manage the trade: hold for more (you set the exit and how closely it follows the price) or sell now. So the entry only has to get to +${AGENT_NET_TARGET}%; how far it runs after that is handled then. At the stop you are asked once whether to hold.`,
   ];
   if (L) {
-    lines.push(`A study of this coin's own history (simple entry patterns replayed with these exact rules): ${L.summary}`);
-    if (L.table.length) lines.push(...L.table.slice(0, 6).map((t) => `- ${t.label} on ${t.tf}: ${t.trades} past trades, ${t.wins} reached the target, average ${t.avgNetPct >= 0 ? "+" : ""}${t.avgNetPct.toFixed(1)}% after costs`));
+    lines.push(`A study of this coin's own history (simple entry patterns replayed with the same stop and minimum profit): ${L.summary}`);
+    if (L.table.length) lines.push(...L.table.slice(0, 6).map((t) => `- ${t.label} on ${t.tf}: ${t.trades} past trades, ${t.wins} reached +${AGENT_NET_TARGET}% before the stop${t.wins && t.runMedPct !== undefined ? ` (in the ${t.tf === "5m" ? "hour" : "3 hours"} after, their typical best was +${t.runMedPct.toFixed(1)}%, and ${t.ran10 ?? 0} of ${t.wins} got to +10%)` : ""}; average ${t.avgNetPct >= 0 ? "+" : ""}${t.avgNetPct.toFixed(1)}% if every winner were sold at exactly +${AGENT_NET_TARGET}%`));
   }
   try {
     const pair = await getPair(cfg.chain, cfg.pool);
-    const scan = await scanAgents();
-    const c = scan.coins.find((x) => x.mint === pair.tokenAddress);
-    if (c) lines.push(`Scouts' reading of this coin (rule-based, 0-100 each): ${AGENT_KEYS.map((k) => `${k} ${Math.round(c.agents[k].score)} (${c.agents[k].note})`).join("; ")}.${c.vetoes.length ? ` Warnings: ${c.vetoes.join("; ")}.` : ""}`);
+    // What the agent's AI said before on this coin, and what the price has done since.
+    const notes = state.bot.aiNotes ?? [];
+    if (notes.length)
+      lines.push(`Your earlier decisions on this coin (oldest first). The price now is $${pair.priceUsd}; judge them against what happened:\n${notes.map((x) => `- ${Math.max(1, Math.round((Date.now() - x.at) / 60_000))} min ago at $${x.price}${x.price > 0 ? ` (price is ${(((pair.priceUsd - x.price) / x.price) * 100).toFixed(1)}% from there now)` : ""}: ${x.text}`).join("\n")}`);
+    if (cfg.chain === "solana" && pair.tokenAddress) {
+      // One lookup for the coin and the market together; the scouts' list is used only if it is already in memory.
+      const [t, market] = await Promise.all([tokenInfo(pair.tokenAddress), marketText(pair.tokenAddress).catch(() => "")]);
+      const scan = recentScan();
+      if (market) lines.push(market);
+      if (t) {
+        lines.push(flowText(t));
+        const c = scan?.coins.find((x) => x.mint === pair.tokenAddress) ?? scoreCoin(t, null);
+        lines.push(`Scouts' reading of this coin (rule-based, 0-100 each): ${AGENT_KEYS.map((k) => `${k} ${Math.round(c.agents[k].score)} (${c.agents[k].note})`).join("; ")}.${c.vetoes.length ? ` Warnings: ${c.vetoes.join("; ")}.` : ""}`);
+      }
+    }
   } catch { /* optional */ }
   return lines.join("\n");
+}
+
+// ---------- Agents: the AI's profit management ----------
+// Once a trade has reached its minimum profit, the AI is asked (in the background, so the
+// 5-second price checks keep running) whether to hold for more or sell. Its answer is applied at
+// that agent's next check. If it can't be asked, the exit follows the price by a fixed rule.
+export const PM_RULE_TRAIL = 2.5; // % behind the highest close the exit follows when the AI hasn't said otherwise
+const PM_MIN_GAP_MS = 30_000; // never ask the AI about one trade more often than this
+const profitInbox = new Map<string, { at: number; d?: ProfitDecision; error?: string }>(); // position id -> the AI's answer, waiting to be applied
+const profitAsking = new Set<string>();
+
+function askProfit(pos: Position, price: number, best: number, cost: number) {
+  const a = acct();
+  const pm = pos.pm!;
+  const { id, chain, pool, entryPrice: entry, openedAt } = pos;
+  const lockedExit = pm.floor, trailPct = pm.trailPct;
+  const last = pm.at ? { secondsAgo: (Date.now() - pm.at) / 1000, price: pm.lastPrice ?? price, action: pm.lastAction ?? "HOLD", reason: pm.note ?? "" } : null;
+  const L = state.bot.learned;
+  const R = L?.runs;
+  const history = R
+    ? `On this coin's recent ${R.tf} chart, ${R.moves} separate moves reached +${AGENT_NET_TARGET}% after costs; in the ${R.tf === "5m" ? "hour" : "3 hours"} after, ${R.ran10} of them went on to +10% or more and ${R.ran20} to +20% or more (typical best +${R.medianBestPct.toFixed(0)}%). That is how it has traded lately, not a forecast for this move.`
+    : "";
+  profitAsking.add(id);
+  const work = (async () => {
+    try {
+      const pair = await getPair(chain, pool);
+      const frames = await loadFrames(chain, pool, pair, ["5s", "1m", "5m"]);
+      const pats = frames.filter((f) => f.tf !== "5s").map((f) => findPatterns(f.tf, f.candles));
+      const [t, market] = chain === "solana" && pair.tokenAddress ? await Promise.all([tokenInfo(pair.tokenAddress), marketText(pair.tokenAddress).catch(() => "")]) : [null, ""];
+      const now = pair.priceUsd > 0 ? pair.priceUsd : price;
+      const d = await Promise.race([
+        reviewProfit({ pair, frames, costPct: cost, entry, price: now, best: Math.max(best, now), lockedExit, minNetPct: AGENT_NET_TARGET, trailPct, heldMin: (Date.now() - openedAt) / 60_000, flow: t ? flowText(t) : "", market, patterns: patternsText(pats), history, last }),
+        new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 30_000)),
+      ]);
+      await chargeTokens([{ model: BOT_MODEL, ok: false, error: "", ms: 0, tokens: d.tokens }]);
+      profitInbox.set(id, { at: Date.now(), d });
+    } catch (err: any) {
+      profitInbox.set(id, { at: Date.now(), error: err?.message ?? String(err) });
+    } finally {
+      profitAsking.delete(id);
+    }
+  })();
+  const set = (a.reviews ??= new Set());
+  set.add(work);
+  void work.finally(() => set.delete(work));
+}
+// Wait for AI profit checks still in flight (before a watch window ends).
+export async function settleReviews() {
+  await Promise.allSettled([...(acct().reviews ?? [])]);
 }
 
 // New coins mode: one fast, rule-based step (no AI). Picks the best young coin that
@@ -1666,21 +1744,71 @@ async function tickBot(persist: boolean) {
             log(`${pos.symbol} best gain +${bestGainPct.toFixed(1)}%: profit lock raised to ${fmt(lock)} (keeps at least ${lockPct}% of the gain).`, "good");
         }
       }
-      // Profit ladder (agents): once the best gain reaches +5% after fees, that whole percent is
-      // locked as the exit and the trade waits for the next one: 5 -> 6 -> 7 ... It sells when the
-      // price closes back at the last locked step, so it rides a run and gets out when it turns.
-      if (ladder) {
+      // Agents: once the best gain reaches the minimum profit after fees, that minimum is locked as
+      // the exit and the AI manages the rest: it is asked again and again whether to hold for more
+      // or sell now, and sets the exit and how closely it follows the price. The exit never goes
+      // below the locked minimum. If the AI can't be asked, the exit follows by a fixed rule.
+      let aiSell = "";
+      if (ladder && (pos.pm || bestGainPct - cost >= AGENT_NET_TARGET)) {
+        const now = Date.now();
         const bestNet = bestGainPct - cost;
-        if (bestNet >= AGENT_NET_TARGET) {
-          const step = Math.floor(bestNet + 1e-9);
-          const lock = pos.entryPrice * (1 + (cost + step) / 100);
-          if (!pos.stopLoss || lock > pos.stopLoss * 1.00001) {
-            pos.stopLoss = lock;
-            pos.locked = true;
-            pos.ladderStep = step;
-            acct().dirty = true;
-            log(`${pos.symbol} reached +${step}% after fees: that profit is locked (exit ${fmt(lock)}). Waiting for +${step + 1}%.`, "good");
+        const nowNet = gainPct - cost;
+        if (!pos.pm) {
+          // A trade whose exit was already raised above the minimum (by the earlier 1% profit steps) keeps it: an exit is never lowered.
+          const minExit = pos.entryPrice * (1 + (cost + AGENT_NET_TARGET) / 100);
+          pos.pm = { floor: Math.max(minExit, pos.stopLoss ?? 0), trailPct: PM_RULE_TRAIL, by: "rule", asks: 0, fails: 0, step: 0 };
+          pos.locked = true;
+          acct().dirty = true;
+          log(`${pos.symbol} is up +${bestNet.toFixed(1)}% after fees: the +${AGENT_NET_TARGET}% minimum is locked (exit ${fmt(pos.pm.floor)}). The AI now decides how long to hold.`, "good");
+        }
+        const pm = pos.pm;
+        // An answer from the AI that arrived since the last check.
+        const got = profitInbox.get(pos.id);
+        if (got) profitInbox.delete(pos.id);
+        if (got && now - got.at > 60_000) pm.nextAt = now; // too old to act on (the price has moved on): ask again
+        else if (got) {
+          acct().dirty = true;
+          if (!got.d) {
+            pm.fails++;
+            pm.nextAt = now + (pm.fails >= 3 ? 120_000 : 20_000);
+            noteOnce(`pmfail:${pos.id}:${pm.fails}`, `${pos.symbol}: the AI couldn't be asked about the profit (${got.error}). The exit keeps following the price ${pm.trailPct}% behind its high, never below ${fmt(pm.floor)}.`, "bad");
+          } else {
+            const d = got.d;
+            pm.fails = 0;
+            pm.asks++;
+            pm.at = now;
+            pm.by = "ai";
+            pm.step = Math.floor(bestNet);
+            pm.note = d.reason;
+            pm.confidence = clampNum(d.confidence, 0, 100);
+            pm.lastPrice = price;
+            pm.lastAction = d.action;
+            if (d.action === "SELL_NOW") aiSell = `AI took profit at +${nowNet.toFixed(1)}% after fees: ${d.reason.replace(/[.\s]+$/, "")}`;
+            else {
+              pm.trailPct = clampNum(d.trailPct, 0.5, 20);
+              if (d.exitPrice > pm.floor && d.exitPrice < price * 0.999) pm.floor = d.exitPrice; // only ever up, and below the price
+              pm.target = d.targetPrice > price ? d.targetPrice : undefined;
+              pm.nextAt = now + clampNum(d.recheckSeconds, 20, 300) * 1000;
+              log(`${pos.symbol} +${nowNet.toFixed(1)}% after fees: the AI holds for more (${Math.round(pm.confidence)}% sure). Exit ${fmt(Math.max(pm.floor, best * (1 - pm.trailPct / 100)))}, following ${pm.trailPct}% behind the high${pm.target ? `, expecting ${fmt(pm.target)}` : ""}. ${d.reason}`, "good");
+            }
           }
+        }
+        // The exit in force: the locked floor, or the trailing exit when that is higher.
+        const exit = Math.max(pm.floor, best * (1 - pm.trailPct / 100));
+        if (!pos.stopLoss || Math.abs(exit - pos.stopLoss) / exit > 1e-6) {
+          pos.stopLoss = exit;
+          acct().dirty = true;
+        }
+        if (pm.target) {
+          pos.target = pm.target;
+          pos.takeProfit = pm.target;
+        }
+        // Time to ask the AI again? First time at once; then when it asked to be, when a new
+        // whole percent is reached, or when the price has fallen most of the way to the exit.
+        if (!aiSell && !profitAsking.has(pos.id)) {
+          const pulledBack = best > 0 && ((best - price) / best) * 100 >= pm.trailPct * 0.6;
+          const due = now >= (pm.nextAt ?? 0) || (!!pm.at && (Math.floor(bestNet) > pm.step || pulledBack) && now - pm.at >= PM_MIN_GAP_MS);
+          if (due && (await tokensLeft()) > 0) askProfit(pos, price, best, cost);
         }
       }
       // Take half before the target: targets often sit at resistance, where a run can stall.
@@ -1736,13 +1864,14 @@ async function tickBot(persist: boolean) {
       // before or after it, so judge the trailing stop on the latest price instead.
       // Trailing stops (like their highs) go by closing prices, so one bad tick can't end a trade.
       const trailLow = newHighThisCheck ? price : q.closeLow;
-      if (pos.trailing && trailLow <= trailStop) {
+      if (aiSell) reason = aiSell;
+      else if (pos.trailing && trailLow <= trailStop) {
         reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
         sellAt = Math.min(trailStop, price);
       } else if (pos.stopLoss && (pos.stopLoss >= pos.entryPrice ? (newBestThisCheck ? price : q.closeLow) : q.low) <= pos.stopLoss) {
-        reason = pos.locked && ladder ? `Profit ladder: sold at the +${pos.ladderStep ?? AGENT_NET_TARGET}% step (best was +${(bestGainPct - cost).toFixed(1)}% after fees)` : pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
+        reason = pos.pm ? `Profit exit: sold at about +${(((Math.min(pos.stopLoss, price) - pos.entryPrice) / pos.entryPrice) * 100 - cost).toFixed(1)}% after fees (best was +${(bestGainPct - cost).toFixed(1)}%)${pos.pm.by === "ai" ? ", at the exit the AI set" : ""}` : pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
         sellAt = Math.min(pos.stopLoss, price);
-      } else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
+      } else if (!pos.pm && pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached"; // a trade in profit is the AI's to manage, not the clock's
       else if (!pos.target && pos.takeProfit && q.high >= pos.takeProfit) {
         reason = "Take-profit hit"; // positions from before trailing stops
         sellAt = Math.max(pos.takeProfit, price);
@@ -1762,7 +1891,7 @@ async function tickBot(persist: boolean) {
         const t = sell(pos.id, sellAt, 1, reason);
         if (pos.strategy) t.strategy = pos.strategy;
         t.predictedWinPct = pos.predictedWinPct;
-        t.reachedTarget = Boolean(pos.trailing); // trailing only starts once the target was reached
+        t.reachedTarget = Boolean(pos.trailing || pos.pm); // the target (or an agent's minimum profit) was reached before it closed
         const cs = (state.bot.coinStats[pos.pool] ??= { losses: 0, lastLossAt: 0, lossDay: utcDay() });
         if (t.pnlUsd! < 0) {
           cs.losses = cs.lossDay === utcDay() ? cs.losses + 1 : 1;
@@ -1841,6 +1970,14 @@ async function tickBot(persist: boolean) {
         const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
+        if (isCoinAgent(cfg)) {
+          const ok = results.find((x) => x.ok);
+          const used = consensus.orders.filter((o) => !o.warning);
+          const orders = (used.length ? used : consensus.orders).map((o) => `${o.kind.replace("buy_", "")} at $${o.triggerPrice} (stop $${o.stopLoss}, target $${o.target}, ${o.winChancePct}% win chance${o.warning ? ", not used: your numbers lose on average" : ""})`).join("; ");
+          const notes = (state.bot.aiNotes ??= []);
+          notes.push({ at: Date.now(), price: state.lastSignal?.priceAt ?? 0, text: `${consensus.stance.replace(/_/g, " ")}${orders ? `: ${orders}` : ""}. ${ok && ok.ok ? ok.signal.reasoning : ""}`.slice(0, 520) });
+          if (notes.length > 5) notes.splice(0, notes.length - 5);
+        }
       }
       const t2 = isAuto(cfg) ? state.bot.target : tgt;
       q = t2 ? await quote(t2.chain, t2.pool, planSince()) : null;
@@ -2048,6 +2185,13 @@ export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dash
     }
     return { ticks, reason: botOn() || hasProtected() ? (watching() ? "window ended" : "nothing to watch") : "bot stopped" };
   } finally {
+    // Finish what is in flight, and apply an AI profit answer that arrived as the window closed.
+    for (let i = 0; i < 2; i++) {
+      await settleSteps();
+      await settleReviews();
+      if (!state.positions.some((p) => profitInbox.has(p.id))) break;
+      await tick(false);
+    }
     await settleSteps();
     await flush();
     await store.unlock(lockName);

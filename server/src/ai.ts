@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import type { Candle, PairInfo } from "./data.js";
-import type { Snapshot } from "./indicators.js";
+import { keyLevels, type Snapshot } from "./indicators.js";
 
 // What Claude returns: a PLAN of standing orders the bot carries out on its own,
 // checking prices every 5 seconds, without asking Claude again until something changes.
@@ -117,8 +117,8 @@ How to decide:
 - If the entry is good right now (trend up with buyers behind it, a breakout holding, a dip that has bounced), say BUY_NOW with a buy_now order. Momentum is a reason to trade, not a reason to stay out: a coin that is running can be bought with a stop under the last higher low.
 - Otherwise say WAIT_FOR_TRIGGER and give the exact price at which you WILL buy: a breakout above a level (with a volume check) and/or a pullback to support. Put those levels close enough to be reached in the next 10-30 minutes.
 - ALWAYS give 1-2 orders you would genuinely take. Use AVOID only when the token looks like a rug or honeypot, liquidity is being pulled, or it is in free fall with no buyers; even then give the level where you would step back in.
-- For every order give winChancePct: your honest, calibrated chance that price reaches target before stopLoss. Do not shade it down out of caution or up out of eagerness; the bot uses an order only if your own numbers make money on average after costs.
-- Targets must be at least the minimum distance you are told (the minimum profit after costs). Pick trades where such a move is realistic: strong trends, breakouts with volume, sharp reversals. Once that profit is reached the bot rides the move itself, locking each further percent. Put the stop where your idea is proved wrong, outside normal noise.
+- For every order give winChancePct: your honest, calibrated chance that the price reaches the MINIMUM-PROFIT level (given below) before stopLoss. Do not shade it down out of caution or up out of eagerness; the bot uses an order only if your own numbers make money on average after costs.
+- target is where you realistically expect the move to reach if it works; it must be at least the minimum-profit level you are told. Pick trades where such a move is realistic: strong trends, breakouts with volume, sharp reversals. Once that minimum profit is reached it is locked, and you are asked again and again to manage the trade (hold for more, or sell), so the win you are estimating is "reaches the minimum profit before the stop". Put the stop where your idea is proved wrong, outside normal noise.
 - Set cancelBelow / cancelAbove just outside your thesis and validMinutes between 10 and 30.
 - reasoning: 2-3 short plain sentences on what you expect and why. Prices are USD and may be tiny; keep full precision.`;
 
@@ -127,14 +127,23 @@ export type Frame = { tf: string; label: string; candles: Candle[]; snap: Snapsh
 
 const sig6 = (n: number) => Number(n.toPrecision(6)); // keep prompts compact; tiny prices keep full detail
 
-function buildPrompt(pair: PairInfo, frames: Frame[], costPct: number, context = "") {
-  const sections = frames.map((f) => {
-    const rows = f.candles.slice(-f.show).map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
-    const ind = f.snap
-      ? `Indicators: EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} EMA50 ${sig6(f.snap.ema50)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} | volume ratio (last5 vs prior20) ${f.snap.volRatio.toFixed(2)} | 50-candle range ${sig6(f.snap.low50)} - ${sig6(f.snap.high50)}`
-      : "Indicators: not enough history";
-    return `## ${f.label}\n${ind}\nLast ${rows.length} candles [unix time, open, high, low, close, volume]:\n${JSON.stringify(rows)}`;
-  });
+// One timeframe as text: indicators, key levels found by code (swing highs/lows, VWAP, where the
+// price sits in the range) and the candles themselves.
+function frameText(f: Frame, max = f.show) {
+  const shown = f.candles.slice(-Math.min(f.show, max));
+  const rows = shown.map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
+  const ind = f.snap
+    ? `Indicators: EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} EMA50 ${sig6(f.snap.ema50)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} | volume ratio (last5 vs prior20) ${f.snap.volRatio.toFixed(2)} | 50-candle range ${sig6(f.snap.low50)} - ${sig6(f.snap.high50)}`
+    : "Indicators: not enough history";
+  const lv = keyLevels(shown);
+  const levels = lv
+    ? `\nKey levels (found by code): swing highs, newest first ${lv.swingHighs.map(sig6).join(", ") || "none"} | swing lows, newest first ${lv.swingLows.map(sig6).join(", ") || "none"} | VWAP ${sig6(lv.vwap)} | price is ${lv.fromHighPct.toFixed(1)}% from this window's high ${sig6(lv.high)} and +${lv.fromLowPct.toFixed(1)}% from its low ${sig6(lv.low)}`
+    : "";
+  return `## ${f.label}\n${ind}${levels}\nLast ${rows.length} candles [unix time, open, high, low, close, volume]:\n${JSON.stringify(rows)}`;
+}
+
+function buildPrompt(pair: PairInfo, frames: Frame[], costPct: number, context = "", agent = false) {
+  const sections = frames.map((f) => frameText(f));
   return `Token: ${pair.symbol} (${pair.name}) on ${pair.chain}, pool ${pair.pool}
 Live price: $${pair.priceUsd}
 Liquidity: $${Math.round(pair.liquidityUsd)} | 24h volume: $${Math.round(pair.volume24h)} | Market cap: $${Math.round(pair.marketCap)}
@@ -143,11 +152,11 @@ Last hour trades: ${pair.buys1h ?? "?"} buys / ${pair.sells1h ?? "?"} sells${pai
 Round-trip cost (fees+slippage both sides): ${costPct.toFixed(2)}%
 Current time (unix s): ${Math.floor(Date.now() / 1000)}
 
-Chart data on several timeframes (newest candle last). Use the longer timeframes for the trend and real support/resistance, and the 5-second candles for precise entry and exit levels. The bot checks prices every 5 seconds using 5-second candles.
+Chart data on several timeframes (newest candle last). Use the longer timeframes for the trend and real support/resistance, the 1-minute candles for the move that is happening now, and the 5-second candles for precise entry and exit levels. The bot checks prices every 5 seconds using 5-second candles.
 
 ${sections.join("\n\n")}
 ${context ? `\n${context}\n` : ""}
-Write your trading plan (standing orders) for roughly the next few hours.`;
+${agent ? "Decide now: your orders for the next 10-30 minutes." : "Write your trading plan (standing orders) for roughly the next few hours."}`;
 }
 
 async function askClaude(prompt: string, model = CLAUDE_MODEL, effort: "low" | "medium" | "high" = "high", system = SYSTEM): Promise<{ plan: Plan; tokens: number }> {
@@ -191,15 +200,22 @@ async function timed(model: string, fn: () => Promise<{ plan: Plan; tokens: numb
   }
 }
 
-export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string, aiInCharge = false) {
-  const prompt = buildPrompt(pair, frames, costPct, context);
+// How an agent's orders are judged. A win is reaching the minimum profit before the stop; from
+// there the trade is managed (held for more, or sold), so a win counts as the minimum plus 30%
+// of the extra distance to the AI's target (target counted up to +20%), or, once this account
+// has enough managed winners, what they really made on average.
+export type AgentEval = { minNetPct: number; measuredWinPct?: number };
+
+export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string, agent?: AgentEval) {
+  const aiInCharge = !!agent;
+  const prompt = buildPrompt(pair, frames, costPct, context, aiInCharge);
   const jobs: Promise<ModelResult>[] = [];
   // The bot's own re-plans (model given) use medium effort so a new plan arrives quickly.
   if (hasClaude()) jobs.push(timed("AI", () => askClaude(prompt, model, model ? "medium" : "high", aiInCharge ? AGENT_SYSTEM : SYSTEM)));
   if (hasOpenAI()) jobs.push(timed(`ChatGPT (${OPENAI_MODEL})`, () => askOpenAI(prompt)));
   if (!jobs.length) throw new Error("AI is not configured. Add ANTHROPIC_API_KEY to server/.env (or your Vercel environment variables).");
   const results = await Promise.all(jobs);
-  return { results, consensus: combine(results, costPct, pair.priceUsd, aiInCharge) };
+  return { results, consensus: combine(results, costPct, pair.priceUsd, agent) };
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
@@ -207,7 +223,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, N
 // Checks each order for sanity and against fees/risk; drops the ones that fail.
 // An order is kept only if, using Claude's own win chance, it makes money on
 // average after fees (positive expected value) and its gain >= its loss.
-export function checkOrders(orders: PlanOrder[], costPct: number, aiInCharge = false): { kept: CheckedOrder[]; dropped: string[]; warned: CheckedOrder[] } {
+export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentEval): { kept: CheckedOrder[]; dropped: string[]; warned: CheckedOrder[] } {
   const kept: CheckedOrder[] = [];
   const dropped: string[] = [];
   const warned: CheckedOrder[] = []; // sensible prices, but they fail the fee/risk check
@@ -226,8 +242,14 @@ export function checkOrders(orders: PlanOrder[], costPct: number, aiInCharge = f
     const netRewardPct = ((o.target - t) / t) * 100 - costPct;
     const netRiskPct = ((t - o.stopLoss) / t) * 100 + costPct;
     const win = clamp(o.winChancePct, 0, 100) / 100;
-    const evPct = win * netRewardPct - (1 - win) * netRiskPct;
-    if (netRewardPct <= 0 || (!aiInCharge && netRewardPct < netRiskPct)) {
+    // What a win is worth: the target (classic), or for an agent what its managed trades end with.
+    const winPct = !agent
+      ? netRewardPct
+      : agent.measuredWinPct !== undefined
+        ? clamp(agent.measuredWinPct, agent.minNetPct, Math.max(agent.minNetPct, netRewardPct))
+        : Math.max(0, agent.minNetPct + 0.3 * (Math.min(netRewardPct, 20) - agent.minNetPct));
+    const evPct = win * winPct - (1 - win) * netRiskPct;
+    if (netRewardPct <= 0 || (!agent && netRewardPct < netRiskPct)) {
       const why = `after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) is smaller than the risk (${netRiskPct.toFixed(1)}%)`;
       dropped.push(`${o.kind}: ${why}`);
       warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.` });
@@ -255,7 +277,8 @@ export function checkOrders(orders: PlanOrder[], costPct: number, aiInCharge = f
 
 // Conservative combination: orders only when every model that answered has the same stance
 // (with Claude alone, Claude's plan is used), and every order must pass the fee/risk check.
-export function combine(results: ModelResult[], costPct: number, livePrice: number, aiInCharge = false): Consensus {
+export function combine(results: ModelResult[], costPct: number, livePrice: number, agent?: AgentEval): Consensus {
+  const aiInCharge = !!agent;
   const plans = results.filter((r): r is Extract<ModelResult, { ok: true }> => r.ok).map((r) => r.signal);
   const now = Date.now();
   const empty = {
@@ -270,7 +293,7 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   if (!agreement) return { ...empty, action: "HOLD", stance: "AVOID", confidence: Math.round(confidence / 2), agreement, note: `Models disagree (${[...stances].join(" vs ")}), so standing aside.` };
 
   const plan = plans[0];
-  const checked = checkOrders(plan.orders, costPct, aiInCharge);
+  const checked = checkOrders(plan.orders, costPct, agent);
   const { dropped } = checked;
   // Orders that pass come first; ones that fail the check stay as warned, risky setups.
   const kept = [...checked.kept, ...checked.warned];
@@ -405,6 +428,67 @@ Approve only if reaching the target before the exit is realistic in the next few
     fallbacks: "default",
     output_config: { effort: "low", format: betaZodOutputFormat(AgentCheckSchema) },
     system: "You approve or reject a short-term crypto entry chosen by rule-based scouts. Protect capital first; reject anything unclear. Prices are USD, keep full precision.",
+    messages: [{ role: "user", content: prompt }],
+  });
+  if (!res.parsed_output) throw new Error(`no decision (${res.stop_reason})`);
+  const u: any = res.usage ?? {};
+  return { ...res.parsed_output, tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) };
+}
+
+// ---------- Agents: managing a trade that is in profit ----------
+// Once a trade has reached its minimum profit (locked as the exit), the AI is asked again and
+// again: hold for more, or sell now? When it holds it says where the hard exit sits and how
+// closely to follow the price. The bot enforces the locked minimum whatever the answer.
+const ProfitSchema = z.object({
+  action: z.enum(["HOLD", "SELL_NOW"]).describe("HOLD: keep the trade open for more. SELL_NOW: take the profit now."),
+  exitPrice: z.number().describe("If holding: USD hard exit. The bot sells if the price closes at or below it. At least the locked exit you are given, below the current price. It can only be moved up later, never down."),
+  trailPct: z.number().describe("If holding: sell if the price falls this many % from its highest close (0.5-20). Wide enough for this coin's normal wiggle, tight enough to keep most of the gain. You may change it each time you are asked."),
+  targetPrice: z.number().describe("USD price you expect it can reach if held (0 when selling now)"),
+  recheckSeconds: z.number().describe("Ask me again after this many seconds (20-300). Sooner when it is moving fast."),
+  confidence: z.number().describe("0-100: how likely the price goes meaningfully higher before reaching your exit"),
+  reason: z.string().describe("1-2 short sentences in plain words"),
+});
+export type ProfitDecision = z.infer<typeof ProfitSchema> & { tokens: number };
+
+const PROFIT_SYSTEM = `You are managing an open trade that is in profit, for a short-term crypto trading bot. The minimum profit is already locked: the bot will not sell below the locked exit.
+Your job is to get the most out of this move: keep holding while it is still going, and sell when it is ending. Selling too early gives away profit; holding into a reversal gives it back.
+
+How to decide:
+- HOLD while the move is alive: higher lows on the 5-second and 1-minute charts, buyers out-trading sellers, volume supporting the push, no rejection at a level. Give it room: a pause or a shallow pullback inside an uptrend is normal.
+- SELL_NOW when it is ending: lower highs forming, a sharp rejection wick at a level, sellers taking over, volume drying up after a spike, or the price stalling right under clear resistance with nothing behind it.
+- When holding, set exitPrice under the level that must hold for the move to stay alive (the last higher low / reclaimed level), never below the locked exit. It only ever moves up, so raise it only to where you are happy to be sold.
+- Set trailPct from how much this coin really wiggles (look at the 5-second and 1-minute ATR%): too tight and normal noise sells you, too loose and you give back the gain. Tighten it as the move gets stretched; loosen it when a healthy trend needs room.
+- Be honest in confidence. Do not hold out of hope and do not sell out of fear: read the tape.
+- Prices are USD and may be tiny; keep full precision.`;
+
+export async function reviewProfit(input: {
+  pair: PairInfo; frames: Frame[]; costPct: number; entry: number; price: number; best: number; lockedExit: number; minNetPct: number;
+  trailPct: number; heldMin: number; flow: string; market: string; patterns: string; history: string; last?: { secondsAgo: number; price: number; action: string; reason: string } | null;
+}): Promise<ProfitDecision> {
+  const { pair, entry, price, best, lockedExit, costPct } = input;
+  const net = (p: number) => ((p - entry) / entry) * 100 - costPct;
+  const prompt = `Open trade on ${pair.symbol} (${pair.chain}). Bought at $${entry}, ${Math.round(input.heldMin)} min ago.
+Price now $${price}: +${net(price).toFixed(2)}% after the ${costPct.toFixed(1)}% round-trip costs. Best so far $${best} (+${net(best).toFixed(2)}% after costs).
+Locked exit: $${lockedExit} (+${net(lockedExit).toFixed(2)}% after costs; the minimum is +${input.minNetPct}%). The bot sells if the price closes at or below it.
+Trailing exit in force now: ${input.trailPct}% below the highest close.
+${input.last ? `Your last decision (${Math.round(input.last.secondsAgo)} s ago, price was $${input.last.price}): ${input.last.action}. ${input.last.reason}` : "This is your first look since the minimum profit was reached."}
+Liquidity $${Math.round(pair.liquidityUsd)}; change 5m ${pair.change.m5}%, 1h ${pair.change.h1}%; last hour ${pair.buys1h ?? "?"} buys / ${pair.sells1h ?? "?"} sells.
+${input.market}
+${input.flow}
+${input.history}
+${input.patterns}
+
+${input.frames.map((f) => frameText(f, 60)).join("\n\n")}
+
+Decide now: HOLD (with exitPrice, trailPct, targetPrice, recheckSeconds) or SELL_NOW.`;
+  anthropic ??= new Anthropic();
+  const res = await anthropic.beta.messages.parse({
+    model: BOT_MODEL,
+    max_tokens: 1500,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    output_config: { effort: "low", format: betaZodOutputFormat(ProfitSchema) },
+    system: PROFIT_SYSTEM,
     messages: [{ role: "user", content: prompt }],
   });
   if (!res.parsed_output) throw new Error(`no decision (${res.stop_reason})`);

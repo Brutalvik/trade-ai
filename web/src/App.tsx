@@ -220,7 +220,7 @@ export default function App() {
       const trail = pos.trailPct ?? 3;
       return [
         { price: pos.entryPrice, color: "#00e5ff", title: "BOUGHT" },
-        { price: pos.stopLoss ?? 0, color: "#ff3d71", title: "EXIT" },
+        pos.pm ? { price: pos.stopLoss ?? pos.pm.floor, color: "#ffc857", title: "PROFIT EXIT" } : { price: pos.stopLoss ?? 0, color: "#ff3d71", title: "EXIT" },
         pos.trailing && pos.peak ? { price: pos.peak * (1 - trail / 100), color: "#ffc857", title: "TRAILING STOP" } : { price: pos.target ?? 0, color: "#00f5a0", title: "TARGET" },
       ];
     }
@@ -1012,6 +1012,7 @@ function GoalLadder({ state }: { state: AppState | null }) {
 const LINE_NAME: Record<string, string> = {
   BOUGHT: "Bought at",
   EXIT: "Stop-loss",
+  "PROFIT EXIT": "Sells here (profit locked)",
   TARGET: "Take-profit",
   "TRAILING STOP": "Trailing stop",
   "PROTECT STOP": "Protection stop",
@@ -1023,6 +1024,7 @@ const LINE_NAME: Record<string, string> = {
 const LINE_HELP: Record<string, string> = {
   BOUGHT: "The price the open position was bought at.",
   EXIT: "Sells automatically if the price falls to this line.",
+  "PROFIT EXIT": "This trade is in profit. It sells if the price closes back at this line; the line follows the price up and never drops below the locked +5% minimum.",
   TARGET: "Profit target: at this price the bot starts trailing the high to lock in gains.",
   "TRAILING STOP": "Follows the price up; sells if it falls back to this line.",
   "PROTECT STOP": "Your manual trade sells if the price falls back to this line.",

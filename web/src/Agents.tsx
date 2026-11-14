@@ -102,8 +102,15 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   // Where it is in its loop: 0 the AI is deciding, 1 waiting for its level, 2 in a trade.
   const stage = pos ? 2 : !c ? 0 : 1;
   const paused = !pos && !!bot.blocked;
+  // In a trade: profit after fees now, at its best, and at the exit in force.
+  const cost = state?.roundTripCostPct ?? 3;
+  const netAt = (p: number) => (pos ? ((p - pos.entryPrice) / pos.entryPrice) * 100 - cost : 0);
+  const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+  const pm = pos?.pm;
   const status = pos
-    ? `In a trade since ${at(pos.openedAt)}: bought at ${fmtPrice(pos.entryPrice)}, exit ${pos.stopLoss ? fmtPrice(pos.stopLoss) : "–"}, target ${pos.target ? fmtPrice(pos.target) : "–"}`
+    ? pm
+      ? `In profit: ${pct(netAt(pos.lastPrice))} after fees now (best ${pct(netAt(pos.best ?? pos.lastPrice))}). ${pm.by === "ai" ? "The AI is holding for more" : pm.fails ? "The AI can't be reached, so a fixed rule is holding" : "The minimum is locked; asking the AI"}: it sells at ${fmtPrice(pos.stopLoss ?? pm.floor)} (${pct(netAt(pos.stopLoss ?? pm.floor))})${pm.target ? `, expects ${fmtPrice(pm.target)}` : ""}.`
+      : `In a trade since ${at(pos.openedAt)}: bought at ${fmtPrice(pos.entryPrice)}, now ${pct(netAt(pos.lastPrice))} after fees. Stop ${pos.stopLoss ? fmtPrice(pos.stopLoss) : "–"}; at ${fmtPrice(pos.entryPrice * (1 + (cost + 5) / 100))} the +5% minimum locks and the AI takes over the exit.`
     : bot.blocked
       ? `Paused: ${bot.blocked}`
       : !c
@@ -113,18 +120,19 @@ function useAgent(slot: BotSlot, state: AppState | null) {
           : order.kind === "buy_now"
             ? `The AI says buy now (up to ${fmtPrice(order.triggerPrice)}): ${order.winChancePct}% win chance`
             : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}: ${order.winChancePct}% win chance`;
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning, nextLook };
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning, nextLook, pm, netAt, pct };
 }
 
 const STAGES = ["AI deciding", "Waiting for its price", "In a trade"];
+const STAGES_PROFIT = ["AI deciding", "Waiting for its price", "In profit: AI managing"];
 // The "it's running" bar: a light sweeps along it while the agent works; amber and still when paused.
-function RunBar({ stage, paused, labels = false }: { stage: number; paused: boolean; labels?: boolean }) {
+function RunBar({ stage, paused, labels = false, profit = false }: { stage: number; paused: boolean; labels?: boolean; profit?: boolean }) {
   return (
     <div className={`run-bar ${paused ? "paused" : ""} s${stage}`} role="status" aria-label={paused ? "Agent paused" : `Agent running: ${STAGES[stage]}`}>
       <div className="run-track"><i /></div>
       {labels ? (
         <div className="run-steps">
-          {STAGES.map((n, i) => <span key={n} className={i === stage ? "now" : i < stage ? "done" : ""}>{n}</span>)}
+          {(profit ? STAGES_PROFIT : STAGES).map((n, i) => <span key={n} className={i === stage ? "now" : i < stage ? "done" : ""}>{n}</span>)}
           <em>{paused ? "Paused" : "Running"}</em>
         </div>
       ) : null}
@@ -211,7 +219,7 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
             {a.isAgent ? <small>{((a.pnl / a.budget) * 100).toFixed(1)}% of budget</small> : null}
           </span>
         </div>
-        <RunBar stage={a.stage} paused={a.paused} labels />
+        <RunBar stage={a.stage} paused={a.paused} labels profit={!!a.pm} />
         <p className="agent-now">{a.status}</p>
         <div className="agent-stats">
           {a.isAgent ? <div><small>Budget</small><b>{fmtUsd(a.budget)}</b></div> : null}
@@ -221,8 +229,28 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
           <div><small>Profitable</small><b>{a.sells.length ? `${wins} of ${a.sells.length}` : "–"}</b></div>
           {a.order && !a.pos ? <div><small>{a.order.kind === "buy_now" ? "Buys now up to" : a.order.kind === "buy_breakout" ? "Buys above" : "Buys at"}</small><b>{fmtPrice(a.order.triggerPrice)}</b></div> : null}
           {a.order && !a.pos ? <div><small>Exit / target</small><b>{fmtPrice(a.order.stopLoss)} / {fmtPrice(a.order.target)}</b></div> : null}
+          {a.pos ? <div><small>Now, after fees</small><b className={a.netAt(a.pos.lastPrice) >= 0 ? "up" : "down"}>{a.pct(a.netAt(a.pos.lastPrice))}</b></div> : null}
+          {a.pos ? <div><small>Best so far</small><b>{a.pct(a.netAt(a.pos.best ?? a.pos.lastPrice))}</b></div> : null}
+          {a.pos ? <div><small>{a.pm ? "Sells at (locked or trailing)" : "Stop-loss"}</small><b>{a.pos.stopLoss ? `${fmtPrice(a.pos.stopLoss)} (${a.pct(a.netAt(a.pos.stopLoss))})` : "–"}</b></div> : null}
+          {a.pm?.target ? <div><small>AI expects</small><b>{fmtPrice(a.pm.target)} ({a.pct(a.netAt(a.pm.target))})</b></div> : null}
         </div>
-        {a.plan ? (
+        {a.pos && a.pm ? (
+          <>
+            <div className="label-sm">The AI's profit management</div>
+            <div className={`agent-learned ${a.pm.by === "ai" ? "has" : ""}`}>
+              {a.pm.by === "ai" ? (
+                <>
+                  <b>Holding for more</b>{a.pm.confidence !== undefined ? ` · ${Math.round(a.pm.confidence)}% sure it goes higher` : ""} · exit follows {a.pm.trailPct}% behind the high, never below {fmtPrice(a.pm.floor)} · asked {a.pm.asks} time{a.pm.asks === 1 ? "" : "s"}
+                  {a.pm.note ? <><br />{a.pm.note}</> : null}
+                </>
+              ) : (
+                <>The +5% minimum is locked at {fmtPrice(a.pm.floor)}. {a.pm.fails ? "The AI couldn't be reached, so" : "Until the AI answers,"} the exit follows {a.pm.trailPct}% behind the high.</>
+              )}
+              {a.pm.nextAt ? <><br /><span className="muted">Asked again by {new Date(a.pm.nextAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}, sooner on a new percent or a pullback.</span></> : null}
+            </div>
+          </>
+        ) : null}
+        {a.plan && !a.pos ? (
           <>
             <div className="label-sm">The AI's decision</div>
             <div className={`agent-learned ${a.plan.stance === "AVOID" ? "" : "has"}`}>
@@ -238,11 +266,12 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
             <div className="agent-learned">{L.summary}</div>
             {L.table.length ? (
               <table className="agent-table">
-                <thead><tr><th>Pattern</th><th>Chart</th><th className="num">Past trades</th><th className="num">Won</th><th className="num">Average after fees</th></tr></thead>
+                <thead><tr><th>Pattern</th><th>Chart</th><th className="num">Past trades</th><th className="num">Reached +5%</th><th className="num">Then typically ran to</th><th className="num">If sold at +5%</th></tr></thead>
                 <tbody>
                   {L.table.map((t) => (
                     <tr key={`${t.key}${t.tf}`}>
                       <td>{t.label}</td><td>{t.tf}</td><td className="num">{t.trades}</td><td className="num">{t.wins}</td>
+                      <td className="num">{t.wins && t.runMedPct !== undefined ? `+${t.runMedPct.toFixed(1)}%` : "–"}</td>
                       <td className={`num ${t.avgNetPct >= 0 ? "up" : "down"}`}>{t.avgNetPct >= 0 ? "+" : ""}{t.avgNetPct.toFixed(1)}%</td>
                     </tr>
                   ))}
@@ -345,7 +374,7 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
       <div className="new-agent">
         {quick ? null : (
           <>
-        <p className="muted small">One agent trades one coin. The moment it starts, its AI reads every timeframe, the chart patterns, the coin's history and your past trades, and decides: <b>buy now</b>, buy at a level, or stay out. Each trade aims for at least <b>+5% after all fees</b>; from there it locks each extra percent and sells when the price turns back.</p>
+        <p className="muted small">One agent trades one coin. The moment it starts, its AI reads every timeframe, the chart patterns, the coin's history and your past trades, and decides: <b>buy now</b>, buy at a level, or stay out. Each trade aims for at least <b>+5% after all fees</b>. Once it gets there that minimum is locked, and the AI decides how long to hold for more and when to sell.</p>
         <CoinSearch className="in-modal" placeholder="Search any coin by ticker, name or address…" notify={notify} onSelect={setPick} autoFocus />
           </>
         )}

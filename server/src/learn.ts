@@ -12,9 +12,16 @@ export const STRATS = [
   { key: "rebound", label: "RSI rebound" },
 ] as const;
 export type StratKey = (typeof STRATS)[number]["key"];
-export type StratResult = { key: StratKey; label: string; tf: string; trades: number; wins: number; avgNetPct: number; winChancePct: number };
+// wins: trades that reached the minimum profit before the stop.
+// avgNetPct: the average result if every winner were sold exactly at the minimum profit (worst case).
+// runMedPct: among the winners, the typical (median) best profit after costs in the hour or so after
+// reaching the minimum; ran10: how many of them got to +10% or more.
+export type StratResult = { key: StratKey; label: string; tf: string; trades: number; wins: number; avgNetPct: number; winChancePct: number; runMedPct?: number; ran10?: number };
+// How far winners went on, counting each move once (several patterns often catch the same move).
+export type Runs = { tf: string; moves: number; ran10: number; ran20: number; medianBestPct: number };
 export type Learned = {
   at: number;
+  runs?: Runs;
   netTargetPct: number;
   table: StratResult[]; // every pattern on every timeframe, best first
   best: StratResult | null; // the pattern the agent trades (null = nothing has an edge yet)
@@ -72,24 +79,32 @@ export function stopPctFor(s: Series, i: number) {
   const swing = lo(s.c, i - 12, i + 1) - s.atr[i] * 0.5;
   return Math.min(7, Math.max(4, ((price - swing) / price) * 100));
 }
-function simulate(s: Series, key: StratKey, costPct: number, netTarget: number, horizon: number) {
-  const out: number[] = [];
+function simulate(s: Series, key: StratKey, costPct: number, netTarget: number, horizon: number, runCandles: number) {
+  const out: { at: number; net: number; best: number | null }[] = [];
   const c = s.c;
   for (let i = 30; i < c.length - 2; i++) {
     if (!fires(key, s, i)) continue;
     const entry = c[i + 1].open; // buy at the next candle's open
     const stop = entry * (1 - stopPctFor(s, i) / 100);
     const target = entry * (1 + (netTarget + costPct) / 100);
-    let exit = 0, j = i + 1;
-    for (; j < Math.min(c.length, i + 1 + horizon); j++) {
+    const end = Math.min(c.length, i + 1 + horizon);
+    let exit = 0, j = i + 1, hit = false;
+    for (; j < end; j++) {
       if (c[j].low <= stop) { exit = stop; break; }
-      if (c[j].high >= target) { exit = target; break; }
+      if (c[j].high >= target) { exit = target; hit = true; break; }
     }
     if (!exit) {
       if (i + 1 + horizon > c.length) break; // not enough candles after it to judge
       exit = c[Math.min(c.length - 1, i + horizon)].close;
     }
-    out.push(((exit - entry) / entry) * 100 - costPct);
+    // How far did it go in the hour or so after reaching the minimum profit?
+    let best: number | null = null;
+    if (hit) {
+      let top = target;
+      for (let k = j; k < Math.min(c.length, j + 1 + runCandles); k++) top = Math.max(top, c[k].high);
+      best = ((top - entry) / entry) * 100 - costPct;
+    }
+    out.push({ at: i, net: ((exit - entry) / entry) * 100 - costPct, best });
     i = j; // no overlapping trades
   }
   return out;
@@ -97,17 +112,21 @@ function simulate(s: Series, key: StratKey, costPct: number, netTarget: number, 
 
 export function learn(frames: { tf: "5m" | "1h"; candles: Candle[] }[], costPct: number, netTarget = 10): Learned {
   const table: StratResult[] = [];
+  const winners: Record<string, { at: number; best: number }[]> = {}; // per timeframe: every winning entry of every pattern
   for (const f of frames) {
     if (f.candles.length < 80) continue;
     const s = series(f.candles);
     const horizon = f.tf === "5m" ? 48 : 12; // about 4 hours / 12 hours
     for (const st of STRATS) {
-      const r = simulate(s, st.key, costPct, netTarget, horizon);
+      const r = simulate(s, st.key, costPct, netTarget, horizon, f.tf === "5m" ? 12 : 3); // the next ~1 hour (5m) / ~3 hours (1h)
       if (!r.length) continue;
-      const wins = r.filter((x) => x > 0).length;
+      (winners[f.tf] ??= []).push(...r.filter((x) => x.best !== null).map((x) => ({ at: x.at, best: x.best! })));
+      const ran = r.filter((x) => x.best !== null).map((x) => x.best!).sort((a, b) => a - b);
+      const wins = ran.length; // reached the minimum profit before the stop
       table.push({
         key: st.key, label: st.label, tf: f.tf, trades: r.length, wins,
-        avgNetPct: r.reduce((a, b) => a + b, 0) / r.length,
+        avgNetPct: r.reduce((a, b) => a + b.net, 0) / r.length,
+        ...(ran.length >= 3 ? { runMedPct: ran[Math.floor(ran.length / 2)], ran10: ran.filter((x) => x >= 10).length } : {}), // too few to say with under 3
         winChancePct: Math.round(((wins + 1) / (r.length + 2)) * 100), // shrunk toward 50% when there are few trades
       });
     }
@@ -116,10 +135,29 @@ export function learn(frames: { tf: "5m" | "1h"; candles: Candle[] }[], costPct:
   const merit = (t: StratResult) => t.avgNetPct * Math.sqrt(Math.min(t.trades, 12));
   table.sort((a, b) => merit(b) - merit(a));
   const best = table.find((t) => t.trades >= 3 && t.avgNetPct > 0.5) ?? null;
-  const summary = best
-    ? `"${best.label}" on ${best.tf} candles has paid on this coin: ${best.trades} past trades, ${best.wins} reached +${netTarget}% after fees, average ${best.avgNetPct >= 0 ? "+" : ""}${best.avgNetPct.toFixed(1)}% per trade.`
-    : `No simple pattern has paid on this coin recently with a +${netTarget}% target after fees${table.length ? ` (closest: "${table[0].label}" on ${table[0].tf}, average ${table[0].avgNetPct >= 0 ? "+" : ""}${table[0].avgNetPct.toFixed(1)}% over ${table[0].trades} trade${table[0].trades === 1 ? "" : "s"})` : ""}.`;
-  return { at: Date.now(), netTargetPct: netTarget, table: table.slice(0, 10), best, summary };
+  // Each move once: entries within 12 candles of each other (on one timeframe) are the same move.
+  let runs: Runs | undefined;
+  for (const tf of ["5m", "1h"]) {
+    const w = (winners[tf] ?? []).sort((x, y) => x.at - y.at);
+    const moves: number[] = [];
+    let lastAt = -99;
+    for (const x of w) {
+      if (x.at - lastAt > 12) moves.push(x.best);
+      lastAt = x.at;
+    }
+    if (moves.length >= 3) {
+      moves.sort((x, y) => x - y);
+      runs = { tf, moves: moves.length, ran10: moves.filter((x) => x >= 10).length, ran20: moves.filter((x) => x >= 20).length, medianBestPct: moves[Math.floor(moves.length / 2)] };
+      break;
+    }
+  }
+  const runNote = runs
+    ? ` Counting each move once, ${runs.moves} separate moves on the ${runs.tf} chart reached +${netTarget}%; in the ${runs.tf === "5m" ? "hour" : "3 hours"} after, ${runs.ran10} went on to +10% or more and ${runs.ran20} to +20% or more (typical best +${runs.medianBestPct.toFixed(0)}%). This reflects how the coin has traded lately, not a forecast.`
+    : "";
+  const summary = (best
+    ? `"${best.label}" on ${best.tf} candles has paid on this coin: ${best.trades} past trades, ${best.wins} reached +${netTarget}% after fees, average ${best.avgNetPct >= 0 ? "+" : ""}${best.avgNetPct.toFixed(1)}% per trade even if every winner were sold at exactly +${netTarget}%.`
+    : `No simple entry pattern has paid on this coin recently if every winner is sold at exactly +${netTarget}% after fees${table.length ? ` (closest: "${table[0].label}" on ${table[0].tf}, average ${table[0].avgNetPct >= 0 ? "+" : ""}${table[0].avgNetPct.toFixed(1)}% over ${table[0].trades} trade${table[0].trades === 1 ? "" : "s"})` : ""}.`) + runNote;
+  return { at: Date.now(), netTargetPct: netTarget, table: table.slice(0, 10), best, summary, ...(runs ? { runs } : {}) };
 }
 
 // Is the learned pattern on the newest closed candle? (the last candle may still be forming)

@@ -83,3 +83,28 @@ export function snapshot(c: Candle[]): Snapshot | null {
     techScore: Math.max(-100, Math.min(100, score)),
   };
 }
+
+// Key price levels on one chart, worked out by code so the AI doesn't have to find them in the
+// raw candles: recent swing highs and lows (turning points with 3 candles on each side), the
+// volume-weighted average price, and where the price sits in the range.
+export type Levels = { swingHighs: number[]; swingLows: number[]; vwap: number; high: number; low: number; fromHighPct: number; fromLowPct: number };
+export function keyLevels(c: Candle[], span = 3, keep = 3): Levels | null {
+  if (c.length < span * 2 + 5) return null;
+  const highs: number[] = [], lows: number[] = [];
+  for (let i = c.length - 1 - span; i >= span && (highs.length < keep || lows.length < keep); i--) {
+    let isHigh = true, isLow = true;
+    for (let d = 1; d <= span; d++) {
+      if (c[i - d].high > c[i].high || c[i + d].high > c[i].high) isHigh = false;
+      if (c[i - d].low < c[i].low || c[i + d].low < c[i].low) isLow = false;
+    }
+    // Levels within 0.15% of one already listed are the same level: list it once.
+    const fresh = (list: number[], v: number) => !list.some((x) => Math.abs(x - v) / v < 0.0015);
+    if (isHigh && highs.length < keep && fresh(highs, c[i].high)) highs.push(c[i].high);
+    if (isLow && lows.length < keep && fresh(lows, c[i].low)) lows.push(c[i].low);
+  }
+  let pv = 0, v = 0;
+  for (const x of c) { pv += ((x.high + x.low + x.close) / 3) * x.volume; v += x.volume; }
+  const price = c[c.length - 1].close;
+  const high = Math.max(...c.map((x) => x.high)), low = Math.min(...c.map((x) => x.low));
+  return { swingHighs: highs, swingLows: lows, vwap: v > 0 ? pv / v : price, high, low, fromHighPct: ((price - high) / high) * 100, fromLowPct: ((price - low) / low) * 100 };
+}
