@@ -204,10 +204,14 @@ export default function App() {
         if (feed.current.key !== want) feed.current = { key: want, origin: "", awaySince: 0 };
         const f = feed.current;
         if (f.origin && r.origin !== f.origin && candlesRef.current.length) {
-          // Another source answered (ours is busy for a moment). Its prices differ, so the chart
-          // keeps what it has; only if ours stays away for 45 s does the chart move over for good.
-          if (!f.awaySince) f.awaySince = Date.now();
-          if (Date.now() - f.awaySince < 45_000) return setSource({ source: f.origin, note: "Live data is busy for a moment; the chart keeps its last candles." });
+          // Another source answered. Its prices differ, so the chart doesn't mix them in. If it is
+          // the main source (the chart had to open on a fallback), move over once, straight away;
+          // if it is a fallback (ours is busy for a moment), keep what is shown unless ours stays
+          // away for 45 s.
+          if ((SOURCE_RANK[r.origin] ?? 0) <= (SOURCE_RANK[f.origin] ?? 0)) {
+            if (!f.awaySince) f.awaySince = Date.now();
+            if (Date.now() - f.awaySince < 45_000) return setSource({ source: f.origin, note: "Live data is busy for a moment; the chart keeps its last candles." });
+          }
           f.origin = r.origin;
           f.awaySince = 0;
           hist.current = { key: want, busy: false, done: false, failAt: 0, lastAt: 0 };
@@ -554,6 +558,8 @@ function PairHeader({ pair, tf, setTf }: { pair: PairInfo | null; tf: Timeframe;
   );
 }
 
+// Which candle source a chart prefers when it has a choice (higher wins).
+const SOURCE_RANK: Record<string, number> = { CoinMarketCap: 3, GeckoTerminal: 2, Coinbase: 1, OKX: 1 };
 // The most candles kept for one chart (older ones are dropped first).
 const MAX_CANDLES = 15_000;
 // A fresh batch of the newest candles joins what is already loaded: everything from the batch's
