@@ -2,7 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express, { type Request, type Response } from "express";
 import { hasClaude, hasOpenAI } from "./ai.js";
-import { getCandlesWithSource, getPair, searchPairs, type Timeframe } from "./data.js";
+import { getCandlesWithSource, getOlderCandles, getPair, searchPairs, type Timeframe } from "./data.js";
 import * as engine from "./engine.js";
 import { scanOpportunities } from "./scan.js";
 import { scanNewCoins, type NewCoinChain } from "./newcoins.js";
@@ -83,7 +83,16 @@ app.get("/api/pair/:chain/:pool", publicData(() => 5, async (req) => getPair(Str
 // Returns the candle array; the X-Candle-Source header says where it came from.
 app.get(
   "/api/candles/:chain/:pool",
-  publicData((req) => (["1s", "5s"].includes(String(req.query.tf)) ? 2 : String(req.query.tf) === "1m" ? 5 : 10), async (req, res) => {
+  publicData((req) => (Number(req.query.before) > 0 ? 300 : ["1s", "5s"].includes(String(req.query.tf)) ? 2 : String(req.query.tf) === "1m" ? 5 : 10), async (req, res) => {
+    // ?before=<unix seconds>: the page of candles just older than that (the chart scrolling back).
+    const before = Math.floor(Number(req.query.before));
+    if (before > 0) {
+      const older = await getOlderCandles(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m", before);
+      res.setHeader("X-Candle-Source", "history");
+      const seen = new Map<number, (typeof older)[number]>();
+      for (const c of older) seen.set(c.time, c);
+      return [...seen.values()].sort((a, b) => a.time - b.time);
+    }
     const r = await getCandlesWithSource(String(req.params.chain), String(req.params.pool), (req.query.tf as Timeframe) ?? "5m");
     res.setHeader("X-Candle-Source", r.source);
     if (r.note) res.setHeader("X-Candle-Note", r.note);

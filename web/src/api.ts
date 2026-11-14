@@ -25,6 +25,7 @@ export type OrderPrediction = {
   worlds?: { trend: number; flat: number; paths: number; from: string; minutesToWin: number | null; pStop: number; pNone: number; filledPct: number };
   panel?: { who: string; pct: number; reason: string }[];
   truncated?: boolean;
+  assumed?: boolean;
 };
 // The forecast desk: what the numbers alone say about buying right now.
 export type DeskView = {
@@ -47,7 +48,7 @@ export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stanc
 export type ProfitPlan = { floor: number; trailPct: number; by: "ai" | "rule"; asks: number; fails: number; at?: number; nextAt?: number; target?: number; note?: string; confidence?: number };
 export type Position = { pm?: ProfitPlan; best?: number; prediction?: OrderPrediction; id: string; botId?: string; imageUrl?: string; adopted?: boolean; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
 export type Trade = { id: string; botId?: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
-export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins" | "agents" | "agent"; budgetUsd?: number; agentAiCheck?: boolean; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
+export type BotConfig = { chain: string; pool: string; symbol: string; imageUrl?: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins" | "agents" | "agent"; budgetUsd?: number; agentAiCheck?: boolean; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
 // Agents: the eight scouts' reading of a coin, and what an agent learned from its coin's history.
 export type AgentCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; liquidity: number; ageMin: number | null; change5m: number; change1h: number; agents: Record<string, { score: number; note: string }>; total: number; vetoes: string[] };
 export type StratResult = { key: string; label: string; tf: string; trades: number; wins: number; avgNetPct: number; winChancePct: number; runMedPct?: number; ran10?: number };
@@ -173,8 +174,9 @@ export const api = {
   realTrades: (limit = 50) => req<RealTrade[]>(`/real/trades?limit=${limit}`),
   list: (kind: ListKind) => req<{ kind: ListKind; coins: ListCoin[] }>(`/lists/${kind}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
-  candles: async (chain: string, pool: string, tf: Timeframe) => {
-    const res = await fetch(`/api/candles/${chain}/${pool}?tf=${tf}`);
+  // before = unix seconds: the page of candles just older than that (for scrolling back in time).
+  candles: async (chain: string, pool: string, tf: Timeframe, before?: number) => {
+    const res = await fetch(`/api/candles/${chain}/${pool}?tf=${tf}${before ? `&before=${Math.floor(before)}` : ""}`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
     return { candles: data as Candle[], source: res.headers.get("X-Candle-Source") ?? "unknown", note: res.headers.get("X-Candle-Note") ?? "" };

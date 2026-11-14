@@ -52,15 +52,17 @@ const inflight = new Map<string, Promise<unknown>>();
 const GAP_MS: Record<string, number> = { "api.geckoterminal.com": 2200, "api.dexscreener.com": 250, "api.jup.ag": 2100, "api.coingecko.com": 2500, "pro-api.coinmarketcap.com": 1100 };
 const COOLDOWN_MS: Record<string, number> = { "pro-api.coinmarketcap.com": 15_000 };
 const nextSlot = new Map<string, number>();
-async function throttle(host: string) {
-  const gap = GAP_MS[host] ?? 0;
+// slow = a request that can wait (a page of chart history): it leaves twice the usual gap after
+// itself, so scrolling a chart back never crowds out live prices or an agent's checks.
+async function throttle(host: string, slow = false) {
+  const gap = (GAP_MS[host] ?? 0) * (slow ? 2 : 1);
   const now = Date.now();
   const slot = Math.max(now, nextSlot.get(host) ?? 0);
   nextSlot.set(host, slot + gap);
   if (slot > now) await new Promise((r) => setTimeout(r, slot - now));
 }
 
-type FetchOpts = { retries?: number; headers?: Record<string, string>; allowStale?: boolean };
+type FetchOpts = { retries?: number; headers?: Record<string, string>; allowStale?: boolean; slow?: boolean };
 
 // After a 429, skip that host for a while so callers fall back immediately.
 const coolUntil = new Map<string, number>();
@@ -68,8 +70,11 @@ const coolUntil = new Map<string, number>();
 async function fetchJson(url: string, opts: FetchOpts = {}): Promise<unknown> {
   const { retries = 1, headers = {} } = opts;
   const host = new URL(url).host;
-  if ((coolUntil.get(host) ?? 0) > Date.now()) throw new Error(`429 from ${host} (cooling down after rate limit)`);
-  await throttle(host);
+  const cool = (coolUntil.get(host) ?? 0) - Date.now();
+  // A request that can wait (chart history) sits out a short pause instead of failing; everything else falls back at once.
+  if (cool > 0 && opts.slow && cool <= 20_000) await new Promise((r) => setTimeout(r, cool + 250));
+  else if (cool > 0) throw new Error(`429 from ${host} (cooling down after rate limit)`);
+  await throttle(host, opts.slow);
   const res = await fetch(url, { headers: { accept: "application/json", ...headers } });
   if (res.status === 429) coolUntil.set(host, Date.now() + (COOLDOWN_MS[host] ?? 30_000));
   if (res.status === 429 && retries > 0) {
@@ -91,6 +96,7 @@ export async function cachedJson<T>(url: string, ttlMs: number, opts: FetchOpts 
       fetchJson(url, opts)
         .then((value) => {
           cache.set(url, { at: Date.now(), value });
+          if (cache.size > 400) for (const k of [...cache.keys()].slice(0, 100)) cache.delete(k); // oldest first
           return value;
         })
         .finally(() => inflight.delete(url)),
@@ -169,25 +175,28 @@ const sortCandles = (c: Candle[]) => c.filter((x) => Number.isFinite(x.close) &&
 const fromOhlcvList = (data: any): Candle[] =>
   sortCandles(((data?.data?.attributes?.ohlcv_list ?? []) as number[][]).map(([t, o, h, l, c, v]) => ({ time: t, open: o, high: h, low: l, close: c, volume: v })));
 const ttlFor = (tf: Timeframe) => (tf === "1s" ? 2_500 : tf === "5s" ? 4_500 : tf === "1m" ? 20_000 : 45_000);
+const HISTORY_TTL_MS = 5 * 60_000;
 
-async function fromGeckoTerminal(net: string, pool: string, tf: Timeframe, limit: number) {
+// beforeSec: the page of candles before that time (history never changes, so it is cached longer).
+async function fromGeckoTerminal(net: string, pool: string, tf: Timeframe, limit: number, beforeSec?: number) {
   const { unit, agg } = TF_MAP[tf];
-  const url = `https://api.geckoterminal.com/api/v2/networks/${net}/pools/${pool}/ohlcv/${unit}?aggregate=${agg}&limit=${limit}&currency=usd`;
-  return fromOhlcvList(await cachedJson<any>(url, ttlFor(tf), { retries: 0, allowStale: false }));
+  const url = `https://api.geckoterminal.com/api/v2/networks/${net}/pools/${pool}/ohlcv/${unit}?aggregate=${agg}&limit=${limit}&currency=usd${beforeSec ? `&before_timestamp=${Math.floor(beforeSec)}` : ""}`;
+  return fromOhlcvList(await cachedJson<any>(url, beforeSec ? HISTORY_TTL_MS : ttlFor(tf), { retries: 0, allowStale: false, slow: !!beforeSec }));
 }
 
 // CoinMarketCap's public k-line endpoint. Verified behaviour (2026-11):
-// it needs the TOKEN address (a pool address returns stale data), works without
-// a key only when no from/to range is sent, and returns
+// it needs the TOKEN address (a pool address returns stale data), refuses a from+to range
+// without a key, but accepts `to` on its own (the candles up to that time, on every interval,
+// seconds included: that is how the chart scrolls back), gives at most 600 candles, and returns
 // [open, high, low, close, volume, timestamp_ms, traders] oldest-first.
 const CMC_PLATFORM: Record<string, string> = { solana: "solana", base: "base", ethereum: "ethereum", bsc: "bsc", arbitrum: "arbitrum" };
 const CMC_INTERVAL: Record<Timeframe, string> = { "1s": "1s", "5s": "5s", "1m": "1min", "5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h", "1d": "1d" };
 
-async function fromCoinMarketCap(chain: string, tokenAddress: string, tf: Timeframe, limit: number) {
+async function fromCoinMarketCap(chain: string, tokenAddress: string, tf: Timeframe, limit: number, toMs?: number) {
   const platform = CMC_PLATFORM[chain];
   if (!platform || !tokenAddress) throw new Error(`no CoinMarketCap platform for ${chain}`);
-  const url = `https://pro-api.coinmarketcap.com/public-api/v1/k-line/candles?platform=${platform}&address=${tokenAddress}&interval=${CMC_INTERVAL[tf]}&limit=${Math.min(limit, 300)}`;
-  const data = await cachedJson<any>(url, ttlFor(tf), { retries: 0, allowStale: false });
+  const url = `https://pro-api.coinmarketcap.com/public-api/v1/k-line/candles?platform=${platform}&address=${tokenAddress}&interval=${CMC_INTERVAL[tf]}&limit=${Math.min(limit, toMs ? 600 : 300)}${toMs ? `&to=${Math.floor(toMs)}` : ""}`;
+  const data = await cachedJson<any>(url, toMs ? HISTORY_TTL_MS : ttlFor(tf), { retries: 0, allowStale: false, slow: !!toMs });
   if (!Array.isArray(data?.data)) throw new Error(data?.status?.error_message ?? "no data");
   return sortCandles(
     (data.data as unknown[][]).map((r) => {
@@ -328,6 +337,31 @@ export async function getCandlesWithSource(chain: string, pool: string, tf: Time
   const stale = lastGood.get(key);
   if (stale?.length) return { candles: stale, source: "cached", note: "Showing the last candles that loaded; live sources are busy." };
   throw new Error(`No candle data right now (${errors.join("; ")})`);
+}
+
+// Scrolling a chart back in time: the candles just older than `beforeSec`, oldest first.
+// CoinMarketCap pages back on every timeframe (seconds included); GeckoTerminal is the fallback
+// for minute candles and up. An empty answer means the coin has no older history.
+export async function getOlderCandles(chain: string, pool: string, tf: Timeframe, beforeSec: number): Promise<Candle[]> {
+  if (!TF_MAP[tf]) tf = "5m";
+  const older = (c: Candle[]) => c.filter((x) => x.time < beforeSec);
+  const token = knownToken(pool) ?? (await getPair(chain, pool).catch(() => null))?.tokenAddress;
+  let failed: unknown = null;
+  if (token && CMC_PLATFORM[chain]) {
+    try {
+      return older(await fromCoinMarketCap(chain, token, tf, 600, beforeSec * 1000 - 1));
+    } catch (e) {
+      failed = e;
+    }
+  }
+  if (!isSecondsTf(tf)) {
+    try {
+      return older(await fromGeckoTerminal(GT_NETWORK[chain] ?? chain, pool, tf, 1000, beforeSec));
+    } catch (e) {
+      failed = e;
+    }
+  }
+  throw new Error(`No older candles right now (${String((failed as Error)?.message ?? failed ?? "no source for this chart")})`);
 }
 
 // The bot's price check: CoinMarketCap 5-second candles for the token. Same URL as

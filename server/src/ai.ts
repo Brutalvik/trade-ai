@@ -59,6 +59,7 @@ export type OrderPrediction = {
   worlds?: { trend: number; flat: number; paths: number; from: string; minutesToWin: number | null; pStop: number; pNone: number; filledPct: number };
   panel?: { who: string; pct: number; reason: string }[];
   truncated?: boolean;
+  assumed?: boolean; // judged as a buy at the order's level (the coin has hardly ever reached it lately)
 };
 
 export type Consensus = {
@@ -124,7 +125,7 @@ Rules:
 // Agents get their own instructions: a trader working one coin with a budget, expected to act.
 const AGENT_SYSTEM = `You are an active short-term crypto trader working ONE token with a fixed budget, through a bot that carries out your orders.
 Your job is to make that budget grow. That means taking calculated risks when the odds are on your side, not waiting for a perfect setup: a trader who never enters makes nothing.
-The bot checks prices every 5 seconds and fills an order the moment its trigger is touched. You are asked again every few minutes, whenever the price moves about 4%, and right after each trade, so plan for the next 10-30 minutes, not for hours.
+The bot checks prices every 5 seconds and fills an order the moment its trigger is touched. You are asked again every 5 minutes, at once when the price reaches a level you named, whenever the price makes a real move (about 4%), and right after each trade, so plan for the next 10-30 minutes, not for hours.
 
 How to decide:
 - Read all timeframes, the volume, buyers vs sellers, the chart patterns, the history study and the forecast desk you are given, and form a view: where is this going next, and with what odds?
@@ -293,6 +294,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentE
         ...(w ? { worlds: { trend: Math.round(w.trend.pWin), flat: Math.round(w.flat.pWin), paths: w.paths, from: w.from, minutesToWin: w.flat.minutesToWin === null ? null : Math.round(w.flat.minutesToWin), pStop: Math.round(w.flat.pStop), pNone: Math.round(w.flat.pNone), filledPct: Math.round(w.flat.filledPct) } } : {}),
         ...(pv ? { panel: pv.votes } : {}),
         ...(f?.truncated ? { truncated: true } : {}),
+        ...(f?.assumed ? { assumed: true } : {}),
       };
     }
     if (netRewardPct <= 0 || (!agent && netRewardPct < netRiskPct)) {

@@ -38,6 +38,7 @@ export type Tally = { n: number; wins: number; stops: number; none: number; unfi
 export type Forecast = {
   shape: Shape;
   truncated: boolean; // the time limit was longer than the history can simulate
+  assumed: boolean; // the coin has hardly ever reached this order's level lately, so it was judged as a buy at that level
   worlds: { pWin: number; trend: SimResult; flat: SimResult; trendShare: number; paths: number; from: string } | null;
   baseRate: { pWin: number; tally: Tally; hours: number } | null;
   lookalikes: { pWin: number; n: number; wins: number; next60: { mid: number; lo: number; hi: number } | null } | null;
@@ -362,11 +363,21 @@ export function desk(c1: Candle[], c5: Candle[], costPct: number, trailPct: numb
     const truncated = holdMin < shIn.holdMin;
 
     // Parallel worlds: 1-minute candles (the last hours) and 5-minute candles (the last day).
-    const runs: { trend: SimResult; flat: SimResult }[] = [];
     const from: string[] = [];
-    if (S1 && waitMin + holdMin + 45 <= FINE_STEPS) { runs.push({ trend: evaluate(paths(true, false)!, 1, sh, costPct, trailPct), flat: evaluate(paths(true, true)!, 1, sh, costPct, trailPct) }); from.push("1-minute"); }
-    if (S5) { runs.push({ trend: evaluate(paths(false, false)!, 5, sh, costPct, trailPct), flat: evaluate(paths(false, true)!, 5, sh, costPct, trailPct) }); from.push("5-minute"); }
-    const usable = runs.filter((r) => r.trend.filledPct + r.flat.filledPct > 2);
+    const run = (x: Shape) => {
+      const runs: { trend: SimResult; flat: SimResult }[] = [];
+      from.length = 0;
+      if (S1 && x.waitMin + x.holdMin + 45 <= FINE_STEPS) { runs.push({ trend: evaluate(paths(true, false)!, 1, x, costPct, trailPct), flat: evaluate(paths(true, true)!, 1, x, costPct, trailPct) }); from.push("1-minute"); }
+      if (S5) { runs.push({ trend: evaluate(paths(false, false)!, 5, x, costPct, trailPct), flat: evaluate(paths(false, true)!, 5, x, costPct, trailPct) }); from.push("5-minute"); }
+      return runs.filter((r) => r.trend.filledPct + r.flat.filledPct > 10); // at least ~5% of the worlds got filled
+    };
+    let usable = run(sh);
+    // A level the coin has hardly ever reached lately (a far dip or breakout): the few worlds that
+    // got there say little, and none would mean no forecast at all. Judge it as a buy at that
+    // level instead: the same rise and fall from the entry, on the coin's own swings.
+    const assumed = !usable.length && waitMin > 0;
+    const eff: Shape = assumed ? { ...sh, offsetPct: 0, waitMin: 0 } : sh;
+    if (assumed) usable = run(eff);
     let worlds: Forecast["worlds"] = null;
     if (usable.length) {
       const avg = (pick: (r: (typeof usable)[number]) => SimResult) => usable.map(pick).reduce((x, y, i) => mix(x, y, i / (i + 1)));
@@ -377,14 +388,22 @@ export function desk(c1: Candle[], c5: Candle[], costPct: number, trailPct: numb
     // This coin lately, and the look-alikes (5-minute candles).
     let baseRate: Forecast["baseRate"] = null, lookalikes: Forecast["lookalikes"] = null;
     if (c5.length >= 100) {
-      const { wait, hold } = steps(sh, 5);
-      const last = c5.length - 1 - wait - hold;
-      if (last - 36 >= 30) {
-        const t = tally(c5, sh, 5, 36, last);
+      // The same for the counts: an order that was hardly ever filled in the history is counted as a buy at its level.
+      let hs = eff;
+      let { wait, hold } = steps(hs, 5);
+      let last = c5.length - 1 - wait - hold;
+      let t = last - 36 >= 30 ? tally(c5, hs, 5, 36, last) : null;
+      if (t && t.n < 12 && hs.waitMin > 0) {
+        hs = { ...hs, offsetPct: 0, waitMin: 0 };
+        ({ wait, hold } = steps(hs, 5));
+        last = c5.length - 1 - wait - hold;
+        t = last - 36 >= 30 ? tally(c5, hs, 5, 36, last) : null;
+      }
+      if (t) {
         if (t.n >= 12) {
-          const p = shrunk(t, sh, 5, worlds ? worlds.flat.pWin / 100 : undefined);
+          const p = shrunk(t, hs, 5, worlds ? worlds.flat.pWin / 100 : undefined);
           baseRate = { pWin: p * 100, tally: t, hours: Math.round(((c5[c5.length - 1].time - c5[36].time) / 3600) * 10) / 10 };
-          const la = lookalike(c5, F, c5.length - 1, last, sh, 5, p);
+          const la = lookalike(c5, F, c5.length - 1, last, hs, 5, p);
           if (la) {
             const next = la.picked.filter((i) => i + 12 < c5.length).map((i) => (c5[i + 12].close / c5[i].close - 1) * 100).sort((x, y) => x - y);
             lookalikes = { pWin: la.p * 100, n: la.n, wins: la.wins, next60: next.length >= 5 ? { mid: quantile(next, 0.5), lo: next[0], hi: next[next.length - 1] } : null };
@@ -401,7 +420,7 @@ export function desk(c1: Candle[], c5: Candle[], costPct: number, trailPct: numb
     const f = worlds?.flat;
     const failed = f ? f.pStop + f.pNone : 0;
     return {
-      shape: sh, truncated, worlds, baseRate, lookalikes, weights, numbers: clamp(numbers, 0, 100),
+      shape: sh, truncated, assumed, worlds, baseRate, lookalikes, weights, numbers: clamp(numbers, 0, 100),
       winNetPct: f ? f.winNetPct : sh.upPct - costPct,
       stopShare: f && failed > 0 ? f.pStop / failed : baseRate && baseRate.tally.stops + baseRate.tally.none > 0 ? baseRate.tally.stops / (baseRate.tally.stops + baseRate.tally.none) : 1,
       noneNetPct: f ? f.noneNetPct : -costPct,

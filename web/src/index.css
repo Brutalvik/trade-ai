@@ -1075,6 +1075,7 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .signal-panel.small .verdict .big, .signal-panel.small .verdict b { font-size: 18px; }
 .info-btn.size-btn { font-size: 10px; }
 
+.chart-older { position: absolute; left: 10px; bottom: 34px; z-index: 5; padding: 3px 9px; border-radius: 7px; font-size: 11px; color: var(--muted); background: rgba(10, 16, 32, 0.85); border: 1px solid var(--border); pointer-events: none; }
 /* Agents panel */
 .agents-panel .panel-title { align-items: center; }
 .agents-new { padding: 6px 12px; font-size: 12px; border-radius: 9px; font-family: Inter, system-ui, sans-serif; letter-spacing: 0; white-space: nowrap; flex: none; }
@@ -1082,7 +1083,6 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .agents-head { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 .agents-count { color: #c9d6f5; letter-spacing: 1px; }
 .agents-money { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: #f1f5ff; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px; font-weight: 600; letter-spacing: 0; }
-.agents-money::before { content: "·"; margin-right: 3px; color: var(--muted); font-weight: 400; }
 .agents-lock { position: relative; display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: var(--amber); cursor: pointer; }
 .agents-lock:hover, .agents-lock:focus-visible { background: rgba(255, 200, 87, 0.14); outline: none; }
 .agents-lock[data-tip]:hover::after, .agents-lock[data-tip]:focus-visible::after { left: 50%; top: calc(100% + 8px); transform: translateX(-50%); font-family: Inter, system-ui, sans-serif; font-weight: 500; letter-spacing: 0; }

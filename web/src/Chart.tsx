@@ -327,9 +327,15 @@ const RANGES: { label: string; secs: number }[] = [
   { label: "1M", secs: 30 * 86400 },
 ];
 
-export function Chart({ candles, trades, lines: levelLines, seconds = false, viewKey = "", drawKey = "", symbol = "chart", mcapFactor = 0 }: {
+// How close (in candles) the view may get to the oldest loaded candle before older ones are fetched.
+const OLDER_AT = 40;
+// onNeedOlder: called when the view gets close to the oldest loaded candle (scrolling or zooming
+// back), so the app can fetch the page before it. noOlder: there is nothing older to fetch, so
+// the left edge is fixed and never shows empty space. loadingOlder: a page is on its way.
+export function Chart({ candles, trades, lines: levelLines, seconds = false, viewKey = "", drawKey = "", symbol = "chart", mcapFactor = 0, onNeedOlder, noOlder = false, loadingOlder = false, olderTick = 0 }: {
   candles: Candle[]; trades: Trade[]; lines: ChartLine[]; seconds?: boolean; viewKey?: string;
   drawKey?: string; symbol?: string; mcapFactor?: number;
+  onNeedOlder?: () => void; noOlder?: boolean; loadingOlder?: boolean; olderTick?: number;
 }) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -337,6 +343,15 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
   const extra = useRef<Partial<Record<string, ISeriesApi<SeriesType>>>>({});
   const priceLines = useRef<IPriceLine[]>([]);
   const fitted = useRef("");
+  const needOlder = useRef(onNeedOlder);
+  needOlder.current = onNeedOlder;
+  const noOlderRef = useRef(noOlder);
+  noOlderRef.current = noOlder;
+  // Older candles are only fetched once you have moved the chart yourself (or pressed a range
+  // button): just opening a chart never asks for more than the newest candles.
+  const moved = useRef(false);
+  const wantSecs = useRef(0); // a range button was pressed and older candles are still being fetched for it
+  const wantPages = useRef(0);
   const data = useRef<Candle[]>([]); // the candles on screen (after the price / market-cap switch)
   const levels = useRef<number[]>([]);
   const layer = useRef(new DrawLayer());
@@ -438,6 +453,10 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
       rightPriceScale: { borderColor: "rgba(80,120,255,0.15)" },
       timeScale: { borderColor: "rgba(80,120,255,0.15)", timeVisible: true, secondsVisible: false, rightOffset: 6 },
       crosshair: { vertLine: { color: "rgba(0,240,255,0.4)", labelBackgroundColor: "#0b3a4a" }, horzLine: { color: "rgba(0,240,255,0.4)", labelBackgroundColor: "#0b3a4a" } },
+    });
+    // Near the oldest loaded candle (scrolled or zoomed back): ask for the page before it.
+    c.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+      if (moved.current && r && r.from < OLDER_AT && data.current.length) needOlder.current?.();
     });
     const candle = c.addSeries(CandlestickSeries, {
       upColor: "#00f5a0", downColor: "#ff3d71", borderVisible: false, wickUpColor: "#00f5a0", wickDownColor: "#ff3d71",
@@ -544,9 +563,31 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
     if (fitted.current !== viewKey) {
       chart.current?.timeScale().fitContent();
       fitted.current = viewKey;
+      wantSecs.current = 0;
+      moved.current = false;
+    }
+    // A range button is still waiting for enough history: widen the view as it arrives.
+    if (wantSecs.current) applyRange();
+    else {
+      // Still close to the oldest candle after this update (zoomed far out): fetch the next page too.
+      const r = chart.current?.timeScale().getVisibleLogicalRange();
+      if (moved.current && r && r.from < OLDER_AT) needOlder.current?.();
     }
     layer.current.update();
   }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // No older history left for this coin: pin the first candle to the left edge, so zooming out
+  // can't leave an empty stretch before it.
+  useEffect(() => {
+    chart.current?.applyOptions({ timeScale: { fixLeftEdge: noOlder } });
+    if (noOlder && wantSecs.current) applyRange();
+  }, [noOlder]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A page arrived or a refused one can be tried again: if the view is still at the oldest candle, ask for more.
+  useEffect(() => {
+    if (wantSecs.current) return applyRange();
+    const r = chart.current?.timeScale().getVisibleLogicalRange();
+    if (moved.current && r && r.from < OLDER_AT && data.current.length) needOlder.current?.();
+  }, [olderTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- indicators ----
   useEffect(() => {
@@ -703,13 +744,27 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
     return () => clearInterval(id);
   }, []);
 
-  const setRange = (secs: number) => {
+  // The range buttons (1H ... 1M): show that much time. If less is loaded, show everything and
+  // keep fetching older pages (a few at most) until the range is covered or the history ends.
+  const applyRange = () => {
+    const secs = wantSecs.current;
     const d = data.current;
     const c = chart.current;
-    if (!c || !d.length) return;
+    if (!secs || !c || !d.length) return;
     const last = d[d.length - 1].time;
-    if (d[0].time > last - secs) return c.timeScale().fitContent();
-    c.timeScale().setVisibleRange({ from: T(last - secs), to: T(last) });
+    if (d[0].time <= last - secs) {
+      wantSecs.current = 0;
+      return c.timeScale().setVisibleRange({ from: T(last - secs), to: T(last) });
+    }
+    c.timeScale().fitContent();
+    if (noOlderRef.current || wantPages.current <= 0 || !needOlder.current) wantSecs.current = 0;
+    else { wantPages.current--; needOlder.current(); }
+  };
+  const setRange = (secs: number) => {
+    moved.current = true;
+    wantSecs.current = secs;
+    wantPages.current = 5;
+    applyRange();
   };
   const screenshot = () => {
     const c = chart.current;
@@ -797,6 +852,8 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
             const r = e.currentTarget.getBoundingClientRect();
             downAt.current = { x: e.clientX - r.left, y: e.clientY - r.top };
           }}
+          onWheel={() => { moved.current = true; }}
+          onPointerDownCapture={() => { moved.current = true; }}
           onPointerUp={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
             const x = e.clientX - r.left, y = e.clientY - r.top;
@@ -806,6 +863,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
           }}
         >
           <div ref={el} className="chart" />
+          {loadingOlder ? <div className="chart-older" role="status">Loading earlier candles…</div> : null}
           {leg && (
             <div className="tv-legend">
               <div>
@@ -843,7 +901,7 @@ export function Chart({ candles, trades, lines: levelLines, seconds = false, vie
       <div className="tv-bottom">
         <div className="tv-ranges">
           {RANGES.map((r) => <button key={r.label} onClick={() => setRange(r.secs)} title={`Show the last ${r.label}`}>{r.label}</button>)}
-          <button onClick={() => chart.current?.timeScale().fitContent()} title="Show everything loaded">All</button>
+          <button onClick={() => { moved.current = true; wantSecs.current = 0; chart.current?.timeScale().fitContent(); }} title="Show everything loaded (press again for more history)">All</button>
         </div>
         <span className="tv-spacer" />
         <span className="muted mono tv-clock">{clock.toISOString().slice(11, 19)} UTC</span>

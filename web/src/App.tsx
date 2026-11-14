@@ -147,6 +147,48 @@ export default function App() {
   // Which coin / timeframe is on screen now, so a slow answer for a coin you've left is ignored.
   const showing = useRef("");
   showing.current = `${pair?.pool}:${tf}`;
+  // Scrolling back in time: older candles are fetched a page at a time and kept in front of the
+  // live ones, like TradingView. `done` = the coin has no older history on this timeframe.
+  const candlesRef = useRef<Candle[]>([]);
+  candlesRef.current = candles;
+  const hist = useRef({ key: "", busy: false, done: false, failAt: 0, lastAt: 0 });
+  const [histUi, setHistUi] = useState({ key: "", busy: false, done: false, retry: 0 });
+  const loadOlder = useCallback(() => {
+    if (!pair) return;
+    const key = `${pair.pool}:${tf}`;
+    if (hist.current.key !== key) hist.current = { key, busy: false, done: false, failAt: 0, lastAt: 0 };
+    const h = hist.current;
+    const cur = candlesRef.current;
+    // As much history as one chart keeps: stop there, and let the chart pin its first candle to the edge.
+    if (!h.done && cur.length >= MAX_CANDLES) {
+      h.done = true;
+      setHistUi((u) => ({ key, busy: false, done: true, retry: u.retry }));
+    }
+    // One page at a time, not more than one every 1.2 s, and a pause after the data source says no.
+    if (h.busy || h.done || !cur.length || Date.now() - h.failAt < 8_000 || Date.now() - h.lastAt < 1_200) return;
+    h.busy = true;
+    h.lastAt = Date.now();
+    setHistUi((u) => ({ key, busy: true, done: false, retry: u.retry }));
+    const before = cur[0].time;
+    api
+      .candles(pair.chain, pair.pool, tf, before)
+      .then((r) => {
+        if (hist.current !== h || showing.current !== key) return;
+        const add = r.candles.filter((c) => c.time < before);
+        if (!add.length) { h.done = true; return; }
+        setCandles((prev) => (prev.length && prev[0].time === before ? add.concat(prev) : prev));
+      })
+      .catch(() => {
+        // The data source said no for now (it limits how often it can be asked): look again in a
+        // few seconds, in case the view is still waiting at the edge.
+        h.failAt = Date.now();
+        window.setTimeout(() => { if (hist.current === h) setHistUi((u) => ({ ...u, retry: u.retry + 1 })); }, 8_500);
+      })
+      .finally(() => {
+        h.busy = false;
+        if (hist.current === h) setHistUi((u) => ({ key, busy: false, done: h.done, retry: u.retry + 1 }));
+      });
+  }, [pair?.chain, pair?.pool, tf]); // eslint-disable-line react-hooks/exhaustive-deps
   useInterval(() => {
     if (!pair) return;
     const want = `${pair.pool}:${tf}`;
@@ -154,7 +196,7 @@ export default function App() {
       .candles(pair.chain, pair.pool, tf)
       .then((r) => {
         if (showing.current !== want) return; // you've moved on: don't show this coin's candles
-        setCandles(r.candles);
+        setCandles((prev) => withLatest(prev, r.candles));
         setSource({ source: r.source, note: r.note });
         saveChart(pair.pool, tf, r.candles, r.source);
       })
@@ -231,11 +273,17 @@ export default function App() {
     // Only orders that passed their check are buy lines (with the first one's target and exit).
     // A level that failed is drawn grey and named as not used, so it never looks like a live order.
     const live = sig.orders.filter((o) => !o.warning);
-    if (!live.length) return sig.orders.map((o) => ({ price: o.triggerPrice, color: "#7182a8", title: o.kind === "buy_breakout" ? "BREAKOUT (NOT USED)" : o.kind === "buy_dip" ? "DIP (NOT USED)" : "BUY NOW (NOT USED)" }));
+    if (!live.length)
+      return sig.orders
+        .filter((o) => !agentHere || o.kind !== "buy_now") // an agent's refused buy-now has no level to wait for
+        .map((o) => ({
+          price: o.triggerPrice, color: "#7182a8",
+          title: agentHere ? (o.kind === "buy_breakout" ? "RE-CHECK ABOVE" : "RE-CHECK BELOW") : o.kind === "buy_breakout" ? "BREAKOUT (NOT USED)" : o.kind === "buy_dip" ? "DIP (NOT USED)" : "BUY NOW (NOT USED)",
+        }));
     const out: ChartLine[] = live.map((o) => ({ price: o.triggerPrice, color: "#00e5ff", title: o.kind === "buy_breakout" ? "BUY ABOVE" : "BUY BELOW" }));
     out.push({ price: live[0].target, color: "#00f5a0", title: "TARGET" }, { price: live[0].stopLoss, color: "#ff3d71", title: "EXIT" });
     return out;
-  }, [state?.positions, pair?.pool, sig]);
+  }, [state?.positions, pair?.pool, sig, agentHere]);
   const lines = useMemo(() => [...planLines, ...orderLines], [planLines, orderLines]);
   const pairTrades = useMemo(() => (state?.trades ?? []).filter((t) => t.pool === pair?.pool), [state?.trades, pair?.pool]);
 
@@ -270,7 +318,7 @@ export default function App() {
         <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`} style={{ "--chart-h": `${chartH}px` } as CSSProperties}>
           {!chartMax && <RowResizer height={chartH} onChange={setChartH} onDone={(h) => localStorage.setItem("nexus-chart-h", String(h))} />}
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
-          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? <ChartLoading symbol={pair.symbol} icon={pair.imageUrl} /> : "Search a ticker to begin"}</div>}
+          {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} onNeedOlder={loadOlder} noOlder={histUi.key === `${pair?.pool}:${tf}` && histUi.done} loadingOlder={histUi.key === `${pair?.pool}:${tf}` && histUi.busy} olderTick={histUi.retry} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? <ChartLoading symbol={pair.symbol} icon={pair.imageUrl} /> : "Search a ticker to begin"}</div>}
           <div className="legend">
             {pair && me?.tradeMode !== "real" ? (() => {
               // Start an agent on the coin on screen (or open the one already working it).
@@ -483,6 +531,21 @@ function PairHeader({ pair, tf, setTf }: { pair: PairInfo | null; tf: Timeframe;
   );
 }
 
+// The most candles kept for one chart (older ones are dropped first).
+const MAX_CANDLES = 15_000;
+// A fresh batch of the newest candles joins what is already loaded: everything from the batch's
+// first candle on is replaced, older history stays. A hole between the two (the tab was asleep)
+// drops the old history, so the chart never shows a jump in time.
+function withLatest(prev: Candle[], latest: Candle[]): Candle[] {
+  if (!latest.length || !prev.length) return latest.length ? latest : prev;
+  const first = latest[0].time;
+  if (prev[prev.length - 1].time < first) return latest;
+  let i = prev.length;
+  while (i > 0 && prev[i - 1].time >= first) i--;
+  if (i === 0) return latest;
+  const out = prev.slice(0, i).concat(latest);
+  return out.length > MAX_CANDLES ? out.slice(out.length - MAX_CANDLES) : out;
+}
 const STANCE_LABEL = { BUY_NOW: "BUY NOW", WAIT_FOR_TRIGGER: "WAITING", AVOID: "AVOID" } as const;
 
 // waitForHold: the bot waits for Claude's hold time before buying (off by default: buys instantly).
@@ -507,7 +570,7 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
         <span className="muted tiny">
           Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · reaching +5% is worth about +{o.prediction.winNetPct.toFixed(1)}%, missing costs about {o.prediction.lossPct.toFixed(1)}% · max {Math.round(o.maxHoldMinutes)} min
         </span>
-        {o.warning && <span className="order-warning">The agent won't buy here: the odds aren't good enough. See its window for every forecaster's number.</span>}
+        {o.warning && <span className="order-warning">No order here: the odds aren't good enough yet. If the price gets here the agent looks again. See its window for every forecaster's number.</span>}
       </div>
     );
   }
@@ -742,7 +805,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
             <div className="orders">
               {sig.stance === "AVOID" ? (
                 sig.orders.some((o) => o.prediction)
-                  ? <div className="avoid-setup">No buy order right now. These are the AI's best levels, but the odds at them aren't good enough, so the agent won't buy there. It looks again on its own.</div>
+                  ? <div className="avoid-setup">No buy order right now. These are the AI's best levels, but the odds at them aren't good enough yet. If the price reaches one, the agent looks again straight away; otherwise every 5 minutes.</div>
                   : <div className="avoid-setup">⚠ Risky setup: the AI advises against trading now. These are its best levels if you trade anyway.</div>
               ) : (
                 <div className="label-sm">{botOnThisCoin ? "The agent's orders: it buys on its own the moment one triggers" : "The AI's suggested orders (nothing is bought unless you buy, or start an agent)"}</div>
@@ -1043,6 +1106,8 @@ const LINE_NAME: Record<string, string> = {
   "PROTECT STOP": "Protection stop",
   "BUY BELOW": "Buy if it dips to",
   "BUY ABOVE": "Buy if it breaks above",
+  "RE-CHECK BELOW": "No order yet. The agent looks again if it dips to",
+  "RE-CHECK ABOVE": "No order yet. The agent looks again if it breaks above",
   "DIP (NOT USED)": "No order (odds too low): dip to",
   "BREAKOUT (NOT USED)": "No order (odds too low): breakout above",
   "BUY NOW (NOT USED)": "No order (odds too low): buying now up to",
@@ -1058,6 +1123,8 @@ const LINE_HELP: Record<string, string> = {
   "PROTECT STOP": "Your manual trade sells if the price falls back to this line.",
   "BUY BELOW": "The AI's standing order: the bot buys if the price dips to this line.",
   "BUY ABOVE": "The AI's standing order: the agent buys if the price breaks above this line. If the order asks for extra trading volume (shown in the AI Signal card and the agent's window), the price alone is not enough.",
+  "RE-CHECK BELOW": "The AI named this dip level, but the odds weren't good enough to place an order. Nothing is bought here by itself: if the price gets here, the agent asks its AI again straight away and buys only if the odds are good enough then.",
+  "RE-CHECK ABOVE": "The AI named this breakout level, but the odds weren't good enough to place an order. Nothing is bought here by itself: if the price gets here, the agent asks its AI again straight away and buys only if the odds are good enough then.",
   "DIP (NOT USED)": "The AI's level for buying a dip. It did not pass the check on its odds, so nothing is bought at this line.",
   "BREAKOUT (NOT USED)": "The AI's level for buying a breakout. It did not pass the check on its odds, so nothing is bought at this line.",
   "BUY NOW (NOT USED)": "The AI's price for buying right away. It did not pass the check on its odds, so nothing is bought at this line.",

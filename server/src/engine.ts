@@ -88,6 +88,7 @@ export type BotConfig = {
   chain: string;
   pool: string;
   symbol: string;
+  imageUrl?: string; // the coin's picture, for the agent's card (sent on start, or filled in once it is known)
   tf: Timeframe;
   positionPct: number; // % of cash per trade
   minConfidence: number;
@@ -1037,12 +1038,16 @@ const thinSlipPct = (usd: number, liquidityUsd: number) => Math.min(10, Math.max
 
 // Start agent `botId` ("1" to "10"). Slots after the first are created on first start.
 // maxBots comes from the plan; two bots never trade the same coin.
+// A coin picture must be a plain web address (it is shown as an image on the agent's card).
+const okImage = (u: unknown): u is string => typeof u === "string" && u.length <= 400 && /^https:\/\/[^\s"'<>]+$/.test(u);
+
 export function startBot(cfg: BotConfig, botId = "1", maxBots = 10) {
   if (!/^(?:[1-9]|10)$/.test(botId)) throw new Error("No free agent slot. Stop an agent first.");
   const id = botId;
   const st = acct().state;
   const others = runningIds(st).filter((x) => x !== id);
   if (others.length + 1 > maxBots) throw new Error(maxBots <= 1 ? "Your plan includes 1 agent. Stop it first, or see Plans for more." : `Your plan includes ${maxBots} agents and they're all running. Stop one first, or see Plans for more.`);
+  if (!okImage(cfg.imageUrl)) delete cfg.imageUrl;
   if (cfg.pick === "agent") {
     const budget = Number(cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT);
     if (!(budget >= 10)) throw new Error("An agent's budget must be at least $10.");
@@ -1465,6 +1470,17 @@ function claudeDue(cfg: BotConfig, price: number | null, dex: number | null = pr
   if (Date.now() > c.expiresAt) return "the plan expired";
   if (price !== null && c.cancelBelow > 0 && price < c.cancelBelow) return `the price fell below the plan's cancel level (${fmt(c.cancelBelow)})`;
   if (price !== null && c.cancelAbove > 0 && price > c.cancelAbove) return `the price rose above the plan's range (${fmt(c.cancelAbove)})`;
+  // The price has come to a level the AI named when the odds weren't good enough for an order:
+  // that is the moment to look again, with what the chart shows now. Only for a plan with no
+  // live order, only for a level that was still away from the price when the plan was made, and
+  // judged on the pool's own price (the plan's price), so two data sources can't fake a touch.
+  if (isCoinAgent(cfg) && dex !== null && sig.priceAt && Date.now() - sig.at >= AGENT_TOUCH_GAP_MS && !c.orders.some((o) => !o.warning)) {
+    const hit = c.orders.find((o) =>
+      o.kind === "buy_dip" ? sig.priceAt! > o.triggerPrice * 1.003 && dex <= o.triggerPrice
+        : o.kind === "buy_breakout" ? sig.priceAt! < o.triggerPrice * 0.997 && dex >= o.triggerPrice
+          : false);
+    if (hit) return `the price reached the ${hit.kind === "buy_dip" ? "dip" : "breakout"} level ${fmt(hit.triggerPrice)} it was watching`;
+  }
   // A real move since the plan: 4%, or one of the coin's usual 5-minute swings if that is bigger
   // (a very jumpy coin wiggles 4% all the time), measured on the same pool price the plan was
   // made at, and not within 90 s of that plan, so the AI is never asked every half minute.
@@ -1664,7 +1680,8 @@ async function agentsStep(cfg: BotConfig) {
 // the trade journal, and answers: buy now, buy at a level, or stay out, with exit and target.
 // The bot carries that out with the agent's budget. No other limits apply.
 export const AGENT_BUDGET_DEFAULT = 1000;
-export const AGENT_RECHECK_SEC = 600; // an agent asks its AI again at least this often
+export const AGENT_RECHECK_SEC = 300; // an agent asks its AI again at least this often
+const AGENT_TOUCH_GAP_MS = 45_000; // ...and at once when the price reaches a level it named, but not within this long of the plan
 export const AGENT_MOVE_PCT = 4; // ...and whenever the price has moved this much since its plan
 const RELEARN_MS = 60 * 60_000;
 
@@ -1677,6 +1694,15 @@ function agentFunds(cfg: BotConfig) {
 
 // true = the agent stopped (its budget is gone)
 async function agentPrep(cfg: BotConfig): Promise<boolean> {
+  // The coin's picture for the agent's card: kept the first time the pool's details include one
+  // (agents started before pictures were kept get theirs here).
+  if (!cfg.imageUrl) {
+    const img = (await getPair(cfg.chain, cfg.pool).catch(() => null))?.imageUrl;
+    if (okImage(img)) {
+      cfg.imageUrl = img;
+      acct().dirty = true;
+    }
+  }
   const budget = cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT;
   if (agentFunds(cfg) < Math.max(10, budget * 0.1)) {
     stopBot(`Agent stopped: its $${budget} budget is used up. Its trades are in your history.`);
@@ -1700,7 +1726,7 @@ async function agentPrep(cfg: BotConfig): Promise<boolean> {
 }
 
 // What the AI is told when it plans for an agent.
-async function agentBrief(cfg: BotConfig): Promise<string> {
+async function agentBrief(cfg: BotConfig, why = ""): Promise<string> {
   const cost = roundTripCostPct();
   const L = state.bot.learned;
   const managed = state.trades.filter((t) => t.strategy === "agents" && t.side === "SELL" && t.reachedTarget && t.usd - (t.pnlUsd ?? 0) > 0);
@@ -1708,6 +1734,7 @@ async function agentBrief(cfg: BotConfig): Promise<string> {
     ? `+${(managed.reduce((s, t) => s + ((t.pnlUsd ?? 0) / (t.usd - (t.pnlUsd ?? 0))) * 100, 0) / managed.length).toFixed(1)}% (what this account's ${managed.length} managed winners really made on average after costs)`
     : `+${AGENT_NET_TARGET}% plus 30% of the extra distance from there to your target, with the target counted up to +20% (winners are held for more, but not all of the extra is captured)`;
   const lines = [
+    ...(why ? [`Why you are being asked right now: ${why}.${/level .* it was watching/.test(why) ? " That level came from your last answer; decide with what the chart shows now whether to buy here, and say BUY_NOW if so." : ""}`] : []),
     `You are this coin's dedicated trading agent. Budget $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} (funds now $${agentFunds(cfg).toFixed(2)}); each buy invests all of it.`,
     `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you WILL buy at (buy_dip and/or buy_breakout), close enough to be reached in the next 10-30 minutes. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them. You will be asked again within 10 minutes, or sooner if the price moves ${AGENT_MOVE_PCT}%.`,
     `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. That level is the MINIMUM-PROFIT level: winChancePct is your chance of reaching it before the stop. target is where you realistically expect the move to go (at or above that level). Put the stop where the idea is proved wrong.`,
@@ -1730,6 +1757,7 @@ async function agentBrief(cfg: BotConfig): Promise<string> {
       const scan = recentScan();
       if (market) lines.push(market);
       if (t) {
+        if (!cfg.imageUrl && okImage(t.icon)) { cfg.imageUrl = t.icon; acct().dirty = true; } // the picture, if the pool's details had none
         lines.push(flowText(t));
         const c = scan?.coins.find((x) => x.mint === pair.tokenAddress) ?? scoreCoin(t, null);
         lines.push(`Scouts' reading of this coin (rule-based, 0-100 each): ${AGENT_KEYS.map((k) => `${k} ${Math.round(c.agents[k].score)} (${c.agents[k].note})`).join("; ")}.${c.vetoes.length ? ` Warnings: ${c.vetoes.join("; ")}.` : ""}`);
@@ -1890,7 +1918,7 @@ async function tickBot(persist: boolean) {
     cfg.strongMode = false;
     cfg.rewardRule = false;
     cfg.allowRisky = false;
-    cfg.analyzeEverySec = Math.min(cfg.analyzeEverySec || AGENT_RECHECK_SEC, AGENT_RECHECK_SEC); // look again at least every 10 minutes
+    cfg.analyzeEverySec = Math.min(cfg.analyzeEverySec || AGENT_RECHECK_SEC, AGENT_RECHECK_SEC); // look again at least every 5 minutes
     cfg.disabled = [...new Set([...(cfg.disabled ?? []), "dailyLossPct", "cooldownMin", "maxDrawdownPct", "minConfidence", "maxDrop1hPct", "riskPerTradePct"])];
     if (state.bot.blocked) setBlocked(null);
   }
@@ -2178,7 +2206,7 @@ async function tickBot(persist: boolean) {
       if (isAuto(cfg)) {
         await autoPick(cfg);
       } else {
-        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg) } : {}) });
+        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg, why) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
         if (isCoinAgent(cfg)) {
