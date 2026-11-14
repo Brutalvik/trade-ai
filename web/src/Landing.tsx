@@ -374,7 +374,7 @@ const SCEN: Record<Scenario, { label: string; keys: [number, number][] }> = {
   loss: { label: "A losing trade", keys: [[0, 1.0], [14, 0.98], [24, 0.957], [32, 0.975], [44, 0.945], [56, 0.915], [70, 0.9], [104, 0.89]] },
   second: { label: "AI second look", keys: [[0, 1.0], [14, 0.98], [24, 0.957], [34, 0.94], [44, 0.917], [52, 0.925], [64, 0.99], [76, 1.06], [86, 1.12], [96, 1.15], [104, 1.1]] },
 };
-const BUY = 0.96, STOP = 0.92, TARGET = 1.1;
+const BUY = 0.96, STOP = 0.92, TARGET = 0.96 * 1.08; // +5% after ~3% costs
 
 function path(s: Scenario) {
   const k = SCEN[s].keys;
@@ -394,33 +394,34 @@ function path(s: Scenario) {
 type SimEvent = { i: number; text: string; tone: "info" | "good" | "bad" | "ai" };
 function simulate(s: Scenario) {
   const p = path(s);
-  const ev: SimEvent[] = [{ i: 0, text: "AI plan: buy the dip at 0.960, exit 0.920, target 1.100.", tone: "ai" }];
+  const COST = 3, MIN = 5; // round-trip costs %, first profit step % (after costs)
+  const ev: SimEvent[] = [{ i: 0, text: "AI plan: buy the dip at 0.960, exit 0.920, first target +5% after fees.", tone: "ai" }];
   const stops: (number | null)[] = [];
-  let held = false, done = false, entry = 0, stop = STOP, best = 0, half = false, trail = false, peak = 0, looked = false, lockStep = 0;
+  let held = false, done = false, entry = 0, stop = STOP, best = 0, step = 0, looked = false;
   const marks: { i: number; kind: "buy" | "half" | "sell"; v: number }[] = [];
   p.forEach((v, i) => {
     if (done) return stops.push(null);
     if (!held) {
-      if (v <= BUY) { held = true; entry = BUY; best = v; marks.push({ i, kind: "buy", v: BUY }); ev.push({ i, text: "Price touched 0.960: the bot buys.", tone: "good" }); }
+      if (v <= BUY) { held = true; entry = BUY; best = v; marks.push({ i, kind: "buy", v: BUY }); ev.push({ i, text: "Price touched 0.960: the agent buys.", tone: "good" }); }
       return stops.push(null);
     }
     best = Math.max(best, v);
-    const gain = (best - entry) / entry;
-    if (gain >= 0.045 && stop < entry * 1.035) { stop = entry * 1.035; ev.push({ i, text: "Up 4.5%: profit guard moves the exit above the buy price.", tone: "good" }); }
-    if (gain >= 0.045) {
-      const lock = entry + (best - entry) * 0.5;
-      if (lock > stop) { stop = lock; const st = Math.floor(gain * 25); if (st > lockStep) { lockStep = st; ev.push({ i, text: `Profit lock raised to ${lock.toFixed(3)}: keeps half the best gain.`, tone: "info" }); } }
+    const net = ((best - entry) / entry) * 100 - COST;
+    if (net >= MIN && Math.floor(net) > step) {
+      const first = step === 0;
+      step = Math.floor(net);
+      stop = entry * (1 + (COST + step) / 100);
+      if (first || step % 3 === 0) ev.push({ i, text: `Up ${step}% after fees: that profit is locked. Waiting for ${step + 1}%.`, tone: "good" });
     }
-    if (!half && v >= TARGET) { half = true; trail = true; peak = v; marks.push({ i, kind: "half", v }); ev.push({ i, text: "Target reached: sells half, the rest rides with a 3% trailing stop.", tone: "good" }); }
-    if (trail) { peak = Math.max(peak, v); stop = Math.max(stop, peak * 0.97); }
     if (v <= stop) {
-      if (s === "second" && !looked && stop < entry) {
+      if (s === "second" && !looked && step === 0) {
         looked = true; stop = entry - 1.5 * (entry - STOP);
         ev.push({ i, text: `Stop touched. AI second look: support is holding, buyers are back, so it holds once with a last exit at ${stop.toFixed(3)}.`, tone: "ai" });
       } else {
-        const pnl = ((v - entry) / entry) * 100;
         marks.push({ i, kind: "sell", v });
-        ev.push({ i, text: `${trail ? "Trailing stop" : stop >= entry ? "Profit guard" : "Stop-loss"}: sells at ${v.toFixed(3)} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}%${half ? " on the rest" : ""}).`, tone: pnl >= 0 ? "good" : "bad" });
+        ev.push(step
+          ? { i, text: `Price fell back to the +${step}% step: sells at ${v.toFixed(3)}, keeping about +${step}% after fees.`, tone: "good" }
+          : { i, text: `Stop-loss: sells at ${v.toFixed(3)} (${(((v - entry) / entry) * 100 - COST).toFixed(1)}% after fees).`, tone: "bad" });
         done = true;
       }
     }
@@ -465,7 +466,7 @@ function BotSim() {
       <div className="lp-head">
         <span className="lp-kicker">Bot replay</span>
         <h2>See exactly how the bot trades</h2>
-        <p>Play a trade from plan to sale. Watch the exit (red) only ever move up as the trade goes your way: profit guard, profit lock, take half, trailing stop.</p>
+        <p>Play a trade from plan to sale. Once it is up 5% after fees, watch the exit (red) climb one percent at a time behind the price, then sell when the price turns back.</p>
       </div>
       <div className="lp-sim" ref={box}>
         <div className="lp-sim-bar">
@@ -482,7 +483,7 @@ function BotSim() {
             {[BUY, STOP, TARGET].map((v, i) => (
               <g key={v}>
                 <line x1="0" x2={W - 70} y1={y(v)} y2={y(v)} className={`lp-sim-level l${i}`} />
-                <text x={W - 4} y={y(v) + 4} textAnchor="end" className={`lp-sim-lbl l${i}`}>{["BUY 0.960", "EXIT 0.920", "TARGET 1.100"][i]}</text>
+                <text x={W - 4} y={y(v) + 4} textAnchor="end" className={`lp-sim-lbl l${i}`}>{["BUY 0.960", "EXIT 0.920", "+5% AFTER FEES"][i]}</text>
               </g>
             ))}
             <path d={stopD} className="lp-sim-stop" />

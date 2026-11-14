@@ -5,7 +5,7 @@ import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
 import { CoinSearch } from "./CoinSearch";
-import { AgentsPanel } from "./Agents";
+import { AgentsPanel, type AgentRequest } from "./Agents";
 import { WalletButton } from "./Wallet";
 import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
@@ -47,6 +47,8 @@ export default function App() {
     setHash("");
   };
   const [adminOpen, setAdminOpen] = useState(false);
+  // The chart's "Start agent on X" button asks the Agents panel to open its window.
+  const [agentReq, setAgentReq] = useState<AgentRequest | null>(null);
   // Arrived from the landing page's "Start free" / "Sign in": open the sign-in window once.
   useEffect(() => {
     const u = new URL(window.location.href);
@@ -263,6 +265,21 @@ export default function App() {
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
           {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? <ChartLoading symbol={pair.symbol} icon={pair.imageUrl} /> : "Search a ticker to begin"}</div>}
           <div className="legend">
+            {pair && me?.tradeMode !== "real" ? (() => {
+              // Start an agent on the coin on screen (or open the one already working it).
+              const here = allBots(state).find((b) => b.bot.running && (b.bot.config?.pool ?? b.bot.target?.pool) === pair.pool);
+              return (
+                <button className={`chart-size-btn agent-here ${here ? "on" : ""}`} title={here ? `Open the ${pair.symbol} agent` : `Give an agent a budget to trade ${pair.symbol}`}
+                  onClick={() => {
+                    if (!me) return void window.dispatchEvent(new Event(SIGNIN_EVENT));
+                    if (chartMax) setChartMax(false);
+                    setAgentReq(here ? { kind: "open", pool: pair.pool } : { kind: "start", pair });
+                  }}>
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 8V4M8 4h8M6 8h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM9 13v2M15 13v2" /></svg>
+                  <span>{here ? `Agent on ${pair.symbol}` : `Start agent on ${pair.symbol}`}</span>
+                </button>
+              );
+            })() : null}
             <button className="chart-size-btn" onClick={() => setChartMax((v) => !v)} aria-pressed={chartMax} title={chartMax ? "Minimize (Esc)" : "Fill the window"} aria-label={chartMax ? "Minimize chart" : "Maximize chart"}>
               {chartMax ? (
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" /></svg>
@@ -284,7 +301,7 @@ export default function App() {
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
           {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
-            <AgentsPanel state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} defaults={AGENT_DEFAULTS} />
+            <AgentsPanel state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} defaults={AGENT_DEFAULTS} request={agentReq} onRequestDone={() => setAgentReq(null)} />
           )}
         </aside>
 

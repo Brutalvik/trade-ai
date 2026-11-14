@@ -118,7 +118,7 @@ How to decide:
 - Otherwise say WAIT_FOR_TRIGGER and give the exact price at which you WILL buy: a breakout above a level (with a volume check) and/or a pullback to support. Put those levels close enough to be reached in the next 10-30 minutes.
 - ALWAYS give 1-2 orders you would genuinely take. Use AVOID only when the token looks like a rug or honeypot, liquidity is being pulled, or it is in free fall with no buyers; even then give the level where you would step back in.
 - For every order give winChancePct: your honest, calibrated chance that price reaches target before stopLoss. Do not shade it down out of caution or up out of eagerness; the bot uses an order only if your own numbers make money on average after costs.
-- Targets must be at least the minimum distance you are told (it gives +10% after costs). Pick trades where such a move is realistic: strong trends, breakouts with volume, sharp reversals. Put the stop where your idea is proved wrong, outside normal noise.
+- Targets must be at least the minimum distance you are told (the minimum profit after costs). Pick trades where such a move is realistic: strong trends, breakouts with volume, sharp reversals. Once that profit is reached the bot rides the move itself, locking each further percent. Put the stop where your idea is proved wrong, outside normal noise.
 - Set cancelBelow / cancelAbove just outside your thesis and validMinutes between 10 and 30.
 - reasoning: 2-3 short plain sentences on what you expect and why. Prices are USD and may be tiny; keep full precision.`;
 
@@ -386,7 +386,7 @@ export async function reviewAgentPick(input: { pair: PairInfo; frames: Frame[]; 
     return `## ${f.label}\n${ind}\n${JSON.stringify(rows)}`;
   });
   const prompt = `Scouting agents picked ${pair.symbol} (${pair.chain}) to buy now at about $${entry}.
-Proposed exit (stop-loss) $${stop} (${(((stop - entry) / entry) * 100).toFixed(1)}%), target $${target} (+${(((target - entry) / entry) * 100).toFixed(1)}%, which is +10% after the ${input.costPct.toFixed(1)}% round-trip costs). At the target the bot sells half and trails the rest.
+Proposed exit (stop-loss) $${stop} (${(((stop - entry) / entry) * 100).toFixed(1)}%), target $${target} (+${(((target - entry) / entry) * 100).toFixed(1)}%, which is the minimum profit after the ${input.costPct.toFixed(1)}% round-trip costs). At the target the bot sells half and trails the rest.
 Liquidity $${Math.round(pair.liquidityUsd)}, change 5m ${pair.change.m5}% 1h ${pair.change.h1}% 24h ${pair.change.h24}%, last hour ${pair.buys1h ?? "?"} buys / ${pair.sells1h ?? "?"} sells.
 
 What the agents saw:

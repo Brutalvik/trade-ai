@@ -1181,3 +1181,16 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .run-track i { animation: none; left: 0; width: 100%; opacity: 0.5; } .run-steps span.now, .run-steps em::before { animation: none; } }
 
 .agent-form-note { margin: 0; line-height: 1.5; align-self: center; }
+
+/* "Start agent on X" beside Maximize (bottom right of the chart) */
+.chart-size-btn.agent-here { order: 98; margin-left: auto; max-width: min(260px, 58vw); border-color: rgba(0, 245, 160, 0.4); background: rgba(0, 245, 160, 0.08); color: #8ff5cd; }
+.chart-size-btn.agent-here:hover { background: rgba(0, 245, 160, 0.16); border-color: rgba(0, 245, 160, 0.7); }
+.chart-size-btn.agent-here.on { border-color: rgba(0, 229, 255, 0.5); background: rgba(0, 229, 255, 0.1); color: #9be9ff; }
+.chart-size-btn.agent-here span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-size-btn.agent-here svg { flex: none; }
+.chart-size-btn.agent-here + .chart-size-btn { margin-left: 0; }
+.agent-form.quick { grid-template-columns: 1fr; }
+@media (max-width: 560px) { .chart-size-btn.agent-here { max-width: 64vw; } }
+.modal.narrow .agent-foot-note { flex-basis: 100%; margin: 0 0 4px; }
+.modal.narrow .modal-foot { flex-wrap: wrap; justify-content: flex-end; }
+.modal-foot .btn { white-space: nowrap; }

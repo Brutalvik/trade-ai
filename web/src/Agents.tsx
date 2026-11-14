@@ -16,9 +16,13 @@ type Defaults = Pick<BotConfig, "positionPct" | "minConfidence" | "analyzeEveryS
 
 const modeName = (c: BotConfig | null) => (c?.pick === "agent" ? "Agent" : c?.pick === "auto" ? "Auto-pick bot" : c?.pick === "newcoins" ? "New coins bot" : c?.pick === "agents" ? "Scout bot" : "AI-plan bot");
 
-export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults }: { state: AppState | null; limit: number; notify: Notify; refresh: () => void; onOpen: (chain: string, pool: string) => void; defaults: Defaults }) {
+// A request from elsewhere in the app (the chart's "Start agent on X" button).
+export type AgentRequest = { kind: "start"; pair: PairInfo } | { kind: "open"; pool: string };
+
+export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, request, onRequestDone }: { state: AppState | null; limit: number; notify: Notify; refresh: () => void; onOpen: (chain: string, pool: string) => void; defaults: Defaults; request?: AgentRequest | null; onRequestDone?: () => void }) {
   const access = useAccess();
   const [adding, setAdding] = useState(false);
+  const [preset, setPreset] = useState<PairInfo | null>(null); // a coin chosen on the chart: only the budget is asked
   const [openId, setOpenId] = useState<string | null>(null); // the agent whose window is open
   const slots = allBots(state);
   const running = slots.filter((b) => b.bot.running);
@@ -27,13 +31,30 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults }:
   const freeId = ids.find((id) => !busy(id));
   const canAdd = limit > 0 && !!freeId;
   const opened = running.find((b) => b.id === openId);
+  const full = limit > 0 && !canAdd;
+  const fullMsg = `All ${limit} agent${limit > 1 ? "s are" : " is"} running. Stop one first${limit < 10 ? ", or see Plans for more" : ""}.`;
+  useEffect(() => {
+    if (!request) return;
+    if (request.kind === "open") {
+      const b = running.find((x) => (x.bot.config?.pool ?? x.bot.target?.pool) === request.pool);
+      if (b) setOpenId(b.id);
+    } else if (limit <= 0) access.openPlans();
+    else if (!canAdd) notify(fullMsg, true);
+    else {
+      setPreset(request.pair);
+      setAdding(true);
+    }
+    onRequestDone?.();
+  }, [request]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="panel agents-panel">
       <div className="panel-title">
         <span>AGENTS <span className="muted small">{running.length}/{Math.max(limit, 0)}{(state?.locked ?? 0) > 0.005 ? ` · ${fmtUsd(state!.locked!)} locked` : ""}</span></span>
-        <button className="btn buy agents-new" onClick={() => (limit <= 0 ? access.openPlans() : canAdd ? setAdding(true) : notify(`Your plan includes ${limit} agent${limit > 1 ? "s" : ""}. Stop one first, or see Plans for more.`, true))}>
-          + New Agent
-        </button>
+        {full ? null : (
+          <button className="btn buy agents-new" onClick={() => { if (limit <= 0) return access.openPlans(); setPreset(null); setAdding(true); }}>
+            + New Agent
+          </button>
+        )}
       </div>
       {running.length ? (
         <div className="agent-list">
@@ -46,7 +67,7 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults }:
             : "No agents yet. An agent trades one coin with the money you give it. Its AI decides when to buy and sell, starting the moment you create it."}
         </p>
       )}
-      {adding && freeId && <NewAgentModal slotId={freeId} state={state} defaults={defaults} notify={notify} onClose={() => setAdding(false)} onStarted={() => { setAdding(false); refresh(); }} takenPools={running.map((b) => b.bot.config?.pool ?? "")} />}
+      {adding && freeId && <NewAgentModal slotId={freeId} preset={preset} state={state} defaults={defaults} notify={notify} onClose={() => setAdding(false)} onStarted={() => { setAdding(false); refresh(); }} takenPools={running.map((b) => b.bot.config?.pool ?? "")} />}
       {opened && <AgentModal slot={opened} state={state} notify={notify} refresh={refresh} onOpen={onOpen} onClose={() => setOpenId(null)} />}
     </div>
   );
@@ -260,14 +281,18 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
   );
 }
 
-function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, takenPools }: { slotId: string; state: AppState | null; defaults: Defaults; notify: Notify; onClose: () => void; onStarted: () => void; takenPools: string[] }) {
+function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onStarted, takenPools }: { slotId: string; preset?: PairInfo | null; state: AppState | null; defaults: Defaults; notify: Notify; onClose: () => void; onStarted: () => void; takenPools: string[] }) {
   const [scan, setScan] = useState<{ scanned: number; pass: number; coins: AgentCoin[] } | null>(null);
   const [err, setErr] = useState("");
-  const [pick, setPick] = useState<PairInfo | null>(null);
+  const [pick, setPick] = useState<PairInfo | null>(preset ?? null);
   const [picking, setPicking] = useState<string | null>(null);
-  const [budget, setBudget] = useState(String(DEFAULT_BUDGET));
+  // Default budget: $1,000, or whatever is available if that is less.
+  const free = state?.available ?? state?.cash ?? 0;
+  const [budget, setBudget] = useState(String(free >= DEFAULT_BUDGET ? DEFAULT_BUDGET : Math.max(10, Math.floor(free))));
+  const quick = !!preset; // opened from the chart: the coin is chosen, only the budget is asked
   const [starting, setStarting] = useState(false);
   useEffect(() => {
+    if (quick) return; // no opportunities list in the quick window
     const load = () => api.agents().then(setScan).catch((e) => setErr(e.message));
     load();
     const id = window.setInterval(load, 30_000);
@@ -309,7 +334,7 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
   };
   const top = (scan?.coins ?? []).slice(0, 10);
   return (
-    <Modal title="New agent" onClose={onClose} wide
+    <Modal title={quick && pick ? `Start agent on ${pick.symbol}` : "New agent"} onClose={onClose} wide={!quick} narrow={quick}
       foot={
         <>
           <span className="muted small agent-foot-note">{problem || `${fmtUsd(amount)} will be locked for this agent: it leaves your Available cash, and stays in your equity.`}</span>
@@ -318,16 +343,20 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
         </>
       }>
       <div className="new-agent">
-        <p className="muted small">One agent trades one coin. The moment it starts, its AI reads every timeframe, the chart patterns, the coin's history and your past trades, and decides: <b>buy now</b>, buy at a level, or stay out. Each trade aims for <b>+10% after all fees</b>.</p>
+        {quick ? null : (
+          <>
+        <p className="muted small">One agent trades one coin. The moment it starts, its AI reads every timeframe, the chart patterns, the coin's history and your past trades, and decides: <b>buy now</b>, buy at a level, or stay out. Each trade aims for at least <b>+5% after all fees</b>; from there it locks each extra percent and sells when the price turns back.</p>
         <CoinSearch className="in-modal" placeholder="Search any coin by ticker, name or address…" notify={notify} onSelect={setPick} autoFocus />
+          </>
+        )}
         {pick ? (
           <div className="agent-picked">
             {pick.imageUrl ? <img src={pick.imageUrl} alt="" /> : <span className="sr-noicon">{pick.symbol.slice(0, 1)}</span>}
             <span><b>{pick.symbol}</b> <small className="muted">{pick.name} · {fmtPrice(pick.priceUsd)}</small></span>
-            <button className="chip" onClick={() => setPick(null)}>Change</button>
+            {quick ? null : <button className="chip" onClick={() => setPick(null)}>Change</button>}
           </div>
         ) : null}
-        <div className="agent-form">
+        <div className={`agent-form ${quick ? "quick" : ""}`}>
           <label>
             <span>Budget (paper money)</span>
             <div className="agent-budget"><i>$</i><input type="number" min={10} step={50} value={budget} onChange={(e) => setBudget(e.target.value)} /></div>
@@ -335,6 +364,8 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
           </label>
           <p className="muted small agent-form-note">Its AI decides when to buy and sell. There is no daily loss limit, cool-down or other brake: <b>the budget is the only limit</b>, so give it only what you're ready to lose.</p>
         </div>
+        {quick ? null : (
+          <>
         <div className="label-sm opp-title">Top 10 opportunities right now{scan ? <span className="muted"> · {scan.scanned} coins scanned by 8 scouts</span> : null}</div>
         {err ? <div className="muted small">Couldn't load the opportunities: {err}</div> : !scan ? <div className="muted small">Scanning…</div> : (
           <div className="opp-list">
@@ -354,6 +385,8 @@ function NewAgentModal({ slotId, state, defaults, notify, onClose, onStarted, ta
           </div>
         )}
         <p className="muted tiny">Scores come from eight rule-based scouts (trend, volume, real traders, holders, dev wallet, liquidity, momentum, age). They are not advice, and a high score is not a promise. Hover a row for each scout's reading.</p>
+          </>
+        )}
       </div>
     </Modal>
   );

@@ -92,7 +92,7 @@ export function SettingsButton({ alerts, fee, slip, onSaved, notify }: { alerts:
             </label>
           </div>
           <p className="small">
-            A buy plus a sell costs about <b>{(2 * ((f || 0) + (sl || 0))).toFixed(1)}%</b>. Agents aim for +10% after these costs, so their target sits that much higher on the price.
+            A buy plus a sell costs about <b>{(2 * ((f || 0) + (sl || 0))).toFixed(1)}%</b>. Agents aim for at least +5% after these costs, so their first target sits that much higher on the price.
           </p>
 
           <div className="settings-head">

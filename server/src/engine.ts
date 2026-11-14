@@ -54,6 +54,7 @@ export type Position = {
   secondLook?: boolean; // the AI already kept this trade open once at its stop-loss
   firstStop?: number; // the stop-loss before the AI's second look moved it
   extensions?: number; // times the AI extended the holding time
+  ladderStep?: number; // Agents: the highest whole % of profit after fees locked so far
 };
 
 export type Trade = {
@@ -154,6 +155,7 @@ export type LimitOrder = {
 };
 
 type State = {
+  resetAt?: number; // when this account was last reset (older copies are never saved over it)
   mode: "paper";
   startCash: number;
   cash: number;
@@ -520,12 +522,66 @@ function recTrade(t: Trade) {
   a.pending = a.pending.then(() => ledger(key, t as unknown as Record<string, unknown>)).catch(() => {});
 }
 
+// ---------- Stops and resets that stick ----------
+// Several server copies can hold the same account (the scheduler's, the dashboard's), and each
+// saves the whole account. A copy that is mid-step (waiting on the AI) holds an older version;
+// when it saved, it used to write a stopped agent back as running, or undo a reset.
+// So every Stop and Reset is also written to a small control record, and every save checks it:
+// an agent stopped after it last started stays stopped, and a copy from before a reset is not saved.
+type Ctl = { resetAt?: number; stops?: Record<string, number> };
+const ctlKey = (key: string) => `ctl:${key}`;
+function applyStops(st: State, ctl: Ctl | null) {
+  let changed = false;
+  for (const [id, at] of Object.entries(ctl?.stops ?? {})) {
+    const bot = id === "1" ? st.bot : st.bots?.find((b) => b.id === id)?.bot;
+    if (bot && bot.running && at > (bot.startedAt ?? 0)) {
+      bot.running = false;
+      bot.stoppedAt = at;
+      bot.target = null;
+      changed = true;
+    }
+  }
+  return changed;
+}
+const staleAfterReset = (st: State, ctl: Ctl | null) => (ctl?.resetAt ?? 0) > (st.resetAt ?? 0);
+function queueCtl(change: (c: Ctl) => void) {
+  const a = acct();
+  if (!a.key) return;
+  const key = a.key;
+  a.pending = a.pending
+    .then(async () => {
+      const c = (await store.kvGet<Ctl>(ctlKey(key))) ?? {};
+      change(c);
+      await store.kvSet(ctlKey(key), c);
+    })
+    .catch((e) => console.error("[store] control record failed:", e));
+}
+// After a long wait (the AI): was this agent stopped, or the account reset, by another copy meanwhile?
+async function stoppedElsewhere(): Promise<boolean> {
+  const a = acct();
+  if (!a.key) return !state.bot.running;
+  const ctl = await store.kvGet<Ctl>(ctlKey(a.key)).catch(() => null);
+  if (staleAfterReset(a.state, ctl)) return true;
+  applyStops(a.state, ctl);
+  return !state.bot.running;
+}
+
 function save() {
   const a = acct();
   a.dirty = false;
   if (!a.key) return; // signed-out visitors' views are never saved
+  const key = a.key;
   const copy = structuredClone(a.state);
-  a.pending = a.pending.then(() => store.save(copy, a.key!)).then(() => markActive(a)).catch((e) => console.error("[store] save failed:", e));
+  a.pending = a.pending
+    .then(async () => {
+      const ctl = await store.kvGet<Ctl>(ctlKey(key)).catch(() => null);
+      if (staleAfterReset(copy, ctl)) return; // the account was reset after this copy was loaded: never write it back
+      applyStops(copy, ctl); // an agent stopped elsewhere stays stopped
+      applyStops(a.state, ctl);
+      await store.save(copy, key);
+    })
+    .then(() => markActive(a))
+    .catch((e) => console.error("[store] save failed:", e));
 }
 // Wait for writes to finish (must happen before a Vercel function returns).
 export async function flush() {
@@ -652,7 +708,10 @@ export function updateSettings(s: Partial<Settings>) {
 }
 
 export function reset(startCash: number) {
+  const at = Date.now();
   acct().state = fresh(startCash);
+  acct().state.resetAt = at;
+  queueCtl((c) => { c.resetAt = at; c.stops = {}; }); // older copies of the account must not be saved over this
   rec("account.reset", `Paper account reset to $${startCash.toFixed(2)}`, { startCash });
   save();
 }
@@ -889,10 +948,13 @@ function startBotHere(cfg: BotConfig) {
 export function stopBot(reason = "Stopped by user", botId?: string): void {
   if (botId && botId !== currentBotId()) return withBot(botId, () => stopBot(reason));
   if (state.bot.running) rec("bot.stop", `Bot stopped: ${reason}`, { reason });
+  const at = Date.now();
+  const id = currentBotId();
   state.bot.running = false;
-  state.bot.stoppedAt = Date.now();
+  state.bot.stoppedAt = at;
   state.bot.target = null;
-  log(`Bot stopped: ${reason}`, "bad");
+  queueCtl((c) => { c.stops = { ...(c.stops ?? {}), [id]: at }; }); // so no other copy can save it back as running
+  log(`${isCoinAgent(state.bot.config ?? ({} as BotConfig)) ? "Agent" : "Bot"} stopped: ${reason}`, "bad");
   save();
 }
 
@@ -1266,8 +1328,7 @@ function buyFillPrice(o: CheckedOrder, q: Quote) {
 // ---------- Agents mode ----------
 // Eight rule-based agents score every busy Solana coin (no AI cost); the best coin that passes
 // every veto and the chart check gets one AI check, then a market buy aiming for +10% after fees.
-export const AGENT_GUARD_AT = 8; // % up before the exit moves above the buy price
-export const AGENT_NET_TARGET = 10; // % profit after all fees at the target
+export const AGENT_NET_TARGET = 5; // minimum % profit after all fees an agent's trade aims for; the profit ladder starts here
 const AGENT_STOP_MIN = 4, AGENT_STOP_MAX = 7; // exit distance, % below the buy price
 export type AgentDecision = { at: number; symbol: string; mint: string; total: number; ok: boolean; why: string };
 const agentNotes = new Map<string, number>(); // mint -> skip until (failed chart / AI check)
@@ -1438,7 +1499,7 @@ async function agentBrief(cfg: BotConfig): Promise<string> {
     `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you WILL buy at (buy_dip and/or buy_breakout), close enough to be reached in the next 10-30 minutes. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them. You will be asked again within 10 minutes, or sooner if the price moves ${AGENT_MOVE_PCT}%.`,
     `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. Put the stop where the idea is proved wrong.`,
     `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. An order is used unless your own numbers say it loses money on average after costs.`,
-    `After buying: from +${AGENT_GUARD_AT}% the exit moves above the buy price and then keeps half of the best gain; half is sold at your target and the rest trails; at the stop you are asked once whether to hold.`,
+    `After buying: the stop is yours until the trade is up +${AGENT_NET_TARGET}% after costs. From there the bot locks each whole percent of profit as the exit and waits for the next (${AGENT_NET_TARGET}%, ${AGENT_NET_TARGET + 1}%, ${AGENT_NET_TARGET + 2}% ...), selling when the price falls back to the last locked step. So a small first target that is reached is worth more than a big one that isn't; at the stop you are asked once whether to hold.`,
   ];
   if (L) {
     lines.push(`A study of this coin's own history (simple entry patterns replayed with these exact rules): ${L.summary}`);
@@ -1563,11 +1624,11 @@ async function tickBot(persist: boolean) {
       // Profit guard: once the trade is far enough up, the stop jumps to a small locked-in profit
       // after fees, so a winner can't turn into a loss. It starts at your "protect" setting, but at
       // the latest once up fees + 1.5% (new coins: only after their half-profit sale).
-      // Agents trades aim for +10% after fees: protection starts later (+8%), so normal swings
-      // don't close them at break-even (most "profit guard" exits lost money to fees).
-      const guardAt = pos.strategy === "agents" ? Math.max(AGENT_GUARD_AT, protectAt(cfg, cost)) : protectAt(cfg, cost);
+      // Agents' trades use the profit ladder below instead of the guard, lock, half-sale and trailing stop.
+      const ladder = pos.strategy === "agents";
+      const guardAt = protectAt(cfg, cost);
       const floor = pos.entryPrice * (1 + (cost + GUARD_PROFIT_PCT) / 100);
-      const guardOn = !isOff(cfg, "breakEvenAtPct");
+      const guardOn = !ladder && !isOff(cfg, "breakEvenAtPct");
       if (guardOn && gainPct >= guardAt && (pos.strategy !== "newcoin" || pos.partialDone)) {
         if (!pos.stopLoss || pos.stopLoss < floor) {
           pos.stopLoss = floor;
@@ -1587,7 +1648,7 @@ async function tickBot(persist: boolean) {
       }
       // Profit lock: once the best gain reaches the break-even level, the stop follows it up
       // so the trade keeps at least lockPct% of its best gain (judged on closing prices).
-      const lockPct = isOff(cfg, "lockPct") ? 0 : (cfg.lockPct ?? 50);
+      const lockPct = ladder || isOff(cfg, "lockPct") ? 0 : (cfg.lockPct ?? 50);
       let newBestThisCheck = false;
       if (q.peakHigh > (pos.best ?? pos.entryPrice)) {
         pos.best = q.peakHigh;
@@ -1605,8 +1666,25 @@ async function tickBot(persist: boolean) {
             log(`${pos.symbol} best gain +${bestGainPct.toFixed(1)}%: profit lock raised to ${fmt(lock)} (keeps at least ${lockPct}% of the gain).`, "good");
         }
       }
+      // Profit ladder (agents): once the best gain reaches +5% after fees, that whole percent is
+      // locked as the exit and the trade waits for the next one: 5 -> 6 -> 7 ... It sells when the
+      // price closes back at the last locked step, so it rides a run and gets out when it turns.
+      if (ladder) {
+        const bestNet = bestGainPct - cost;
+        if (bestNet >= AGENT_NET_TARGET) {
+          const step = Math.floor(bestNet + 1e-9);
+          const lock = pos.entryPrice * (1 + (cost + step) / 100);
+          if (!pos.stopLoss || lock > pos.stopLoss * 1.00001) {
+            pos.stopLoss = lock;
+            pos.locked = true;
+            pos.ladderStep = step;
+            acct().dirty = true;
+            log(`${pos.symbol} reached +${step}% after fees: that profit is locked (exit ${fmt(lock)}). Waiting for +${step + 1}%.`, "good");
+          }
+        }
+      }
       // Take half before the target: targets often sit at resistance, where a run can stall.
-      const partialAt = pos.strategy === "agents" ? 100 : isOff(cfg, "partialAtPct") ? 0 : (cfg.partialAtPct ?? 100);
+      const partialAt = ladder || isOff(cfg, "partialAtPct") ? 0 : (cfg.partialAtPct ?? 100);
       if (pos.strategy !== "newcoin" && partialAt > 0 && !pos.partialDone && pos.target && pos.target > pos.entryPrice) {
         const level = pos.entryPrice + (pos.target - pos.entryPrice) * (partialAt / 100);
         const be = pos.entryPrice * (1 + cost / 100);
@@ -1633,12 +1711,12 @@ async function tickBot(persist: boolean) {
       // At the target, don't sell yet: ride it with a trailing stop.
       const trail = pos.trailPct ?? cfg.trailPct ?? 3;
       let newHighThisCheck = false;
-      if (isOff(cfg, "trailPct") && pos.strategy !== "newcoin" && pos.target && q.high >= pos.target) {
+      if (!ladder && isOff(cfg, "trailPct") && pos.strategy !== "newcoin" && pos.target && q.high >= pos.target) {
         const t = sell(pos.id, Math.max(pos.target, price), 1, "Reached the target (trailing stop off)");
         log(`${pos.symbol} reached its target ${fmt(pos.target)}: sold everything @ ${fmt(t.price)} (trailing stop is off).`, "good");
         return;
       }
-      if (!pos.trailing && pos.target && q.high >= pos.target) {
+      if (!ladder && !pos.trailing && pos.target && q.high >= pos.target) {
         pos.trailing = true;
         pos.peak = Math.max(pos.target, q.peakHigh);
         newHighThisCheck = true;
@@ -1662,7 +1740,7 @@ async function tickBot(persist: boolean) {
         reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
         sellAt = Math.min(trailStop, price);
       } else if (pos.stopLoss && (pos.stopLoss >= pos.entryPrice ? (newBestThisCheck ? price : q.closeLow) : q.low) <= pos.stopLoss) {
-        reason = pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
+        reason = pos.locked && ladder ? `Profit ladder: sold at the +${pos.ladderStep ?? AGENT_NET_TARGET}% step (best was +${(bestGainPct - cost).toFixed(1)}% after fees)` : pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
         sellAt = Math.min(pos.stopLoss, price);
       } else if (pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
       else if (!pos.target && pos.takeProfit && q.high >= pos.takeProfit) {
@@ -1774,6 +1852,7 @@ async function tickBot(persist: boolean) {
       return;
     }
 
+    if (askedAt && (await stoppedElsewhere())) return; // stopped or reset while the AI was thinking: do nothing
     // 4. Carry out the plan's standing orders, checked every 5 seconds.
     const sig = state.lastSignal;
     const t3 = isAuto(cfg) ? state.bot.target : tgt;
