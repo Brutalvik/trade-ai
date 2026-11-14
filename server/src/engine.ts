@@ -1005,9 +1005,14 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
   rec("ai.analysis", `${opts.forBot ? "Bot re-plan" : "AI analysis"} on ${pair.symbol}: ${apiTokens.toLocaleString()} AI tokens (${appTokens.toLocaleString()} app tokens)`, { symbol: pair.symbol, pool, model, apiTokens, appTokens, forBot: !!opts.forBot, stance: consensus.stance });
   const shown = results.filter((r) => r.model !== "Forecaster panel");
-  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results: shown, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}) };
-  state.bot.armedSince = []; // a new plan: its triggers start fresh
-  state.bot.skipNoted = [];
+  // Your own Analyze (from the dashboard) never replaces the plan of an agent that is running:
+  // the agent's orders are judged differently (the prediction check) and must stay its own.
+  // The analysis is still returned to you; it just isn't something the agent trades on.
+  if (opts.forBot || !state.bot.running) {
+    state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results: shown, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}) };
+    state.bot.armedSince = []; // a new plan: its triggers start fresh
+    state.bot.skipNoted = [];
+  }
   save();
   return { pair, snapshot: snap, results: shown, consensus, patterns };
 }
@@ -1460,10 +1465,10 @@ function claudeDue(cfg: BotConfig, price: number | null, dex: number | null = pr
   if (Date.now() > c.expiresAt) return "the plan expired";
   if (price !== null && c.cancelBelow > 0 && price < c.cancelBelow) return `the price fell below the plan's cancel level (${fmt(c.cancelBelow)})`;
   if (price !== null && c.cancelAbove > 0 && price > c.cancelAbove) return `the price rose above the plan's range (${fmt(c.cancelAbove)})`;
-  // A real move since the plan: 4%, or twice the coin's usual 5-minute swing on a very jumpy
-  // coin (otherwise its normal wiggle would have the AI asked every half minute), measured on
-  // the same pool price the plan was made at, and not within 90 s of that plan.
-  const moveAt = Math.max(AGENT_MOVE_PCT, 2 * (sig.atrPct ?? 0));
+  // A real move since the plan: 4%, or one of the coin's usual 5-minute swings if that is bigger
+  // (a very jumpy coin wiggles 4% all the time), measured on the same pool price the plan was
+  // made at, and not within 90 s of that plan, so the AI is never asked every half minute.
+  const moveAt = Math.max(AGENT_MOVE_PCT, sig.atrPct ?? 0);
   if (isCoinAgent(cfg) && dex !== null && sig.priceAt && Date.now() - sig.at >= 90_000 && (Math.abs(dex - sig.priceAt) / sig.priceAt) * 100 >= moveAt)
     return `the price moved ${(((dex - sig.priceAt) / sig.priceAt) * 100).toFixed(1)}% since the AI's plan`;
   if (Date.now() - state.bot.lastAnalysisAt >= cfg.analyzeEverySec * 1000) return isCoinAgent(cfg) ? "time for a fresh look" : "backup re-check";
@@ -2264,6 +2269,12 @@ async function tickBot(persist: boolean) {
         continue;
       }
       if (!triggerMet(o, q)) {
+        // Past the breakout level but without the volume the AI asked for: say so (once per plan),
+        // so a price above the line never looks like a buy that was missed.
+        if (o.kind === "buy_breakout" && o.minVolumeRatio > 0 && q.high >= o.triggerPrice) {
+          const usual = (q.pair.volume1h ?? 0) / 12;
+          noteOnce(`vol:${sig.at}:${i}`, `${t3.symbol} is above the breakout level ${fmt(o.triggerPrice)}, but this order also needs the last 5 minutes' trading volume to be at least ${o.minVolumeRatio}x the usual (the AI's own condition, so it doesn't buy a breakout nobody is backing). It is ${usual > 0 ? ((q.pair.volume5m ?? 0) / usual).toFixed(1) : "0.0"}x now. Not buying unless volume picks up.`);
+        }
         if (state.bot.armedSince[i]) log(`${t3.symbol} ${label} didn't hold (now ${fmt(pair.priceUsd)}); still waiting.`);
         state.bot.armedSince[i] = null;
         continue;

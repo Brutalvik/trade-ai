@@ -1077,7 +1077,15 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 
 /* Agents panel */
 .agents-panel .panel-title { align-items: center; }
-.agents-new { padding: 6px 12px; font-size: 12px; border-radius: 9px; font-family: Inter, system-ui, sans-serif; letter-spacing: 0; }
+.agents-new { padding: 6px 12px; font-size: 12px; border-radius: 9px; font-family: Inter, system-ui, sans-serif; letter-spacing: 0; white-space: nowrap; flex: none; }
+/* Title row: AGENTS 3/10 · $3,500.00 [lock]. The amount and its lock stay together if the row has to wrap. */
+.agents-head { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.agents-count { color: #c9d6f5; letter-spacing: 1px; }
+.agents-money { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: #f1f5ff; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px; font-weight: 600; letter-spacing: 0; }
+.agents-money::before { content: "·"; margin-right: 3px; color: var(--muted); font-weight: 400; }
+.agents-lock { position: relative; display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: var(--amber); cursor: pointer; }
+.agents-lock:hover, .agents-lock:focus-visible { background: rgba(255, 200, 87, 0.14); outline: none; }
+.agents-lock[data-tip]:hover::after, .agents-lock[data-tip]:focus-visible::after { left: 50%; top: calc(100% + 8px); transform: translateX(-50%); font-family: Inter, system-ui, sans-serif; font-weight: 500; letter-spacing: 0; }
 .agents-empty { line-height: 1.5; margin: 4px 0 10px; }
 .agents-classic { display: block; margin: 10px 0 0 auto; font-size: 11px; color: var(--muted); }
 .agents-classic.back { margin: 0 0 0 auto; }

@@ -91,7 +91,7 @@ export type AppState = {
   storage: Status["storage"];
   orders?: LimitOrder[]; // open limit buys / sells
   signedOut?: boolean; // true = not signed in as the account owner: an empty $0 view
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; patterns?: FramePatterns[]; desk?: DeskView } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; desk?: DeskView } | null;
   bots?: BotSlot[]; // extra bots (2 and 3); bot 1 is bot / lastSignal
 };
 export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };

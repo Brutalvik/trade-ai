@@ -194,7 +194,10 @@ export default function App() {
   const savedPlan = analysis && analysis.at >= lastTradeAt ? analysis : null;
   // Signed out: no real AI plans (only a demo in the AI panel), and no plan lines on the chart.
   const demo = !!state?.signedOut;
-  const shownPlan = demo ? null : savedPlan && (!botSig || savedPlan.at >= botSig.at) ? savedPlan : botSig;
+  // An agent running on this coin: only its own plan is shown (your earlier analysis of the coin
+  // is not what it trades on, so its levels must not appear on the chart as if they were).
+  const agentHere = !!botHere && botHere.bot.running && botHere.bot.config?.pool === pair?.pool;
+  const shownPlan = demo ? null : agentHere ? botSig : savedPlan && (!botSig || savedPlan.at >= botSig.at) ? savedPlan : botSig;
   const sig = shownPlan?.consensus;
   const results = shownPlan?.results;
   const botOnThisCoin = allBots(state).some((b) => b.bot.running && b.bot.config?.pool === pair?.pool && (b.bot.config?.pick === "this" || b.bot.config?.pick === "agent"));
@@ -225,8 +228,12 @@ export default function App() {
       ];
     }
     if (!sig?.orders?.length) return [];
-    const out: ChartLine[] = sig.orders.map((o) => ({ price: o.triggerPrice, color: "#00e5ff", title: o.kind === "buy_breakout" ? "BUY ABOVE" : "BUY BELOW" }));
-    out.push({ price: sig.orders[0].target, color: "#00f5a0", title: "TARGET" }, { price: sig.orders[0].stopLoss, color: "#ff3d71", title: "EXIT" });
+    // Only orders that passed their check are buy lines (with the first one's target and exit).
+    // A level that failed is drawn grey and named as not used, so it never looks like a live order.
+    const live = sig.orders.filter((o) => !o.warning);
+    if (!live.length) return sig.orders.map((o) => ({ price: o.triggerPrice, color: "#7182a8", title: o.kind === "buy_breakout" ? "BREAKOUT (NOT USED)" : o.kind === "buy_dip" ? "DIP (NOT USED)" : "BUY NOW (NOT USED)" }));
+    const out: ChartLine[] = live.map((o) => ({ price: o.triggerPrice, color: "#00e5ff", title: o.kind === "buy_breakout" ? "BUY ABOVE" : "BUY BELOW" }));
+    out.push({ price: live[0].target, color: "#00f5a0", title: "TARGET" }, { price: live[0].stopLoss, color: "#ff3d71", title: "EXIT" });
     return out;
   }, [state?.positions, pair?.pool, sig]);
   const lines = useMemo(() => [...planLines, ...orderLines], [planLines, orderLines]);
@@ -488,6 +495,22 @@ export function describeOrder(o: CheckedOrder, waitForHold = false) {
 
 function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: number; waitForHold?: boolean }) {
   const below = minWin !== undefined && o.winChancePct < minWin;
+  // An agent's order: judged on the combined chance of reaching +5% after fees before the stop.
+  if (o.prediction) {
+    const what = o.kind === "buy_dip" ? `a dip to ${fmtPrice(o.triggerPrice)}` : o.kind === "buy_breakout" ? `a breakout above ${fmtPrice(o.triggerPrice)}` : `buying now, up to ${fmtPrice(o.triggerPrice)}`;
+    return (
+      <div className={`order ${o.warning ? "risky" : ""}`}>
+        <b>{o.warning ? `Not an order: ${what}` : describeOrder(o, waitForHold)}</b>
+        <span className="tiny">
+          <b className={o.warning ? "down" : "up"}>{Math.round(o.prediction.pWin)}% chance of reaching +5% after fees</b> · needs {Math.ceil(o.prediction.needPct)}% to be worth buying
+        </span>
+        <span className="muted tiny">
+          Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · reaching +5% is worth about +{o.prediction.winNetPct.toFixed(1)}%, missing costs about {o.prediction.lossPct.toFixed(1)}% · max {Math.round(o.maxHoldMinutes)} min
+        </span>
+        {o.warning && <span className="order-warning">The agent won't buy here: the odds aren't good enough. See its window for every forecaster's number.</span>}
+      </div>
+    );
+  }
   return (
     <div className={`order ${below ? "dim" : ""} ${o.warning ? "risky" : ""}`}>
       <b>{describeOrder(o, waitForHold)}</b>
@@ -498,7 +521,7 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
       <span className="muted tiny">
         Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · from <span className="up">{fmtPrice(o.target)}</span> it rides the trend · +{o.netRewardPct.toFixed(1)}% after fees vs {o.netRiskPct.toFixed(1)}% risk · max {Math.round(o.maxHoldMinutes)} min
       </span>
-      {o.warning && <span className="order-warning">⚠ Risky: {o.warning.replace(/^Fails the fee\/risk check: /, "it ")} The bot uses it only if you start it and choose "I understand, trade anyway".</span>}
+      {o.warning && <span className="order-warning">⚠ Risky: {o.warning.replace(/^Fails the fee\/risk check: /, "it ")}</span>}
     </div>
   );
 }
@@ -673,7 +696,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           </div>
         ) : (
           <span className="title-actions">
-            {!sig && props.botPlanning ? null : access.can("ai.analyze") ? (
+            {(!sig && props.botPlanning) || botOnThisCoin ? null : access.can("ai.analyze") ? (
               <button className="btn ghost" onClick={() => run()} disabled={!pair || !hasAI}>{sig ? "Analyze again" : "Analyze"}</button>
             ) : (
               <LockChip label="AI plans" />
@@ -707,7 +730,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         <>
           {analyzedAt && (
             <p className="muted tiny">
-              {loading ? "The AI is making a new plan…" : `Analyzed ${fmtAgo(analyzedAt)} · kept until you press Analyze again${stale ? ` (re-checking: ${stale})` : ", or until it can no longer play out"}`}
+              {loading ? "The AI is making a new plan…" : botOnThisCoin ? `The agent's own plan, made ${fmtAgo(analyzedAt)}. It looks again by itself.` : `Analyzed ${fmtAgo(analyzedAt)} · kept until you press Analyze again${stale ? ` (re-checking: ${stale})` : ", or until it can no longer play out"}`}
             </p>
           )}
           <div className={`verdict ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>
@@ -718,9 +741,11 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
           {sig.orders?.length > 0 && (
             <div className="orders">
               {sig.stance === "AVOID" ? (
-                <div className="avoid-setup">⚠ Risky setup: the AI advises against trading now. These are its best levels if you trade anyway; the bot uses them only if you start it and choose "I understand, trade anyway".</div>
+                sig.orders.some((o) => o.prediction)
+                  ? <div className="avoid-setup">No buy order right now. These are the AI's best levels, but the odds at them aren't good enough, so the agent won't buy there. It looks again on its own.</div>
+                  : <div className="avoid-setup">⚠ Risky setup: the AI advises against trading now. These are its best levels if you trade anyway.</div>
               ) : (
-                <div className="label-sm">Standing orders: the bot buys on its own the moment one triggers</div>
+                <div className="label-sm">{botOnThisCoin ? "The agent's orders: it buys on its own the moment one triggers" : "The AI's suggested orders (nothing is bought unless you buy, or start an agent)"}</div>
               )}
               {sig.orders.map((o, i) => (
                 <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
@@ -1018,6 +1043,9 @@ const LINE_NAME: Record<string, string> = {
   "PROTECT STOP": "Protection stop",
   "BUY BELOW": "Buy if it dips to",
   "BUY ABOVE": "Buy if it breaks above",
+  "DIP (NOT USED)": "No order (odds too low): dip to",
+  "BREAKOUT (NOT USED)": "No order (odds too low): breakout above",
+  "BUY NOW (NOT USED)": "No order (odds too low): buying now up to",
   "LIMIT BUY": "Your limit buy",
   "LIMIT SELL": "Your limit sell",
 };
@@ -1029,7 +1057,10 @@ const LINE_HELP: Record<string, string> = {
   "TRAILING STOP": "Follows the price up; sells if it falls back to this line.",
   "PROTECT STOP": "Your manual trade sells if the price falls back to this line.",
   "BUY BELOW": "The AI's standing order: the bot buys if the price dips to this line.",
-  "BUY ABOVE": "The AI's standing order: the bot buys if the price breaks above this line.",
+  "BUY ABOVE": "The AI's standing order: the agent buys if the price breaks above this line. If the order asks for extra trading volume (shown in the AI Signal card and the agent's window), the price alone is not enough.",
+  "DIP (NOT USED)": "The AI's level for buying a dip. It did not pass the check on its odds, so nothing is bought at this line.",
+  "BREAKOUT (NOT USED)": "The AI's level for buying a breakout. It did not pass the check on its odds, so nothing is bought at this line.",
+  "BUY NOW (NOT USED)": "The AI's price for buying right away. It did not pass the check on its odds, so nothing is bought at this line.",
   "LIMIT BUY": "Your limit buy: fills automatically if the price falls to this line.",
   "LIMIT SELL": "Your limit sell: fills automatically if the price rises to this line.",
 };

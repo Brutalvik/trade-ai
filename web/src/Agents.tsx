@@ -49,7 +49,18 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, r
   return (
     <div className="panel agents-panel">
       <div className="panel-title">
-        <span>AGENTS <span className="muted small">{running.length}/{Math.max(limit, 0)}{(state?.locked ?? 0) > 0.005 ? ` · ${fmtUsd(state!.locked!)} locked` : ""}</span></span>
+        <span className="agents-head">
+          <span>AGENTS</span>
+          <span className="agents-count">{running.length}/{Math.max(limit, 0)}</span>
+          {(state?.locked ?? 0) > 0.005 ? (
+            <span className="agents-money">
+              {fmtUsd(state!.locked!)}
+              <span className="agents-lock" tabIndex={0} role="img" aria-label="The budgets set aside for your agents" data-tip="The budgets set aside for your agents">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
+              </span>
+            </span>
+          ) : null}
+        </span>
         {full ? null : (
           <button className="btn buy agents-new" onClick={() => { if (limit <= 0) return access.openPlans(); setPreset(null); setAdding(true); }}>
             + New Agent
@@ -93,7 +104,12 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   // The AI's latest plan for this agent's coin.
   const plan = slot.lastSignal && slot.lastSignal.pool === (cfg?.pool ?? pool) ? slot.lastSignal : slot.lastSignal;
   const c = plan?.consensus;
-  const order = c?.orders.find((o) => !o.warning) ?? c?.orders[0];
+  // The order it will act on; if none passed, the one that came closest to passing.
+  const gap = (o: CheckedOrder) => (o.prediction ? o.prediction.needPct - o.prediction.pWin : 0);
+  const order = c?.orders.find((o) => !o.warning) ?? [...(c?.orders ?? [])].sort((x, y) => gap(x) - gap(y))[0];
+  const refused = !!order?.warning;
+  // A "real move" that makes it look again early: 4%, or one of the coin's usual 5-minute swings if that is bigger.
+  const moveAt = Math.ceil(Math.max(4, plan?.atrPct ?? 0));
   const okRes = plan?.results.find((r) => r.ok);
   const reasoning = okRes && okRes.ok ? okRes.signal.reasoning : "";
   const at = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -118,11 +134,12 @@ function useAgent(slot: BotSlot, state: AppState | null) {
       : !c
         ? "The AI is reading the charts and deciding…"
         : c.stance === "AVOID" || !order
-          ? `${order?.prediction && order.warning ? "No order passed the prediction check" : "The AI sees no bet worth taking right now"}${order ? ` (closest: ${order.kind === "buy_breakout" ? "above" : "at"} ${fmtPrice(order.triggerPrice)}, ${chance(order)})` : ""}. It looks again by ${at(nextLook)}, or sooner on a real move (4% or more).`
+          ? `${order?.prediction && order.warning ? "No buy order right now: no setup had good enough odds" : "The AI sees no bet worth taking right now"}${order ? ` (closest: ${order.kind === "buy_breakout" ? "a breakout above" : order.kind === "buy_dip" ? "a dip to" : "buying now at"} ${fmtPrice(order.triggerPrice)}, ${chance(order)})` : ""}. It will not buy at that level. It looks again by ${at(nextLook)}, or sooner if the price moves about ${moveAt}%.`
           : order.kind === "buy_now"
             ? `The AI says buy now (up to ${fmtPrice(order.triggerPrice)}): ${chance(order)}`
-            : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}: ${chance(order)}`;
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk };
+            : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}${order.kind === "buy_breakout" && order.minVolumeRatio > 0 ? `, but only on at least ${order.minVolumeRatio}× the usual trading volume` : ""}: ${chance(order)}`;
+  const said = okRes && okRes.ok ? okRes.signal.stance : undefined; // what the AI itself answered, before the check on its odds
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, said, moveAt, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk };
 }
 
 // The prediction behind an agent's order: every forecaster's chance that the price reaches the
@@ -319,8 +336,10 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
           {a.isAgent ? <div><small>Locked cash</small><b>{fmtUsd(state?.locks?.find((l) => l.id === a.id)?.usd ?? 0)}</b></div> : null}
           <div><small>Trades</small><b>{a.sells.length}</b></div>
           <div><small>Profitable</small><b>{a.sells.length ? `${wins} of ${a.sells.length}` : "–"}</b></div>
-          {a.order && !a.pos ? <div><small>{a.order.kind === "buy_now" ? "Buys now up to" : a.order.kind === "buy_breakout" ? "Buys above" : "Buys at"}</small><b>{fmtPrice(a.order.triggerPrice)}</b></div> : null}
-          {a.order && !a.pos ? <div><small>Exit / target</small><b>{fmtPrice(a.order.stopLoss)} / {fmtPrice(a.order.target)}</b></div> : null}
+          {a.order && !a.pos && !a.refused ? <div><small>{a.order.kind === "buy_now" ? "Buys now up to" : a.order.kind === "buy_breakout" ? (a.order.minVolumeRatio > 0 ? `Buys above, on ${a.order.minVolumeRatio}× volume` : "Buys above") : "Buys at"}</small><b>{fmtPrice(a.order.triggerPrice)}</b></div> : null}
+          {a.order && !a.pos && !a.refused ? <div><small>Exit / target</small><b>{fmtPrice(a.order.stopLoss)} / {fmtPrice(a.order.target)}</b></div> : null}
+          {a.order && !a.pos && a.refused ? <div><small>Buy order</small><b>None right now</b></div> : null}
+          {a.order && !a.pos && a.refused ? <div><small>Closest setup, not used</small><b>{a.order.kind === "buy_breakout" ? "above " : a.order.kind === "buy_dip" ? "dip to " : ""}{fmtPrice(a.order.triggerPrice)}</b></div> : null}
           {a.pos ? <div><small>Now, after fees</small><b className={a.netAt(a.pos.lastPrice) >= 0 ? "up" : "down"}>{a.pct(a.netAt(a.pos.lastPrice))}</b></div> : null}
           {a.pos ? <div><small>Best so far</small><b>{a.pct(a.netAt(a.pos.best ?? a.pos.lastPrice))}</b></div> : null}
           {a.pos ? <div><small>{a.pm ? "Sells at (locked or trailing)" : "Stop-loss"}</small><b>{a.pos.stopLoss ? `${fmtPrice(a.pos.stopLoss)} (${a.pct(a.netAt(a.pos.stopLoss))})` : "–"}</b></div> : null}
@@ -346,9 +365,9 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
           <>
             <div className="label-sm">The AI's decision</div>
             <div className={`agent-learned ${a.plan.stance === "AVOID" ? "" : "has"}`}>
-              <b>{a.plan.stance === "BUY_NOW" ? "Buy now" : a.plan.stance !== "AVOID" ? "Buy at its level" : a.order?.prediction && a.order.warning ? "It wanted to buy, but the odds weren't good enough" : "Stay out for now"}</b> · {a.plan.confidence}% sure{a.order && a.plan.stance !== "AVOID" ? ` · ${a.order.prediction ? `${Math.round(a.order.prediction.pWin)}% combined chance` : `${a.order.winChancePct}% win chance`} · aims for +${a.order.netRewardPct.toFixed(1)}% after fees, risks ${a.order.netRiskPct.toFixed(1)}%` : ""}
+              <b>{a.plan.stance === "BUY_NOW" ? "Buy now" : a.plan.stance !== "AVOID" ? "Buy at its level" : a.order?.prediction && a.order.warning ? (a.said === "BUY_NOW" ? "It wanted to buy now, but the odds weren't good enough" : a.said === "WAIT_FOR_TRIGGER" ? "It gave levels to buy at, but the odds at them weren't good enough" : "Stay out: even its best setup has poor odds") : "Stay out for now"}</b> · {a.plan.confidence}% sure{a.order && a.plan.stance !== "AVOID" ? ` · ${a.order.prediction ? `${Math.round(a.order.prediction.pWin)}% combined chance` : `${a.order.winChancePct}% win chance`} · aims for +${a.order.netRewardPct.toFixed(1)}% after fees, risks ${a.order.netRiskPct.toFixed(1)}%` : ""}
               {a.reasoning ? <><br />{a.reasoning}</> : null}
-              {!a.pos && a.nextLook ? <><br /><span className="muted">Next look by {new Date(a.nextLook).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, or sooner on a real move (4% or more) or when an order fills.</span></> : null}
+              {!a.pos && a.nextLook ? <><br /><span className="muted">Next look by {new Date(a.nextLook).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, or sooner if the price moves about {a.moveAt}%{a.refused ? "" : ", or when an order fills"}.</span></> : null}
             </div>
           </>
         ) : null}
