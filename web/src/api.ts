@@ -16,13 +16,36 @@ export type PairInfo = {
 };
 export type Snapshot = { price: number; ema9: number; ema21: number; ema50: number; rsi14: number; atrPct: number; volRatio: number; change1: number; change12: number; high50: number; low50: number; techScore: number };
 export type PlanOrder = { kind: "buy_now" | "buy_dip" | "buy_breakout"; triggerPrice: number; confirmSeconds: number; minVolumeRatio: number; stopLoss: number; target: number; maxHoldMinutes: number; winChancePct: number };
-export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number; warning?: string }; // warning = fails the fee/risk check (risky)
+export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number; warning?: string; prediction?: OrderPrediction }; // warning = fails the fee/risk (or, for agents, the prediction) check
+// Agents: every forecaster's chance that the order reaches the minimum profit before its stop, and the combined chance it is judged on.
+export type FcKey = "ai" | "panel" | "worlds" | "lookalikes" | "baseRate" | "combined";
+export type OrderPrediction = {
+  pWin: number; needPct: number; winNetPct: number; lossPct: number;
+  parts: { key: FcKey; label: string; pct: number; adjPct: number; weight: number; note?: string }[];
+  worlds?: { trend: number; flat: number; paths: number; from: string; minutesToWin: number | null; pStop: number; pNone: number; filledPct: number };
+  panel?: { who: string; pct: number; reason: string }[];
+  truncated?: boolean;
+};
+// The forecast desk: what the numbers alone say about buying right now.
+export type DeskView = {
+  at: number; price: number; upPct: number; paths: number;
+  cone: { min: number; lo: number; mid: number; hi: number }[];
+  rows: { stopPct: number; worlds: number | null; trend: number | null; flat: number | null; baseRate: number | null; lookalikes: number | null; lookN: string | null; numbers: number; needPct: number }[];
+  next60: { mid: number; lo: number; hi: number } | null;
+};
+// The scoreboard: every forecast checked against what really happened (whole account).
+export type FcStat = { n: number; sumP: number; hits: number; brier: number };
+export type Scoreboard = {
+  stats: Partial<Record<FcKey, FcStat>> & { taken?: { n: number; hits: number }; refused?: { n: number; hits: number }; scored?: number };
+  last: { at: number; symbol: string; kind: string; pWin: number; aiPct: number; passed: boolean; out: "win" | "stop" | "none" }[];
+  waiting: number;
+};
 export type Signal = { stance: "BUY_NOW" | "WAIT_FOR_TRIGGER" | "AVOID"; confidence: number; riskLevel: string; reasoning: string; orders: PlanOrder[]; cancelBelow: number; cancelAbove: number; validMinutes: number };
 export type ModelResult = { model: string; ok: true; signal: Signal; ms: number } | { model: string; ok: false; error: string; ms: number };
 export type Consensus = { action: "BUY" | "SELL" | "HOLD"; stance: Signal["stance"]; orders: CheckedOrder[]; cancelBelow: number; cancelAbove: number; expiresAt: number; confidence: number; entryPrice: number; takeProfit: number; stopLoss: number; holdMinutes: number; buyBy: number; sellBy: number; netRewardPct: number; netRiskPct: number; agreement: boolean; note: string };
 // Agents: how a trade's profit is managed once the minimum is reached (floor = locked exit; trailPct = how far behind the high the exit follows).
 export type ProfitPlan = { floor: number; trailPct: number; by: "ai" | "rule"; asks: number; fails: number; at?: number; nextAt?: number; target?: number; note?: string; confidence?: number };
-export type Position = { pm?: ProfitPlan; best?: number; id: string; botId?: string; imageUrl?: string; adopted?: boolean; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
+export type Position = { pm?: ProfitPlan; best?: number; prediction?: OrderPrediction; id: string; botId?: string; imageUrl?: string; adopted?: boolean; chain: string; pool: string; symbol: string; qty: number; entryPrice: number; costUsd: number; openedAt: number; takeProfit?: number; stopLoss?: number; sellBy?: number; source: "manual" | "bot"; lastPrice: number; target?: number; trailPct?: number; peak?: number; trailing?: boolean; protectPct?: number; protectSince?: number };
 export type Trade = { id: string; botId?: string; time: number; side: "BUY" | "SELL"; symbol: string; pool: string; price: number; qty: number; usd: number; feeUsd: number; pnlUsd?: number; reason: string; source: "manual" | "bot"; predictedWinPct?: number; reachedTarget?: boolean; auto?: boolean; strategy?: "newcoin"; platformFeeUsd?: number };
 export type BotConfig = { chain: string; pool: string; symbol: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins" | "agents" | "agent"; budgetUsd?: number; agentAiCheck?: boolean; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
 // Agents: the eight scouts' reading of a coin, and what an agent learned from its coin's history.
@@ -39,6 +62,7 @@ export type AppState = {
   available?: number; // cash you can spend yourself (cash minus what is locked for agents)
   locked?: number; // cash set aside for running agents (still part of equity)
   locks?: { id: string; symbol: string; usd: number }[];
+  fc?: Scoreboard | null;
   roundTripCostPct: number;
   positions: Position[];
   trades: Trade[];
@@ -67,7 +91,7 @@ export type AppState = {
   storage: Status["storage"];
   orders?: LimitOrder[]; // open limit buys / sells
   signedOut?: boolean; // true = not signed in as the account owner: an empty $0 view
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; patterns?: FramePatterns[] } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; patterns?: FramePatterns[]; desk?: DeskView } | null;
   bots?: BotSlot[]; // extra bots (2 and 3); bot 1 is bot / lastSignal
 };
 export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };

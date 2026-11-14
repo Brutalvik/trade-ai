@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { Modal, useAccess } from "./Account";
 import { CoinSearch } from "./CoinSearch";
 import { findCoinPair } from "./CoinList";
-import { allBots, api, fmtPrice, fmtUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type PairInfo } from "./api";
+import { allBots, api, fmtPrice, fmtUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type CheckedOrder, type FcKey, type OrderPrediction, type PairInfo } from "./api";
 
 const DEFAULT_BUDGET = 1000;
 type Notify = (m: string, bad?: boolean) => void;
@@ -107,6 +107,8 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const netAt = (p: number) => (pos ? ((p - pos.entryPrice) / pos.entryPrice) * 100 - cost : 0);
   const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
   const pm = pos?.pm;
+  // An agent's order is judged on the combined chance (its AI, the numbers, the forecaster panel).
+  const chance = (o: CheckedOrder) => (o.prediction ? `${Math.round(o.prediction.pWin)}% chance of reaching +5%, needs ${Math.ceil(o.prediction.needPct)}%` : `${o.winChancePct}% win chance`);
   const status = pos
     ? pm
       ? `In profit: ${pct(netAt(pos.lastPrice))} after fees now (best ${pct(netAt(pos.best ?? pos.lastPrice))}). ${pm.by === "ai" ? "The AI is holding for more" : pm.fails ? "The AI can't be reached, so a fixed rule is holding" : "The minimum is locked; asking the AI"}: it sells at ${fmtPrice(pos.stopLoss ?? pm.floor)} (${pct(netAt(pos.stopLoss ?? pm.floor))})${pm.target ? `, expects ${fmtPrice(pm.target)}` : ""}.`
@@ -116,11 +118,101 @@ function useAgent(slot: BotSlot, state: AppState | null) {
       : !c
         ? "The AI is reading the charts and deciding…"
         : c.stance === "AVOID" || !order
-          ? `The AI sees no bet worth taking right now${order ? ` (closest: ${order.kind === "buy_breakout" ? "above" : "at"} ${fmtPrice(order.triggerPrice)}, ${order.winChancePct}% win chance)` : ""}. It looks again by ${at(nextLook)}, or sooner if the price moves 4%.`
+          ? `${order?.prediction && order.warning ? "No order passed the prediction check" : "The AI sees no bet worth taking right now"}${order ? ` (closest: ${order.kind === "buy_breakout" ? "above" : "at"} ${fmtPrice(order.triggerPrice)}, ${chance(order)})` : ""}. It looks again by ${at(nextLook)}, or sooner on a real move (4% or more).`
           : order.kind === "buy_now"
-            ? `The AI says buy now (up to ${fmtPrice(order.triggerPrice)}): ${order.winChancePct}% win chance`
-            : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}: ${order.winChancePct}% win chance`;
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning, nextLook, pm, netAt, pct };
+            ? `The AI says buy now (up to ${fmtPrice(order.triggerPrice)}): ${chance(order)}`
+            : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}: ${chance(order)}`;
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk };
+}
+
+// The prediction behind an agent's order: every forecaster's chance that the price reaches the
+// minimum profit before the stop, the combined chance it was judged on, what the numbers alone
+// say about buying now, and the scoreboard of past forecasts against what really happened.
+const FC_NAME: Record<FcKey, string> = { ai: "The agent's AI", panel: "AI forecaster panel", worlds: "Simulated paths", lookalikes: "Look-alike moments", baseRate: "This coin lately", combined: "Combined" };
+function Prediction({ a, state }: { a: ReturnType<typeof useAgent>; state: AppState | null }) {
+  const p = a.pos?.prediction ?? a.order?.prediction; // in a trade: the prediction the buy was made on
+  const d = a.desk;
+  const fc = state?.fc;
+  const scored = Math.round(fc?.stats.scored ?? 0);
+  if (!a.isAgent || (!p && !d && !scored)) return null;
+  const ok = !!p && (!!a.pos || !a.order?.warning);
+  const pc = (v: number) => `${Math.round(v)}%`;
+  const basis = (x: OrderPrediction["parts"][number]) =>
+    x.key === "ai" ? "Its reading of the charts, the buyers and sellers, and the patterns"
+      : x.key === "panel" ? (p?.panel ?? []).map((v) => `${v.who} ${v.pct}%`).join(" · ")
+        : x.key === "worlds" && p?.worlds ? `${p.worlds.paths.toLocaleString()} paths: ${p.worlds.trend}% if the trend continues, ${p.worlds.flat}% with no trend${p.worlds.minutesToWin ? ` · about ${p.worlds.minutesToWin} min to get there` : ""}`
+          : x.key === "lookalikes" ? `${x.note ?? ""} (the past moments most like now)`
+            : x.key === "baseRate" ? `${(x.note ?? "").replace("starts in", "starting points in the last")} reached it`
+              : x.note ?? "";
+  const rows = (["ai", "panel", "worlds", "lookalikes", "baseRate", "combined"] as FcKey[]).map((k) => ({ k, s: fc?.stats[k] })).filter((r) => r.s && r.s.n >= 3);
+  const side = (s?: { n: number; hits: number }) => (s && s.n >= 0.5 ? `${Math.round(s.hits)} of ${Math.round(s.n)}` : null);
+  return (
+    <>
+      <div className="label-sm">{a.pos ? "The prediction it bought on" : "Prediction"}</div>
+      {p ? (
+        <div className={`agent-learned ${ok ? "has" : ""}`}>
+          <b>{pc(p.pWin)} chance</b> that the price reaches +5% after fees before the stop · it takes {Math.ceil(p.needPct)}% to be worth buying · <b>{a.pos ? "bought" : ok ? "passes" : "not enough, so it stays out"}</b>
+          <div className="fc-meter" role="img" aria-label={`Chance ${pc(p.pWin)}, needs ${Math.ceil(p.needPct)}%`}><i className={ok ? "ok" : ""} style={{ width: `${Math.min(100, p.pWin)}%` }} /><u style={{ left: `${Math.min(100, p.needPct)}%` }} /></div>
+          <table className="agent-table fc-table">
+            <thead><tr><th>Forecaster</th><th className="num">Chance</th><th className="num">Weight</th><th>Based on</th></tr></thead>
+            <tbody>
+              {p.parts.map((x) => (
+                <tr key={x.key}>
+                  <td>{FC_NAME[x.key]}</td>
+                  <td className="num">{pc(x.pct)}{Math.abs(x.adjPct - x.pct) >= 1 ? <span className="muted" title="Corrected for this forecaster's record on your account"> → {pc(x.adjPct)}</span> : null}</td>
+                  <td className="num">{pc(x.weight * 100)}</td>
+                  <td className="basis">{basis(x)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {p.panel?.length ? <div className="fc-votes">{p.panel.map((v) => <span key={v.who}><b>{v.who}</b> ({v.pct}%): {v.reason}</span>)}</div> : null}
+          <span className="muted">
+            Reaching it is worth about +{p.winNetPct.toFixed(1)}% after fees; missing costs about {p.lossPct.toFixed(1)}%.
+            {p.parts.some((x) => x.key === "panel") ? "" : " The panel of three AI forecasters is asked only about an order that passes on the AI and the numbers."}
+            {p.truncated ? " Judged on the first hours of the hold (its history can't simulate longer)." : ""}
+          </span>
+        </div>
+      ) : (
+        <div className="agent-learned">{a.pos ? "This trade was opened before predictions were recorded." : d ? "No order to forecast yet." : "No forecast yet: it is made on the AI's next look, once this coin has a few hours of history."}</div>
+      )}
+      {d && !a.pos ? (
+        <div className="agent-learned">
+          <b>Buying right now, by the numbers alone</b>: the chance of a {d.upPct.toFixed(1)}% rise (that is +5% after fees) before the stop, within 3 hours.
+          <table className="agent-table fc-table">
+            <thead><tr><th>Stop</th><th className="num">Simulated paths</th><th className="num">This coin lately</th><th className="num">Look-alikes</th><th className="num">Together</th><th className="num">Needs</th></tr></thead>
+            <tbody>
+              {d.rows.map((r) => (
+                <tr key={r.stopPct}>
+                  <td>{r.stopPct}% below</td>
+                  <td className="num">{r.worlds === null ? "–" : pc(r.worlds)}</td>
+                  <td className="num">{r.baseRate === null ? "–" : pc(r.baseRate)}</td>
+                  <td className="num">{r.lookN ?? "–"}</td>
+                  <td className={`num ${r.numbers >= r.needPct ? "up" : ""}`}>{pc(r.numbers)}</td>
+                  <td className="num">{Math.ceil(r.needPct)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {d.cone.length ? <span className="muted">Where the simulated paths put the price if there is no trend (the middle 80% of them): {d.cone.map((c) => `in ${c.min >= 60 ? `${c.min / 60} h` : `${c.min} min`} ${fmtPrice(c.lo)} to ${fmtPrice(c.hi)}`).join(" · ")}.{d.next60 ? ` After the past moments most like now, the price an hour later was typically ${d.next60.mid >= 0 ? "+" : ""}${d.next60.mid.toFixed(1)}%.` : ""}</span> : null}
+        </div>
+      ) : null}
+      <div className="agent-learned">
+        <b>Scoreboard</b> (all your agents): {scored ? `${scored} forecast${scored === 1 ? "" : "s"} checked against what really happened` : "every forecast is checked against what really happens next; none has finished yet"}{fc?.waiting ? ` · ${fc.waiting} waiting for ${fc.waiting === 1 ? "its" : "their"} outcome` : ""}.
+        {scored && (side(fc?.stats.taken) || side(fc?.stats.refused)) ? ` Orders that passed: ${side(fc?.stats.taken) ?? "none yet"} reached +5%. Orders it refused: ${side(fc?.stats.refused) ?? "none yet"} would have reached it.` : ""}
+        {rows.length ? (
+          <table className="agent-table fc-table">
+            <thead><tr><th>Forecaster</th><th className="num">Said on average</th><th className="num">Really happened</th><th className="num">Forecasts</th></tr></thead>
+            <tbody>
+              {rows.map(({ k, s }) => (
+                <tr key={k}><td>{FC_NAME[k]}</td><td className="num">{pc((s!.sumP / s!.n) * 100)}</td><td className="num">{pc((s!.hits / s!.n) * 100)}</td><td className="num">{Math.round(s!.n)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+      </div>
+    </>
+  );
 }
 
 const STAGES = ["AI deciding", "Waiting for its price", "In a trade"];
@@ -254,12 +346,13 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
           <>
             <div className="label-sm">The AI's decision</div>
             <div className={`agent-learned ${a.plan.stance === "AVOID" ? "" : "has"}`}>
-              <b>{a.plan.stance === "BUY_NOW" ? "Buy now" : a.plan.stance === "AVOID" ? "Stay out for now" : "Buy at its level"}</b> · {a.plan.confidence}% sure{a.order && a.plan.stance !== "AVOID" ? ` · ${a.order.winChancePct}% win chance · aims for +${a.order.netRewardPct.toFixed(1)}% after fees, risks ${a.order.netRiskPct.toFixed(1)}%` : ""}
+              <b>{a.plan.stance === "BUY_NOW" ? "Buy now" : a.plan.stance !== "AVOID" ? "Buy at its level" : a.order?.prediction && a.order.warning ? "It wanted to buy, but the odds weren't good enough" : "Stay out for now"}</b> · {a.plan.confidence}% sure{a.order && a.plan.stance !== "AVOID" ? ` · ${a.order.prediction ? `${Math.round(a.order.prediction.pWin)}% combined chance` : `${a.order.winChancePct}% win chance`} · aims for +${a.order.netRewardPct.toFixed(1)}% after fees, risks ${a.order.netRiskPct.toFixed(1)}%` : ""}
               {a.reasoning ? <><br />{a.reasoning}</> : null}
-              {!a.pos && a.nextLook ? <><br /><span className="muted">Next look by {new Date(a.nextLook).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, or sooner on a 4% move or when an order fills.</span></> : null}
+              {!a.pos && a.nextLook ? <><br /><span className="muted">Next look by {new Date(a.nextLook).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, or sooner on a real move (4% or more) or when an order fills.</span></> : null}
             </div>
           </>
         ) : null}
+        <Prediction a={a} state={state} />
         {a.isAgent && L ? (
           <>
             <div className="label-sm">{a.symbol}'s history, as given to the AI</div>

@@ -513,11 +513,11 @@ function BotSim() {
 
 // ---------- Features ----------
 const FEATURES: { icon: string; title: string; text: string }[] = [
-  { icon: "◎", title: "AI plans on four timeframes", text: "5-second to daily candles, volume, liquidity and buyers vs sellers, turned into standing orders with an exit, a target and an honest win chance." },
+  { icon: "◎", title: "AI plans on five timeframes", text: "5-second to daily candles, volume, liquidity and buyers vs sellers, turned into standing orders with an exit, a target and an honest win chance." },
   { icon: "⌁", title: "Chart patterns, back-tested", text: "Breakouts, flags, double bottoms, tight ranges and more, each checked against how it played out earlier on the same chart." },
   { icon: "▤", title: "Learns from your trades", text: "A trade journal of your bots' real results goes into every plan, so the AI leans toward what actually works for you." },
   { icon: "⛨", title: "Eight scouts", text: "Trend, volume, real traders, holders, dev wallet, liquidity, momentum and age: every busy coin scored, deal-breakers flagged." },
-  { icon: "↺", title: "AI second look", text: "When a trade touches its stop, the AI checks once more and holds only with a strict, capped last exit." },
+  { icon: "◬", title: "Prediction you can check", text: "Simulated price paths, look-alike moments and a panel of AI forecasters put a chance on every agent order, and every forecast is scored against what really happened." },
   { icon: "⚡", title: "Up to 10 agents", text: "Each trades one coin with its own budget; its AI decides, and prices are checked every 5 seconds, even with the page closed." },
   { icon: "◈", title: "Your own Solana wallet", text: "Switch to Real mode and trade from a wallet only you control. You approve every swap." },
   { icon: "✎", title: "Pro chart tools", text: "Indicators, drawing tools, Fibonacci, measure, price or market-cap scale and screenshots." },

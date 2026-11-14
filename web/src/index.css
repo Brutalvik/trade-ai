@@ -1097,6 +1097,15 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .agent-status { font-size: 12px; color: var(--text); line-height: 1.45; }
 .agent-learned { font-size: 11.5px; line-height: 1.45; color: var(--muted); padding: 7px 9px; border-radius: 8px; background: rgba(255, 255, 255, 0.03); border-left: 2px solid var(--border); }
 .agent-learned.has { border-left-color: var(--up); color: #b9c6e6; }
+/* Prediction: the chance as a bar, with a mark where it has to be */
+.fc-meter { position: relative; height: 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); margin: 9px 0 7px; }
+.fc-meter i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--amber); }
+.fc-meter i.ok { background: var(--up); }
+.fc-meter u { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
+.fc-table { margin: 6px 0; }
+.fc-table td.basis { color: var(--muted); white-space: normal; min-width: 150px; }
+.fc-votes { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 6px; }
+.fc-votes b { color: var(--text); font-weight: 600; }
 .agent-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .agent-actions .chip { cursor: pointer; }
 .chip.danger { color: #ff8fa8; border-color: rgba(255, 61, 113, 0.4); margin-left: auto; }

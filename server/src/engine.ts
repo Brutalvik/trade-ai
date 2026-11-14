@@ -2,7 +2,8 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { audit, ledger, type AuditType } from "./audit.js";
-import { analyze, BOT_MODEL, CLAUDE_MODEL, reviewAgentPick, reviewHold, reviewProfit, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult } from "./ai.js";
+import { analyze, BOT_MODEL, CLAUDE_MODEL, combine, forecastPanel, orderKey, reviewAgentPick, reviewHold, reviewProfit, type AgentEval, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult, type OrderPrediction, type PlanOrder } from "./ai.js";
+import { desk, expected, resolve, score, type ConePoint, type Desk, type FcStats, type Forecast, type ForecastRec, type Shape } from "./predict.js";
 import { findPatterns, patternsText, patternTags, type FramePatterns } from "./patterns.js";
 import { cachedJson, fromDexScreener, getCandles, getPair, getRecentTokenCandles, knownToken, type Candle, type PairInfo, type Timeframe } from "./data.js";
 import { atr, snapshot } from "./indicators.js";
@@ -38,7 +39,8 @@ export type Position = {
   trailPct?: number; // trailing stop distance from the highest price, %
   peak?: number; // highest price since the trailing stop started
   trailing?: boolean;
-  predictedWinPct?: number; // Claude's win chance for the order that opened it
+  predictedWinPct?: number; // the win chance of the order that opened it (for an agent: the combined chance)
+  prediction?: OrderPrediction; // Agents: the full prediction the buy was made on (shown in the agent window)
   // "Protect this trade" (manual positions): sell if the price falls protectPct% from its
   // highest point since protection was switched on. Checked every 5 s, bot running or not.
   protectPct?: number;
@@ -207,9 +209,21 @@ type State = {
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; priceAt?: number } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; priceAt?: number; desk?: DeskView } | null;
   // Extra bots (2 and 3). Bot 1 is `bot` / `lastSignal` above, so older saved states keep working.
   bots?: BotSlot[];
+  // The forecast scoreboard (whole account): forecasts waiting for their outcome, every
+  // forecaster's running record, and the last few that were scored.
+  fc?: { pending: ForecastRec[]; stats: FcStats; last: Scored[] };
+};
+export type Scored = { at: number; symbol: string; kind: string; pWin: number; aiPct: number; passed: boolean; out: "win" | "stop" | "none" };
+// The forecast desk as shown in the agent window: where the simulated paths put the price, and
+// the chance of reaching the minimum profit first for a buy right now at three stop distances.
+export type DeskView = {
+  at: number; price: number; upPct: number; paths: number;
+  cone: ConePoint[];
+  rows: { stopPct: number; worlds: number | null; trend: number | null; flat: number | null; baseRate: number | null; lookalikes: number | null; lookN: string | null; numbers: number; needPct: number }[];
+  next60: { mid: number; lo: number; hi: number } | null;
 };
 type BotState = State["bot"];
 export type BotSlot = { id: string; bot: BotState; lastSignal: State["lastSignal"] };
@@ -638,7 +652,10 @@ export function getState() {
   const st = acct().state;
   const available = availableCash(st);
   // available = cash you can spend yourself; locked = set aside for running agents (still part of equity).
-  return { ...st, bots: st.bots ?? [], equityNow: equity(), roundTripCostPct: roundTripCostPct(), storage: store.kind, available, locked: Math.max(0, st.cash - available), locks: agentLocks(st) };
+  return {
+    ...st, bots: st.bots ?? [], equityNow: equity(), roundTripCostPct: roundTripCostPct(), storage: store.kind, available, locked: Math.max(0, st.cash - available), locks: agentLocks(st),
+    fc: st.fc ? { stats: st.fc.stats, last: st.fc.last, waiting: st.fc.pending.length } : null,
+  };
 }
 
 // ---------- Broker ----------
@@ -717,7 +734,9 @@ export function updateSettings(s: Partial<Settings>) {
 
 export function reset(startCash: number) {
   const at = Date.now();
+  const learnt = acct().state.fc; // the forecasters' record is knowledge, not money: it survives a reset
   acct().state = fresh(startCash);
+  if (learnt) acct().state.fc = { pending: [], stats: learnt.stats, last: learnt.last };
   acct().state.resetAt = at;
   queueCtl((c) => { c.resetAt = at; c.stops = {}; }); // older copies of the account must not be saved over this
   rec("account.reset", `Paper account reset to $${startCash.toFixed(2)}`, { startCash });
@@ -757,6 +776,102 @@ async function loadFrames(chain: string, pool: string, pair: PairInfo, only?: Ti
   return got.filter((f): f is Frame => f !== null);
 }
 
+// ---------- Prediction (agents) ----------
+// An order as percentages from the entry, for the forecast: how far to the minimum-profit level,
+// how far to the stop, how long it may wait to fill and how long it may be held.
+function shapeOf(o: Pick<PlanOrder, "kind" | "triggerPrice" | "stopLoss" | "maxHoldMinutes">, priceNow: number, cost: number, validMinutes: number): Shape & { entry: number; immediate: boolean } {
+  const t = o.triggerPrice;
+  const immediate = o.kind === "buy_breakout" ? priceNow >= t : priceNow <= t; // already on the buying side of the trigger
+  const entry = immediate ? priceNow : t;
+  return {
+    entry, immediate,
+    offsetPct: immediate ? 0 : (t / priceNow - 1) * 100,
+    upPct: cost + AGENT_NET_TARGET,
+    downPct: Math.max(0.1, (1 - o.stopLoss / entry) * 100),
+    holdMin: Math.min(1440, Math.max(5, o.maxHoldMinutes)),
+    waitMin: immediate ? 0 : validMinutes,
+  };
+}
+const pct0 = (v: number | null | undefined) => (v === null || v === undefined ? "n/a" : `${Math.round(v)}%`);
+// The forecast desk: what the numbers say about buying right now, as text for the AI and as data for the agent window.
+function deskReport(D: Desk, cost: number, measuredWinPct: number | undefined, stats: FcStats | undefined): { text: string; view: DeskView } | null {
+  if (!D.ready || !(D.price > 0)) return null;
+  const up = cost + AGENT_NET_TARGET;
+  const rows: DeskView["rows"] = [];
+  const lines: string[] = [];
+  let next60: DeskView["next60"] = null, paths = 0;
+  for (const stopPct of [3, 5, 8]) {
+    const f = D.forecast({ offsetPct: 0, upPct: up, downPct: stopPct, holdMin: 180, waitMin: 0 });
+    if (!f) continue;
+    const winNet = measuredWinPct ?? Math.min(20, Math.max(AGENT_NET_TARGET, f.winNetPct));
+    const need = expected(f.numbers, winNet, stopPct + cost, f).needPct;
+    const w = f.worlds;
+    paths = w?.paths ?? paths;
+    next60 ??= f.lookalikes?.next60 ?? null;
+    const r1 = (v: number | undefined | null) => (v === undefined || v === null ? null : Math.round(v * 10) / 10);
+    rows.push({ stopPct, worlds: r1(w?.pWin), trend: r1(w?.trend.pWin), flat: r1(w?.flat.pWin), baseRate: r1(f.baseRate?.pWin), lookalikes: r1(f.lookalikes?.pWin), lookN: f.lookalikes ? `${f.lookalikes.wins} of ${f.lookalikes.n}` : null, numbers: r1(f.numbers) ?? 0, needPct: r1(need) ?? 0 });
+    lines.push(`  stop ${stopPct}% below: simulated paths ${pct0(w?.pWin)}${w ? ` (trend continues ${pct0(w.trend.pWin)}, no trend ${pct0(w.flat.pWin)}; with no trend ${pct0(w.flat.pStop)} hit the stop first and ${pct0(w.flat.pNone)} ran out of time)` : ""} | this coin's last ${f.baseRate ? `${Math.round(f.baseRate.hours)}h: ${pct0(f.baseRate.pWin)}` : "day: n/a"} | look-alike moments: ${f.lookalikes ? `${f.lookalikes.wins} of ${f.lookalikes.n}` : "n/a"} | together ${pct0(f.numbers)}; an order like this needs about ${Math.ceil(need)}% to be worth buying.`);
+  }
+  if (!rows.length) return null;
+  const cone = D.cone([15, 60, 180]);
+  const money = (v: number) => `$${Number(v.toPrecision(4))}`;
+  const ai = stats?.ai && stats.ai.n >= 8 ? stats.ai : null;
+  const text = [
+    `Forecast desk (worked out by code from this coin's own candles; there is no opinion in it):`,
+    `- To be up +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% costs, the price must rise ${up.toFixed(1)}% from the entry before the stop is hit.`,
+    `- Buying now, the chance that happens first within 3 hours, by how far below the stop sits:`,
+    ...lines,
+    cone.length ? `- Where the simulated paths put the price if there is no trend (the middle 80% of them): ${cone.map((c) => `in ${c.min >= 60 ? `${c.min / 60} h` : `${c.min} min`} ${money(c.lo)} to ${money(c.hi)} (middle ${money(c.mid)})`).join("; ")}.` : "",
+    next60 ? `- After the past moments most like this one, the price an hour later was typically ${next60.mid >= 0 ? "+" : ""}${next60.mid.toFixed(1)}% (from ${next60.lo >= 0 ? "+" : ""}${next60.lo.toFixed(1)}% to ${next60.hi >= 0 ? "+" : ""}${next60.hi.toFixed(1)}%).` : "",
+    `- How far to trust it: tested blind on real coins (about 2,000 past moments), these numbers were right when low (a chance under 10% almost never came through), about a third too high when above 30%, and no good at telling a better moment from a worse one on the same coin. Timing is your job.`,
+    `- How to use it: these are base rates for this coin, not a forecast of this exact moment. Start your winChancePct from them and move only as far as specific evidence on the chart justifies. The bot combines your chance with these numbers, asks three more AI forecasters about any order that would pass, and buys only if the combined chance beats what the order needs. A closer stop needs a lower chance but is hit more often: put the stop where the chart says the idea is wrong.`,
+    ai ? `- Your own record on this account: your last forecasts said ${Math.round((ai.sumP / ai.n) * 100)}% on average and ${Math.round((ai.hits / ai.n) * 100)}% of them reached the level. The bot corrects your chance by that gap.` : "",
+  ].filter(Boolean).join("\n");
+  const p6 = (v: number) => Number(v.toPrecision(6));
+  return { text, view: { at: Date.now(), price: D.price, upPct: up, paths, cone: cone.map((c) => ({ min: c.min, lo: p6(c.lo), mid: p6(c.mid), hi: p6(c.hi) })), rows, next60: next60 ? { mid: Math.round(next60.mid * 10) / 10, lo: Math.round(next60.lo * 10) / 10, hi: Math.round(next60.hi * 10) / 10 } : null } };
+}
+// Scores the forecasts made on this coin against the candles since: reached the minimum-profit
+// level first, hit the stop first, or ran out of time. Orders that never filled are not scored.
+function settleForecasts(pool: string, c1: Candle[], c5: Candle[]) {
+  const fc = state.fc;
+  if (!fc?.pending.length) return;
+  const now = Date.now();
+  const keep: ForecastRec[] = [];
+  for (const r of fc.pending) {
+    if (r.pool !== pool) {
+      if (now - r.at < 30 * 3_600_000) keep.push(r); // its coin isn't being looked at any more: dropped after a day
+      continue;
+    }
+    // 1-minute candles while they still reach back to the forecast, then 5-minute ones.
+    const out = c1.length && c1[0].time * 1000 <= r.at ? resolve(r, c1, 60) : c5.length && c5[0].time * 1000 <= r.at ? resolve(r, c5, 300) : now - r.at > 26 * 3_600_000 ? "unfilled" : null;
+    if (out === null) { keep.push(r); continue; }
+    if (out === "unfilled") continue;
+    fc.stats = score(fc.stats, r, out);
+    fc.last.unshift({ at: r.at, symbol: r.symbol, kind: r.kind, pWin: Math.round(r.p.combined ?? 0), aiPct: Math.round(r.p.ai ?? 0), passed: r.passed, out });
+    if (fc.last.length > 12) fc.last.length = 12;
+  }
+  if (keep.length !== fc.pending.length) acct().dirty = true;
+  fc.pending = keep;
+}
+// Remembers each predicted order so it can be scored later, whether or not it was bought (one
+// per coin, kind and verdict every 45 minutes: looks a few minutes apart are the same evidence).
+function recordForecasts(pair: PairInfo, consensus: Consensus, cost: number) {
+  const now = Date.now();
+  const validMin = Math.max(5, Math.round((consensus.expiresAt - now) / 60_000));
+  const fc = (state.fc ??= { pending: [], stats: {}, last: [] });
+  for (const o of consensus.orders) {
+    const p = o.prediction;
+    if (!p) continue;
+    const passed = !o.warning;
+    if (fc.pending.some((r) => r.pool === pair.pool && r.kind === o.kind && r.passed === passed && now - r.at < 45 * 60_000)) continue;
+    const sh = shapeOf(o, pair.priceUsd, cost, validMin);
+    const each: ForecastRec["p"] = { combined: p.pWin };
+    for (const part of p.parts) each[part.key] = part.pct;
+    fc.pending.push({ id: uid(), at: now, pool: pair.pool, symbol: pair.symbol, kind: sh.immediate ? "buy_now" : o.kind, entry: sh.entry, stop: o.stopLoss, level: sh.entry * (1 + (cost + AGENT_NET_TARGET) / 100), waitMin: sh.waitMin, holdMin: Math.min(sh.holdMin, 420), p: each, passed });
+  }
+  if (fc.pending.length > 60) fc.pending.splice(0, fc.pending.length - 60);
+}
+
 export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean; agentBrief?: string } = {}) {
   const pair = await getPair(chain, pool);
   const frames = await loadFrames(chain, pool, pair);
@@ -781,6 +896,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
         const hit = (scored.filter((t) => t.reachedTarget).length / scored.length) * 100;
         const wins = scored.filter((t) => (t.pnlUsd ?? 0) > 0).length;
         const pnl = scored.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+        if (opts.agentBrief) return `The last ${scored.length} trades the agents on this account took: the chance at entry averaged ${avgPred.toFixed(0)}%; the minimum-profit level (or, on older trades, the target) was actually reached ${hit.toFixed(0)}% of the time; ${wins} of ${scored.length} closed in profit; total P&L ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}.`;
         return `Your track record on the last ${scored.length} bot trades: you predicted on average ${avgPred.toFixed(0)}% win chance; the target was actually reached ${hit.toFixed(0)}% of the time; ${wins} of ${scored.length} closed in profit; total P&L ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}.${hit < avgPred - 10 ? " Your win chances have been too optimistic: lower them, or plan closer targets / better entries." : ""}`;
       })()
     : "Not enough bot trades yet to score your past predictions.";
@@ -792,8 +908,26 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     minWin: cfg ? minWin(cfg) : 45,
   };
   const journal = tradeJournal(state.trades, pool, pair.symbol);
+  // Agents: the prediction engine. Past forecasts on this coin are scored first, then the
+  // forecast desk is built from the same candles the AI is about to read.
+  const cost = roundTripCostPct();
+  const managed = opts.agentBrief ? state.trades.filter((t) => t.strategy === "agents" && t.side === "SELL" && t.reachedTarget && t.usd - (t.pnlUsd ?? 0) > 0) : [];
+  const measuredWinPct = managed.length >= 5 ? managed.reduce((s, t) => s + ((t.pnlUsd ?? 0) / (t.usd - (t.pnlUsd ?? 0))) * 100, 0) / managed.length : undefined;
+  let D: Desk | null = null, deskOut: ReturnType<typeof deskReport> = null;
+  if (opts.agentBrief) {
+    const c1 = frames.find((f) => f.tf === "1m")?.candles ?? [], c5 = frames.find((f) => f.tf === "5m")?.candles ?? [];
+    try {
+      settleForecasts(pool, c1, c5);
+      D = desk(c1, c5, cost, PM_RULE_TRAIL);
+      deskOut = deskReport(D, cost, measuredWinPct, state.fc?.stats);
+    } catch (err: any) {
+      console.error("[predict]", err?.message ?? err); // the plan goes ahead on the AI alone
+      D = null;
+    }
+  }
   const context = [
     opts.agentBrief ?? "",
+    deskOut?.text ?? "",
     patternsText(patterns),
     journal,
     cfg && strongOn(cfg)
@@ -811,19 +945,71 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     ]),
   ].filter(Boolean).join("\n");
   if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
-  // Agents: what this account's managed winners (trades that reached the minimum profit) really made, once there are 5 or more.
-  const managed = opts.agentBrief ? state.trades.filter((t) => t.strategy === "agents" && t.side === "SELL" && t.reachedTarget && t.usd - (t.pnlUsd ?? 0) > 0) : [];
-  const measuredWinPct = managed.length >= 5 ? managed.reduce((s, t) => s + ((t.pnlUsd ?? 0) / (t.usd - (t.pnlUsd ?? 0))) * 100, 0) / managed.length : undefined;
-  const { results, consensus } = await analyze(pair, frames, roundTripCostPct(), context, opts.forBot ? BOT_MODEL : undefined, opts.agentBrief ? { minNetPct: AGENT_NET_TARGET, ...(measuredWinPct !== undefined ? { measuredWinPct } : {}) } : undefined);
+  // Agents: an order is judged on the combined chance (its AI, the numbers, the forecaster panel),
+  // and a win counts as what managed winners really made (measured once there are 5; simulated before).
+  const seen = new Map<string, Forecast | null>();
+  const judge: AgentEval | undefined = opts.agentBrief
+    ? {
+        minNetPct: AGENT_NET_TARGET,
+        ...(measuredWinPct !== undefined ? { measuredWinPct } : {}),
+        stats: state.fc?.stats,
+        predict: (o, validMinutes) => {
+          const k = orderKey(o);
+          if (!seen.has(k)) seen.set(k, D?.ready ? D.forecast(shapeOf(o, pair.priceUsd, cost, validMinutes)) : null);
+          return seen.get(k) ?? null;
+        },
+      }
+    : undefined;
+  const first = await analyze(pair, frames, cost, context, opts.forBot ? BOT_MODEL : undefined, judge);
+  const results = first.results;
+  let consensus = first.consensus;
+  // The forecaster panel: asked only about orders that pass on the agent's AI and the numbers.
+  const passing = consensus.orders.filter((o) => !o.warning && o.prediction);
+  // (not when the agent was stopped while its AI was thinking: nothing will be bought)
+  if (judge && passing.length && state.bot.running && !(await stoppedElsewhere()) && (await tokensLeft()) > 0) {
+    try {
+      const plan = results.find((r) => r.ok);
+      const validMin = Math.max(5, Math.round((consensus.expiresAt - Date.now()) / 60_000));
+      const money = (v: number) => `$${Number(v.toPrecision(6))}`;
+      const t = chain === "solana" && pair.tokenAddress ? await tokenInfo(pair.tokenAddress) : null;
+      const panel = await Promise.race([
+        forecastPanel({
+          pair, frames, costPct: cost, minNetPct: AGENT_NET_TARGET,
+          orders: passing.map((o) => {
+            const sh = shapeOf(o, pair.priceUsd, cost, validMin);
+            const how = sh.immediate ? `buy now at about ${money(sh.entry)}` : o.kind === "buy_breakout" ? `buy if it breaks above ${money(sh.entry)} within ${validMin} min` : `buy if it falls to ${money(sh.entry)} within ${validMin} min`;
+            return { text: `${how}: stop ${money(o.stopLoss)} (${sh.downPct.toFixed(1)}% below the entry), minimum-profit level ${money(sh.entry * (1 + sh.upPct / 100))} (${sh.upPct.toFixed(1)}% above), time limit ${Math.round(sh.holdMin)} min.` };
+          }),
+          numbers: passing.map((o, i) => `Order ${i + 1}: ${o.prediction!.parts.filter((p) => p.key !== "ai").map((p) => `${p.label.toLowerCase()} ${Math.round(p.pct)}%${p.note ? ` (${p.note})` : ""}`).join("; ") || "no history to work from"}.`).join("\n") + (deskOut ? `\n${deskOut.text.split("\n").filter((l) => /simulated paths put the price|most like this one/.test(l)).join("\n")}` : ""),
+          traderCase: plan && plan.ok ? plan.signal.reasoning : "",
+          flow: t ? flowText(t) : "",
+          market: chain === "solana" ? await marketText(pair.tokenAddress).catch(() => "") : "",
+          patterns: patternsText(patterns),
+        }),
+        new Promise<never>((_, no) => setTimeout(() => no(new Error("the forecaster panel took too long")), 20_000)),
+      ]);
+      results.push({ model: "Forecaster panel", ok: false, error: "", ms: 0, tokens: panel.tokens }); // counted in the token bill below
+      judge.panel = new Map(passing.map((o, i) => [orderKey(o), { pct: panel.chances[i], votes: panel.votes.map((v) => ({ who: v.who, pct: Math.round(v.chances[i]), reason: v.reason })) }]));
+      consensus = combine(results.filter((r) => r.model !== "Forecaster panel"), cost, pair.priceUsd, judge);
+      for (const o of consensus.orders) {
+        const v = judge.panel.get(orderKey(o));
+        if (v && o.prediction) log(`Forecaster panel on the ${o.kind.replace("buy_", "").replace("now", "buy-now")} order: ${v.votes.map((x) => `${x.who.toLowerCase()} ${x.pct}%`).join(", ")}. Combined chance ${Math.round(o.prediction.pWin)}% (needs ${Math.ceil(o.prediction.needPct)}%): ${o.warning ? "not used" : "used"}.`, o.warning ? "info" : "good");
+      }
+    } catch (err: any) {
+      log(`${err?.message ?? "The forecaster panel could not be asked"}: the order is judged on the agent's AI and the numbers.`);
+    }
+  }
+  if (judge) recordForecasts(pair, consensus, cost);
   const appTokens = await chargeTokens(results);
   const model = opts.forBot ? BOT_MODEL : CLAUDE_MODEL;
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
   rec("ai.analysis", `${opts.forBot ? "Bot re-plan" : "AI analysis"} on ${pair.symbol}: ${apiTokens.toLocaleString()} AI tokens (${appTokens.toLocaleString()} app tokens)`, { symbol: pair.symbol, pool, model, apiTokens, appTokens, forBot: !!opts.forBot, stance: consensus.stance });
-  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, priceAt: pair.priceUsd };
+  const shown = results.filter((r) => r.model !== "Forecaster panel");
+  state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results: shown, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}) };
   state.bot.armedSince = []; // a new plan: its triggers start fresh
   state.bot.skipNoted = [];
   save();
-  return { pair, snapshot: snap, results, consensus, patterns };
+  return { pair, snapshot: snap, results: shown, consensus, patterns };
 }
 
 // ---------- Bot ----------
@@ -1264,7 +1450,8 @@ async function autoPick(cfg: BotConfig) {
 }
 
 // Why Claude should be asked now (or null). Event-driven, plus a slow backup timer.
-function claudeDue(cfg: BotConfig, price: number | null): string | null {
+// `dex` = this pool's own price (what the plan's price was taken from).
+function claudeDue(cfg: BotConfig, price: number | null, dex: number | null = price): string | null {
   const sig = state.lastSignal;
   const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
   if (state.bot.askNow) return "the last trade closed";
@@ -1273,8 +1460,12 @@ function claudeDue(cfg: BotConfig, price: number | null): string | null {
   if (Date.now() > c.expiresAt) return "the plan expired";
   if (price !== null && c.cancelBelow > 0 && price < c.cancelBelow) return `the price fell below the plan's cancel level (${fmt(c.cancelBelow)})`;
   if (price !== null && c.cancelAbove > 0 && price > c.cancelAbove) return `the price rose above the plan's range (${fmt(c.cancelAbove)})`;
-  if (isCoinAgent(cfg) && price !== null && sig.priceAt && Math.abs(price - sig.priceAt) / sig.priceAt >= AGENT_MOVE_PCT / 100)
-    return `the price moved ${(((price - sig.priceAt) / sig.priceAt) * 100).toFixed(1)}% since the AI's plan`;
+  // A real move since the plan: 4%, or twice the coin's usual 5-minute swing on a very jumpy
+  // coin (otherwise its normal wiggle would have the AI asked every half minute), measured on
+  // the same pool price the plan was made at, and not within 90 s of that plan.
+  const moveAt = Math.max(AGENT_MOVE_PCT, 2 * (sig.atrPct ?? 0));
+  if (isCoinAgent(cfg) && dex !== null && sig.priceAt && Date.now() - sig.at >= 90_000 && (Math.abs(dex - sig.priceAt) / sig.priceAt) * 100 >= moveAt)
+    return `the price moved ${(((dex - sig.priceAt) / sig.priceAt) * 100).toFixed(1)}% since the AI's plan`;
   if (Date.now() - state.bot.lastAnalysisAt >= cfg.analyzeEverySec * 1000) return isCoinAgent(cfg) ? "time for a fresh look" : "backup re-check";
   return null;
 }
@@ -1288,7 +1479,7 @@ export const CHECK_MS = 5_000;
 // A single bad tick can print a wick far from the real price (SEPPUKU once showed a
 // $0.039 "high" while it traded at $0.012), so wicks are capped near the live price and
 // trailing stops follow closes, never a lone wick.
-type Quote = { pair: PairInfo; price: number; low: number; high: number; peakHigh: number; closeLow: number; source: string };
+type Quote = { pair: PairInfo; price: number; dex: number; low: number; high: number; peakHigh: number; closeLow: number; source: string };
 const MAX_WICK = 0.15; // ignore any high/low more than 15% beyond both live prices
 
 async function quote(chain: string, pool: string, sinceMs: number): Promise<Quote> {
@@ -1319,7 +1510,7 @@ async function quote(chain: string, pool: string, sinceMs: number): Promise<Quot
   } catch {
     // fall back to the DexScreener snapshot
   }
-  return { pair: { ...pair, priceUsd: price }, price, low, high, peakHigh, closeLow, source };
+  return { pair: { ...pair, priceUsd: price }, price, dex: pair.priceUsd, low, high, peakHigh, closeLow, source };
 }
 
 // Was this standing order's trigger touched since the last check?
@@ -1515,7 +1706,7 @@ async function agentBrief(cfg: BotConfig): Promise<string> {
     `You are this coin's dedicated trading agent. Budget $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} (funds now $${agentFunds(cfg).toFixed(2)}); each buy invests all of it.`,
     `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you WILL buy at (buy_dip and/or buy_breakout), close enough to be reached in the next 10-30 minutes. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them. You will be asked again within 10 minutes, or sooner if the price moves ${AGENT_MOVE_PCT}%.`,
     `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. That level is the MINIMUM-PROFIT level: winChancePct is your chance of reaching it before the stop. target is where you realistically expect the move to go (at or above that level). Put the stop where the idea is proved wrong.`,
-    `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. How an order is judged: a win (reaching the minimum-profit level) counts as ${managedNote}; a loss counts as the distance to your stop plus costs. The order is used only if winChance x win - (1 - winChance) x loss is above zero. So a closer stop, a higher honest win chance or a realistic higher target all help; inflating any of them will show up in your track record below.`,
+    `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. How an order is judged: a win (reaching the minimum-profit level) counts as ${managedNote}; a loss counts as the distance to your stop plus costs. The order is used only if chance x win - (1 - chance) x loss is above zero, where the chance is the COMBINED one: your winChancePct, the forecast desk's numbers below, and three more AI forecasters who are asked about any order that would pass. Every forecast is scored against what really happened and each forecaster, you included, is corrected for its record, so an inflated chance only gets you discounted.`,
     `After buying: the stop is yours until the trade is up +${AGENT_NET_TARGET}% after costs. At that point the minimum profit is locked as the exit and you are asked again and again to manage the trade: hold for more (you set the exit and how closely it follows the price) or sell now. So the entry only has to get to +${AGENT_NET_TARGET}%; how far it runs after that is handled then. At the stop you are asked once whether to hold.`,
   ];
   if (L) {
@@ -1571,8 +1762,23 @@ function askProfit(pos: Position, price: number, best: number, cost: number) {
       const pats = frames.filter((f) => f.tf !== "5s").map((f) => findPatterns(f.tf, f.candles));
       const [t, market] = chain === "solana" && pair.tokenAddress ? await Promise.all([tokenInfo(pair.tokenAddress), marketText(pair.tokenAddress).catch(() => "")]) : [null, ""];
       const now = pair.priceUsd > 0 ? pair.priceUsd : price;
+      // What the simulated paths say about holding on from here: the chance of climbing further
+      // before falling back to the exit, and where the price is likely to be.
+      let outlook = "";
+      try {
+        const exitNow = Math.max(lockedExit, Math.max(best, now) * (1 - trailPct / 100));
+        const down = (1 - exitNow / now) * 100;
+        const Dk = desk(frames.find((f) => f.tf === "1m")?.candles ?? [], frames.find((f) => f.tf === "5m")?.candles ?? [], cost, trailPct);
+        if (Dk.ready && down >= 0.2) {
+          const money = (v: number) => `$${Number(v.toPrecision(4))}`;
+          const more = [3, 6].map((upPct) => ({ upPct, w: Dk.forecast({ offsetPct: 0, upPct, downPct: down, holdMin: 60, waitMin: 0 })?.worlds })).filter((x) => x.w);
+          const cone = Dk.cone([15, 60]);
+          if (more.length)
+            outlook = `Simulated outlook from here (worked out by code from this coin's own recent candles; no opinion in it): the chance the price climbs ${more.map((x) => `another ${x.upPct}% before falling to the exit in force (${money(exitNow)}, ${down.toFixed(1)}% below) within the hour is ${Math.round(x.w!.pWin)}% (${Math.round(x.w!.trend.pWin)}% if the trend continues, ${Math.round(x.w!.flat.pWin)}% with no trend)`).join("; ")}.${cone.length ? ` Where the paths put the price (middle 80%): ${cone.map((c) => `in ${c.min} min ${money(c.lo)} to ${money(c.hi)}`).join("; ")}.` : ""} Weigh this against what the tape shows right now.`;
+        }
+      } catch { /* optional */ }
       const d = await Promise.race([
-        reviewProfit({ pair, frames, costPct: cost, entry, price: now, best: Math.max(best, now), lockedExit, minNetPct: AGENT_NET_TARGET, trailPct, heldMin: (Date.now() - openedAt) / 60_000, flow: t ? flowText(t) : "", market, patterns: patternsText(pats), history, last }),
+        reviewProfit({ pair, frames, costPct: cost, entry, price: now, best: Math.max(best, now), lockedExit, minNetPct: AGENT_NET_TARGET, trailPct, heldMin: (Date.now() - openedAt) / 60_000, outlook, flow: t ? flowText(t) : "", market, patterns: patternsText(pats), history, last }),
         new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 30_000)),
       ]);
       await chargeTokens([{ model: BOT_MODEL, ok: false, error: "", ms: 0, tokens: d.tokens }]);
@@ -1946,7 +2152,7 @@ async function tickBot(persist: boolean) {
     let q = tgt ? await quote(tgt.chain, tgt.pool, planSince()) : null;
 
     // 3. Ask AI only when something calls for it (never more than once per 2 min).
-    const why = claudeDue(cfg, q?.price ?? null);
+    const why = claudeDue(cfg, q?.price ?? null, q?.dex ?? null);
     let askedAt = 0;
     const askGap = isCoinAgent(cfg) ? 30_000 : MIN_CLAUDE_GAP_MS; // agents decide again quickly after a trade or a broken plan
     if (why && (await tokensLeft()) <= 0) {
@@ -1973,7 +2179,8 @@ async function tickBot(persist: boolean) {
         if (isCoinAgent(cfg)) {
           const ok = results.find((x) => x.ok);
           const used = consensus.orders.filter((o) => !o.warning);
-          const orders = (used.length ? used : consensus.orders).map((o) => `${o.kind.replace("buy_", "")} at $${o.triggerPrice} (stop $${o.stopLoss}, target $${o.target}, ${o.winChancePct}% win chance${o.warning ? ", not used: your numbers lose on average" : ""})`).join("; ");
+          const said = (o: CheckedOrder) => Math.round(o.prediction?.parts.find((p) => p.key === "ai")?.pct ?? o.winChancePct);
+          const orders = (used.length ? used : consensus.orders).map((o) => `${o.kind.replace("buy_", "")} at $${o.triggerPrice} (stop $${o.stopLoss}, target $${o.target}, you said ${said(o)}%${o.prediction ? `, combined with the numbers ${Math.round(o.prediction.pWin)}%, it needed ${Math.ceil(o.prediction.needPct)}%` : ""}${o.warning ? ": not used" : ""})`).join("; ");
           const notes = (state.bot.aiNotes ??= []);
           notes.push({ at: Date.now(), price: state.lastSignal?.priceAt ?? 0, text: `${consensus.stance.replace(/_/g, " ")}${orders ? `: ${orders}` : ""}. ${ok && ok.ok ? ok.signal.reasoning : ""}`.slice(0, 520) });
           if (notes.length > 5) notes.splice(0, notes.length - 5);
@@ -2002,7 +2209,7 @@ async function tickBot(persist: boolean) {
     // The AI advised staying out: its risky setup is only traded if the user accepted the risk.
     if (c.stance === "AVOID" && !cfg.allowRisky)
       return noteOnce(`avoid:${sig.at}`, isCoinAgent(cfg)
-        ? `${t3.symbol} agent: the AI decided to stay out for now. ${(() => { const r = sig.results.find((x) => x.ok); return r && r.ok ? r.signal.reasoning : ""; })()} It looks again by ${clock(Math.min(c.expiresAt, state.bot.lastAnalysisAt + cfg.analyzeEverySec * 1000))}, sooner if the price moves.`
+        ? `${t3.symbol} agent: ${c.orders.some((o) => o.prediction && o.warning) && sig.results.some((x) => x.ok && x.signal.stance !== "AVOID") ? "the AI wanted to buy, but the combined chance wasn't enough, so it stays out for now" : "the AI decided to stay out for now"}. ${(() => { const r = sig.results.find((x) => x.ok); return r && r.ok ? r.signal.reasoning : ""; })()} It looks again by ${clock(Math.min(c.expiresAt, state.bot.lastAnalysisAt + cfg.analyzeEverySec * 1000))}, sooner if the price moves.`
         : `The AI advises staying out of ${t3.symbol}, so its risky setup isn't traded. Start the bot and choose "I understand, trade anyway" to trade it.`), undefined;
     const strong = strongOn(cfg);
     if (strong) {
@@ -2120,6 +2327,7 @@ async function tickBot(persist: boolean) {
         botId: currentBotId(),
         sellBy: Date.now() + o.maxHoldMinutes * 60_000,
         predictedWinPct: o.winChancePct,
+        ...(o.prediction ? { prediction: o.prediction } : {}),
         ...(isCoinAgent(cfg) ? { strategy: "agents" as const } : {}),
         ...(sig.patterns ? { patterns: patternTags(sig.patterns) } : {}),
       });

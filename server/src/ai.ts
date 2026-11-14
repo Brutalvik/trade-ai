@@ -5,6 +5,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import type { Candle, PairInfo } from "./data.js";
 import { keyLevels, type Snapshot } from "./indicators.js";
+import { combineChance, expected, type FcKey, type FcStats, type Forecast } from "./predict.js";
 
 // What Claude returns: a PLAN of standing orders the bot carries out on its own,
 // checking prices every 5 seconds, without asking Claude again until something changes.
@@ -45,7 +46,20 @@ export type ModelResult = { model: string; ok: true; signal: Plan; ms: number; t
 // evPct = expected profit per trade after fees, from Claude's win chance:
 //   winChance x gain-after-fees  -  (1 - winChance) x loss-after-fees
 // warning = the order failed the fee/risk check (shown in red; the bot uses it only in risky mode).
-export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number; warning?: string };
+// prediction = agents only: every forecaster's chance for this order and the combined chance it was judged on.
+export type CheckedOrder = PlanOrder & { netRewardPct: number; netRiskPct: number; evPct: number; warning?: string; prediction?: OrderPrediction };
+// An agent's order as predicted: pWin = the combined chance (0-100) of reaching the minimum-profit
+// level before the stop; needPct = the chance it takes to be worth buying after costs.
+export type OrderPrediction = {
+  pWin: number;
+  needPct: number;
+  winNetPct: number; // what reaching the level is worth on average (the bot's exit rule, after costs)
+  lossPct: number; // what failing costs on average
+  parts: { key: FcKey; label: string; pct: number; adjPct: number; weight: number; note?: string }[];
+  worlds?: { trend: number; flat: number; paths: number; from: string; minutesToWin: number | null; pStop: number; pNone: number; filledPct: number };
+  panel?: { who: string; pct: number; reason: string }[];
+  truncated?: boolean;
+};
 
 export type Consensus = {
   action: "BUY" | "SELL" | "HOLD"; // BUY = buy now, HOLD = waiting for a trigger (or nothing), SELL = avoid
@@ -113,11 +127,11 @@ Your job is to make that budget grow. That means taking calculated risks when th
 The bot checks prices every 5 seconds and fills an order the moment its trigger is touched. You are asked again every few minutes, whenever the price moves about 4%, and right after each trade, so plan for the next 10-30 minutes, not for hours.
 
 How to decide:
-- Read all timeframes, the volume, buyers vs sellers, the chart patterns and the history study you are given, and form a view: where is this going next, and with what odds?
+- Read all timeframes, the volume, buyers vs sellers, the chart patterns, the history study and the forecast desk you are given, and form a view: where is this going next, and with what odds?
 - If the entry is good right now (trend up with buyers behind it, a breakout holding, a dip that has bounced), say BUY_NOW with a buy_now order. Momentum is a reason to trade, not a reason to stay out: a coin that is running can be bought with a stop under the last higher low.
 - Otherwise say WAIT_FOR_TRIGGER and give the exact price at which you WILL buy: a breakout above a level (with a volume check) and/or a pullback to support. Put those levels close enough to be reached in the next 10-30 minutes.
 - ALWAYS give 1-2 orders you would genuinely take. Use AVOID only when the token looks like a rug or honeypot, liquidity is being pulled, or it is in free fall with no buyers; even then give the level where you would step back in.
-- For every order give winChancePct: your honest, calibrated chance that the price reaches the MINIMUM-PROFIT level (given below) before stopLoss. Do not shade it down out of caution or up out of eagerness; the bot uses an order only if your own numbers make money on average after costs.
+- For every order give winChancePct: your honest, calibrated chance that the price reaches the MINIMUM-PROFIT level (given below) before stopLoss. Start from the forecast desk's base rates and move only as far as the evidence in front of you justifies; do not shade it down out of caution or up out of eagerness. The bot combines your chance with those numbers and with three more AI forecasters, and uses an order only if the combined chance makes money on average after costs.
 - target is where you realistically expect the move to reach if it works; it must be at least the minimum-profit level you are told. Pick trades where such a move is realistic: strong trends, breakouts with volume, sharp reversals. Once that minimum profit is reached it is locked, and you are asked again and again to manage the trade (hold for more, or sell), so the win you are estimating is "reaches the minimum profit before the stop". Put the stop where your idea is proved wrong, outside normal noise.
 - Set cancelBelow / cancelAbove just outside your thesis and validMinutes between 10 and 30.
 - reasoning: 2-3 short plain sentences on what you expect and why. Prices are USD and may be tiny; keep full precision.`;
@@ -204,7 +218,16 @@ async function timed(model: string, fn: () => Promise<{ plan: Plan; tokens: numb
 // there the trade is managed (held for more, or sold), so a win counts as the minimum plus 30%
 // of the extra distance to the AI's target (target counted up to +20%), or, once this account
 // has enough managed winners, what they really made on average.
-export type AgentEval = { minNetPct: number; measuredWinPct?: number };
+// predict = the numbers' forecast for an order (simulated paths, look-alikes, this coin lately);
+// panel = the AI forecaster panel's answers, keyed by orderKey; stats = every forecaster's record.
+export type AgentEval = {
+  minNetPct: number;
+  measuredWinPct?: number;
+  predict?: (o: PlanOrder, validMinutes: number) => Forecast | null;
+  panel?: Map<string, { pct: number; votes: { who: string; pct: number; reason: string }[] }>;
+  stats?: FcStats;
+};
+export const orderKey = (o: Pick<PlanOrder, "kind" | "triggerPrice">) => `${o.kind}:${o.triggerPrice}`;
 
 export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string, agent?: AgentEval) {
   const aiInCharge = !!agent;
@@ -223,7 +246,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, N
 // Checks each order for sanity and against fees/risk; drops the ones that fail.
 // An order is kept only if, using Claude's own win chance, it makes money on
 // average after fees (positive expected value) and its gain >= its loss.
-export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentEval): { kept: CheckedOrder[]; dropped: string[]; warned: CheckedOrder[] } {
+export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentEval, validMinutes = 30): { kept: CheckedOrder[]; dropped: string[]; warned: CheckedOrder[] } {
   const kept: CheckedOrder[] = [];
   const dropped: string[] = [];
   const warned: CheckedOrder[] = []; // sensible prices, but they fail the fee/risk check
@@ -241,24 +264,49 @@ export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentE
     }
     const netRewardPct = ((o.target - t) / t) * 100 - costPct;
     const netRiskPct = ((t - o.stopLoss) / t) * 100 + costPct;
-    const win = clamp(o.winChancePct, 0, 100) / 100;
+    let win = clamp(o.winChancePct, 0, 100) / 100;
     // What a win is worth: the target (classic), or for an agent what its managed trades end with.
-    const winPct = !agent
+    let winPct = !agent
       ? netRewardPct
       : agent.measuredWinPct !== undefined
         ? clamp(agent.measuredWinPct, agent.minNetPct, Math.max(agent.minNetPct, netRewardPct))
         : Math.max(0, agent.minNetPct + 0.3 * (Math.min(netRewardPct, 20) - agent.minNetPct));
-    const evPct = win * winPct - (1 - win) * netRiskPct;
+    let evPct = win * winPct - (1 - win) * netRiskPct;
+    // Agents: the AI's chance is combined with the numbers (and the forecaster panel when it was
+    // asked), each corrected for its own record, and the order is judged on the combined chance.
+    let prediction: OrderPrediction | undefined;
+    if (agent?.predict) {
+      let f: Forecast | null = null;
+      try {
+        f = agent.predict(o, validMinutes);
+      } catch { /* no forecast: the AI side alone */ }
+      const pv = agent.panel?.get(orderKey(o)) ?? null;
+      const c = combineChance(clamp(o.winChancePct, 0, 100), pv ? pv.pct : null, f, agent.stats);
+      if (f && agent.measuredWinPct === undefined) winPct = clamp(f.winNetPct, agent.minNetPct, 20);
+      const ex = expected(c.pWin, winPct, netRiskPct, f);
+      win = c.pWin / 100;
+      evPct = ex.evPct;
+      const w = f?.worlds;
+      prediction = {
+        pWin: Math.round(c.pWin * 10) / 10, needPct: Math.round(ex.needPct * 10) / 10, winNetPct: Math.round(winPct * 10) / 10, lossPct: Math.round(ex.lossPct * 10) / 10,
+        parts: c.parts.map((p) => ({ ...p, pct: Math.round(p.pct * 10) / 10, adjPct: Math.round(p.adjPct * 10) / 10, weight: Math.round(p.weight * 1000) / 1000 })),
+        ...(w ? { worlds: { trend: Math.round(w.trend.pWin), flat: Math.round(w.flat.pWin), paths: w.paths, from: w.from, minutesToWin: w.flat.minutesToWin === null ? null : Math.round(w.flat.minutesToWin), pStop: Math.round(w.flat.pStop), pNone: Math.round(w.flat.pNone), filledPct: Math.round(w.flat.filledPct) } } : {}),
+        ...(pv ? { panel: pv.votes } : {}),
+        ...(f?.truncated ? { truncated: true } : {}),
+      };
+    }
     if (netRewardPct <= 0 || (!agent && netRewardPct < netRiskPct)) {
       const why = `after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) is smaller than the risk (${netRiskPct.toFixed(1)}%)`;
       dropped.push(`${o.kind}: ${why}`);
-      warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.` });
+      warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.`, ...(prediction ? { prediction } : {}) });
       continue;
     }
     if (evPct <= 0) {
-      const why = `with a ${Math.round(win * 100)}% win chance it loses money on average after costs (${evPct.toFixed(1)}% per trade)`;
+      const why = prediction
+        ? `the combined chance of reaching the minimum profit before the stop is ${Math.round(prediction.pWin)}% (${prediction.parts.map((p) => `${p.label.toLowerCase()} ${Math.round(p.pct)}%`).join(", ")}); it needs about ${Math.ceil(prediction.needPct)}% to be worth buying after costs`
+        : `with a ${Math.round(win * 100)}% win chance it loses money on average after costs (${evPct.toFixed(1)}% per trade)`;
       dropped.push(`${o.kind}: ${why}`);
-      warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.` });
+      warned.push({ ...o, ...clean(o), ...(prediction ? { winChancePct: Math.round(win * 100) } : {}), netRewardPct, netRiskPct, evPct, warning: `Fails the ${prediction ? "prediction" : "fee/risk"} check: ${why}.`, ...(prediction ? { prediction } : {}) });
       continue;
     }
     kept.push({
@@ -270,6 +318,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentE
       netRewardPct,
       netRiskPct,
       evPct,
+      ...(prediction ? { prediction } : {}),
     });
   }
   return { kept, dropped, warned };
@@ -293,7 +342,7 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   if (!agreement) return { ...empty, action: "HOLD", stance: "AVOID", confidence: Math.round(confidence / 2), agreement, note: `Models disagree (${[...stances].join(" vs ")}), so standing aside.` };
 
   const plan = plans[0];
-  const checked = checkOrders(plan.orders, costPct, agent);
+  const checked = checkOrders(plan.orders, costPct, agent, clamp(plan.validMinutes, 5, 720));
   const { dropped } = checked;
   // Orders that pass come first; ones that fail the check stay as warned, risky setups.
   const kept = [...checked.kept, ...checked.warned];
@@ -311,14 +360,16 @@ export function combine(results: ModelResult[], costPct: number, livePrice: numb
   const action = stance === "BUY_NOW" ? "BUY" : stance === "AVOID" ? "SELL" : "HOLD";
   const describe = (o: CheckedOrder) =>
     (o.kind === "buy_dip" ? `buy if it dips to $${o.triggerPrice.toPrecision(4)}` : o.kind === "buy_breakout" ? `buy if it breaks above $${o.triggerPrice.toPrecision(4)}` : `buy now up to $${o.triggerPrice.toPrecision(4)}`) +
-    ` (${o.winChancePct}% win chance)`;
+    (o.prediction ? ` (${Math.round(o.prediction.pWin)}% combined chance, needs ${Math.ceil(o.prediction.needPct)}%)` : ` (${o.winChancePct}% win chance)`);
   let note =
     stance === "AVOID"
       ? plan.stance === "AVOID"
         ? kept.length
           ? `The AI advises staying out (risky). Its best setup if you trade anyway: ${kept.map(describe).join(" or ")}.`
           : "The AI says stay out for now (no sensible setup)."
-        : `No order passed the fee/risk check; risky setup shown: ${kept.map(describe).join(" or ")}.`
+        : kept.some((o) => o.prediction)
+          ? `No order passed the prediction check; closest: ${kept.map(describe).join(" or ")}.`
+          : `No order passed the fee/risk check; risky setup shown: ${kept.map(describe).join(" or ")}.`
       : `Standing orders: ${kept.map(describe).join(" or ")}.`;
   if (passing.length && dropped.length) note += ` Risky, not used unless you accept the risk: ${dropped.join("; ")}.`;
   if (plans.length > 1) note += ` All ${plans.length} models agree.`;
@@ -463,7 +514,7 @@ How to decide:
 
 export async function reviewProfit(input: {
   pair: PairInfo; frames: Frame[]; costPct: number; entry: number; price: number; best: number; lockedExit: number; minNetPct: number;
-  trailPct: number; heldMin: number; flow: string; market: string; patterns: string; history: string; last?: { secondsAgo: number; price: number; action: string; reason: string } | null;
+  trailPct: number; heldMin: number; flow: string; market: string; patterns: string; history: string; outlook?: string; last?: { secondsAgo: number; price: number; action: string; reason: string } | null;
 }): Promise<ProfitDecision> {
   const { pair, entry, price, best, lockedExit, costPct } = input;
   const net = (p: number) => ((p - entry) / entry) * 100 - costPct;
@@ -476,6 +527,7 @@ Liquidity $${Math.round(pair.liquidityUsd)}; change 5m ${pair.change.m5}%, 1h ${
 ${input.market}
 ${input.flow}
 ${input.history}
+${input.outlook ?? ""}
 ${input.patterns}
 
 ${input.frames.map((f) => frameText(f, 60)).join("\n\n")}
@@ -494,4 +546,73 @@ Decide now: HOLD (with exitPrice, trailPct, targetPrice, recheckSeconds) or SELL
   if (!res.parsed_output) throw new Error(`no decision (${res.stop_reason})`);
   const u: any = res.usage ?? {};
   return { ...res.parsed_output, tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) };
+}
+
+// ---------- A panel of AI forecasters (agents) ----------
+// Before an agent's order is used, three forecasters with different jobs judge it on their own,
+// asked side by side. Their average joins the agent's own estimate and the numbers. It is only
+// asked for orders that already pass on the agent's estimate and the numbers.
+const PanelSchema = z.object({
+  chances: z.array(z.number()).describe("One number per order, in the order they are listed: the chance (0-100) that, once the order is filled, the price reaches the minimum-profit level before the stop, inside the time limit"),
+  reason: z.string().describe("1-2 short sentences in plain words: the main thing behind your numbers"),
+});
+const PANEL_RULES = `You are one of three independent forecasters judging a short-term crypto trade for a trading bot. You do not decide the trade; you give a probability.
+For each order listed, estimate the chance (0-100) that, once it is filled, the price reaches the MINIMUM-PROFIT LEVEL before it reaches the STOP, inside the time limit. Running out of time counts as not reaching it.
+Be calibrated: of all the orders you rate 60%, about 60 in 100 should really get there. On a coin with no direction, an order that needs a rise of U% before a fall of D% gets there about D / (U + D) of the time, and less with a short time limit; move away from the numbers you are given only as far as the evidence in front of you justifies.
+Prices are USD and may be tiny; keep full precision.`;
+const PANEL: { who: string; job: string }[] = [
+  { who: "Momentum trader", job: "Your job: judge the move itself. Are buyers in control right now (higher lows, buys out-trading sells, volume behind the push), and is there room to the level before resistance or exhaustion? Give credit to a move that is really alive, none to one that already happened." },
+  { who: "Skeptic", job: "Your job: find how this trade fails. Look for exhaustion after a run, resistance between the entry and the level, sellers taking over, volume fading, a thin pool, a few wallets holding most of the supply, a weak market backdrop. Say how likely the stop is hit first." },
+  { who: "Statistician", job: "Your job: think in base rates. Start from the numbers given (simulated paths, this coin lately, look-alike moments) and adjust only for specific, strong evidence that this moment differs from the typical one. Distrust stories." },
+];
+export type PanelResult = { votes: { who: string; chances: number[]; reason: string }[]; chances: number[]; tokens: number };
+
+export async function forecastPanel(input: {
+  pair: PairInfo; frames: Frame[]; costPct: number; minNetPct: number; orders: { text: string }[]; numbers: string; traderCase: string; flow: string; market: string; patterns: string;
+}): Promise<PanelResult> {
+  const { pair } = input;
+  const show: Record<string, number> = { "1m": 45, "5m": 36, "1h": 24 };
+  const prompt = `Token: ${pair.symbol} (${pair.name}) on ${pair.chain}. Live price: $${pair.priceUsd}
+Liquidity $${Math.round(pair.liquidityUsd)} | market cap $${Math.round(pair.marketCap)} | change 5m ${pair.change.m5}%, 1h ${pair.change.h1}%, 6h ${pair.change.h6}%, 24h ${pair.change.h24}% | last hour ${pair.buys1h ?? "?"} buys / ${pair.sells1h ?? "?"} sells
+Round-trip cost ${input.costPct.toFixed(2)}%. The minimum-profit level is the price at which the trade is up ${input.minNetPct}% after that cost.
+
+Orders to judge:
+${input.orders.map((o, i) => `${i + 1}. ${o.text}`).join("\n")}
+
+The trader's case for them: ${input.traderCase || "(none given)"}
+
+What the numbers say (from this coin's own candles, no opinion in them):
+${input.numbers}
+${input.market}
+${input.flow}
+${input.patterns}
+
+${input.frames.filter((f) => show[f.tf]).map((f) => frameText(f, show[f.tf])).join("\n\n")}
+
+Give one chance per order (${input.orders.length} number${input.orders.length === 1 ? "" : "s"}), and your reason.`;
+  anthropic ??= new Anthropic();
+  const ask = async (p: (typeof PANEL)[number]) => {
+    const res = await anthropic!.beta.messages.parse({
+      model: BOT_MODEL,
+      max_tokens: 1200,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low", format: betaZodOutputFormat(PanelSchema) },
+      system: `${PANEL_RULES}\n${p.job}`,
+      messages: [{ role: "user", content: prompt }],
+    });
+    if (!res.parsed_output) throw new Error(`no answer (${res.stop_reason})`);
+    const u: any = res.usage ?? {};
+    const chances = input.orders.map((_, i) => clamp(res.parsed_output!.chances[i] ?? NaN, 0, 100));
+    if (res.parsed_output.chances.length < input.orders.length) throw new Error("too few answers");
+    return { who: p.who, chances, reason: res.parsed_output.reason.slice(0, 240), tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) };
+  };
+  const got = await Promise.allSettled(PANEL.map(ask));
+  const votes = got.filter((g): g is PromiseFulfilledResult<Awaited<ReturnType<typeof ask>>> => g.status === "fulfilled").map((g) => g.value);
+  if (votes.length < 2) throw new Error(`the forecaster panel could not be asked (${got.find((g) => g.status === "rejected") ? String((got.find((g) => g.status === "rejected") as PromiseRejectedResult).reason?.message ?? "no answer") : "no answer"})`);
+  return {
+    votes: votes.map(({ who, chances, reason }) => ({ who, chances, reason })),
+    chances: input.orders.map((_, i) => votes.reduce((a, v) => a + v.chances[i], 0) / votes.length),
+    tokens: votes.reduce((a, v) => a + v.tokens, 0),
+  };
 }
