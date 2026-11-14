@@ -487,6 +487,12 @@ export function combineChance(aiPct: number, panelPct: number | null, f: Forecas
   parts.forEach((p) => (p.weight /= tot));
   return { pWin: clamp(parts.reduce((s, p) => s + p.adjPct * p.weight, 0), 0, 100), parts };
 }
+// What reaching the minimum-profit level is counted as worth, until the account has its own
+// managed winners to measure: the minimum, plus half of what the simulated exit made above it,
+// and never more than 3 points above the minimum. The simulation sells exactly at its exit line;
+// a real sale on a jumpy coin lands below it, so its figure is an upper bound, not an average.
+export const countedWin = (simWinNetPct: number, minNetPct: number) => clamp(minNetPct + 0.5 * (simWinNetPct - minNetPct), minNetPct, minNetPct + 3);
+
 // What a trade is worth on average: reaching the level pays `winNetPct`; failing costs the stop,
 // or (for the share that only ran out of time) the smaller time-limit result.
 export function expected(pWinPct: number, winNetPct: number, netRiskPct: number, f: Forecast | null) {

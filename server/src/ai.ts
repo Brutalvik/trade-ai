@@ -5,7 +5,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import type { Candle, PairInfo } from "./data.js";
 import { keyLevels, type Snapshot } from "./indicators.js";
-import { combineChance, expected, type FcKey, type FcStats, type Forecast } from "./predict.js";
+import { combineChance, countedWin, expected, type FcKey, type FcStats, type Forecast } from "./predict.js";
 
 // What Claude returns: a PLAN of standing orders the bot carries out on its own,
 // checking prices every 5 seconds, without asking Claude again until something changes.
@@ -283,7 +283,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentE
       } catch { /* no forecast: the AI side alone */ }
       const pv = agent.panel?.get(orderKey(o)) ?? null;
       const c = combineChance(clamp(o.winChancePct, 0, 100), pv ? pv.pct : null, f, agent.stats);
-      if (f && agent.measuredWinPct === undefined) winPct = clamp(f.winNetPct, agent.minNetPct, 20);
+      if (f && agent.measuredWinPct === undefined) winPct = countedWin(f.winNetPct, agent.minNetPct);
       const ex = expected(c.pWin, winPct, netRiskPct, f);
       win = c.pWin / 100;
       evPct = ex.evPct;

@@ -3,7 +3,7 @@
 // see how the strategy would perform before risking real money.
 import { audit, ledger, type AuditType } from "./audit.js";
 import { analyze, BOT_MODEL, CLAUDE_MODEL, combine, forecastPanel, orderKey, reviewAgentPick, reviewHold, reviewProfit, type AgentEval, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult, type OrderPrediction, type PlanOrder } from "./ai.js";
-import { desk, expected, resolve, score, type ConePoint, type Desk, type FcStats, type Forecast, type ForecastRec, type Shape } from "./predict.js";
+import { countedWin, desk, expected, resolve, score, type ConePoint, type Desk, type FcStats, type Forecast, type ForecastRec, type Shape } from "./predict.js";
 import { findPatterns, patternsText, patternTags, type FramePatterns } from "./patterns.js";
 import { cachedJson, fromDexScreener, getCandles, getPair, getRecentTokenCandles, knownToken, type Candle, type PairInfo, type Timeframe } from "./data.js";
 import { atr, snapshot } from "./indicators.js";
@@ -55,6 +55,7 @@ export type Position = {
   tokenMint?: string; // Agents mode: the token's mint (to avoid buying it twice)
   secondLook?: boolean; // the AI already kept this trade open once at its stop-loss
   firstStop?: number; // the stop-loss before the AI's second look moved it
+  underSince?: number; // Agents: when the price was first seen at or below the stop-loss (it sells if it is still there ~10 s later)
   extensions?: number; // times the AI extended the holding time
   ladderStep?: number; // (older trades) the highest whole % of profit after fees locked
   pm?: ProfitPlan; // Agents: how this trade's profit is being managed once the minimum is reached
@@ -795,7 +796,12 @@ function shapeOf(o: Pick<PlanOrder, "kind" | "triggerPrice" | "stopLoss" | "maxH
 }
 const pct0 = (v: number | null | undefined) => (v === null || v === undefined ? "n/a" : `${Math.round(v)}%`);
 // The forecast desk: what the numbers say about buying right now, as text for the AI and as data for the agent window.
-function deskReport(D: Desk, cost: number, measuredWinPct: number | undefined, stats: FcStats | undefined): { text: string; view: DeskView } | null {
+// The usual size of one candle on this coin (high to low, % of its price): the middle one of the last 120.
+function usualSwing(c: Candle[]): number {
+  const r = c.slice(-120).filter((x) => x.close > 0).map((x) => ((x.high - x.low) / x.close) * 100).sort((a, b) => a - b);
+  return r.length >= 20 ? r[Math.floor(r.length / 2)] : 0;
+}
+function deskReport(D: Desk, cost: number, measuredWinPct: number | undefined, stats: FcStats | undefined, swing1m = 0, swing5m = 0): { text: string; view: DeskView } | null {
   if (!D.ready || !(D.price > 0)) return null;
   const up = cost + AGENT_NET_TARGET;
   const rows: DeskView["rows"] = [];
@@ -804,7 +810,7 @@ function deskReport(D: Desk, cost: number, measuredWinPct: number | undefined, s
   for (const stopPct of [3, 5, 8]) {
     const f = D.forecast({ offsetPct: 0, upPct: up, downPct: stopPct, holdMin: 180, waitMin: 0 });
     if (!f) continue;
-    const winNet = measuredWinPct ?? Math.min(20, Math.max(AGENT_NET_TARGET, f.winNetPct));
+    const winNet = measuredWinPct ?? countedWin(f.winNetPct, AGENT_NET_TARGET);
     const need = expected(f.numbers, winNet, stopPct + cost, f).needPct;
     const w = f.worlds;
     paths = w?.paths ?? paths;
@@ -820,6 +826,8 @@ function deskReport(D: Desk, cost: number, measuredWinPct: number | undefined, s
   const text = [
     `Forecast desk (worked out by code from this coin's own candles; there is no opinion in it):`,
     `- To be up +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% costs, the price must rise ${up.toFixed(1)}% from the entry before the stop is hit.`,
+    swing1m > 0 && swing5m > 0 ? `- This coin's usual swing: about ${swing1m.toFixed(1)}% inside one 1-minute candle and ${swing5m.toFixed(1)}% inside one 5-minute candle. A stop closer than about one 5-minute swing below the entry sits inside ordinary wiggle and is usually hit before anything else happens; if the chart gives no sound level that far out, there is no trade.` : "",
+    `- A breakout order is bought only if the price is still above its level after holding there (your confirmSeconds, at least 15 s) and has not run more than 2% past it (or half the distance to your stop); otherwise you are asked again.`,
     `- Buying now, the chance that happens first within 3 hours, by how far below the stop sits:`,
     ...lines,
     cone.length ? `- Where the simulated paths put the price if there is no trend (the middle 80% of them): ${cone.map((c) => `in ${c.min >= 60 ? `${c.min / 60} h` : `${c.min} min`} ${money(c.lo)} to ${money(c.hi)} (middle ${money(c.mid)})`).join("; ")}.` : "",
@@ -920,7 +928,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     try {
       settleForecasts(pool, c1, c5);
       D = desk(c1, c5, cost, PM_RULE_TRAIL);
-      deskOut = deskReport(D, cost, measuredWinPct, state.fc?.stats);
+      deskOut = deskReport(D, cost, measuredWinPct, state.fc?.stats, usualSwing(c1), usualSwing(c5));
     } catch (err: any) {
       console.error("[predict]", err?.message ?? err); // the plan goes ahead on the AI alone
       D = null;
@@ -1376,6 +1384,7 @@ async function secondLook(cfg: BotConfig, pos: Position, price: number, why: "st
       pos.secondLook = true;
     } else pos.extensions = (pos.extensions ?? 0) + 1;
     pos.stopLoss = exit;
+    delete pos.underSince; // the new exit starts its own count
     pos.locked = false;
     pos.sellBy = Date.now() + mins * 60_000;
     if (!pos.trailing) {
@@ -1683,6 +1692,14 @@ export const AGENT_BUDGET_DEFAULT = 1000;
 export const AGENT_RECHECK_SEC = 300; // an agent asks its AI again at least this often
 const AGENT_TOUCH_GAP_MS = 45_000; // ...and at once when the price reaches a level it named, but not within this long of the plan
 export const AGENT_MOVE_PCT = 4; // ...and whenever the price has moved this much since its plan
+// An agent's stop-loss sells when the price has settled at or below it, not on one wick: it must
+// still be there this long after it was first seen there. A fall to CRASH times the planned loss
+// sells at once. Replayed on 4,500 real entries at the bot's 5-second pace, this reached the
+// minimum profit a few points more often than selling on the first touch and did slightly better on average.
+const AGENT_STOP_CONFIRM_MS = 8_000;
+const AGENT_STOP_CRASH = 1.5;
+const AGENT_HOLD_SEC = 15; // an agent's breakout must stay above its level at least this long before it is bought
+const AGENT_CHASE_PCT = 2; // ...and is not bought more than this far above the level (or half the stop distance, if that is less)
 const RELEARN_MS = 60 * 60_000;
 
 // The agent's money: its budget plus everything its trades have made or lost since it started.
@@ -1739,7 +1756,7 @@ async function agentBrief(cfg: BotConfig, why = ""): Promise<string> {
     `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you WILL buy at (buy_dip and/or buy_breakout), close enough to be reached in the next 10-30 minutes. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them. You will be asked again within 10 minutes, or sooner if the price moves ${AGENT_MOVE_PCT}%.`,
     `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. That level is the MINIMUM-PROFIT level: winChancePct is your chance of reaching it before the stop. target is where you realistically expect the move to go (at or above that level). Put the stop where the idea is proved wrong.`,
     `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. How an order is judged: a win (reaching the minimum-profit level) counts as ${managedNote}; a loss counts as the distance to your stop plus costs. The order is used only if chance x win - (1 - chance) x loss is above zero, where the chance is the COMBINED one: your winChancePct, the forecast desk's numbers below, and three more AI forecasters who are asked about any order that would pass. Every forecast is scored against what really happened and each forecaster, you included, is corrected for its record, so an inflated chance only gets you discounted.`,
-    `After buying: the stop is yours until the trade is up +${AGENT_NET_TARGET}% after costs. At that point the minimum profit is locked as the exit and you are asked again and again to manage the trade: hold for more (you set the exit and how closely it follows the price) or sell now. So the entry only has to get to +${AGENT_NET_TARGET}%; how far it runs after that is handled then. At the stop you are asked once whether to hold.`,
+    `After buying: the stop is yours until the trade is up +${AGENT_NET_TARGET}% after costs. At that point the minimum profit is locked as the exit and you are asked again and again to manage the trade: hold for more (you set the exit and how closely it follows the price) or sell now. So the entry only has to get to +${AGENT_NET_TARGET}%; how far it runs after that is handled then. The stop is judged on where the price settles, not on one wick: the bot sells if the price is still at or below your stop about 10 seconds after it got there, or at once if it falls to 1.5 times your planned loss. At the stop you are asked once whether to hold.`,
   ];
   if (L) {
     lines.push(`A study of this coin's own history (simple entry patterns replayed with the same stop and minimum profit): ${L.summary}`);
@@ -2107,6 +2124,22 @@ async function tickBot(persist: boolean) {
       else if (pos.trailing && trailLow <= trailStop) {
         reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
         sellAt = Math.min(trailStop, price);
+      } else if (ladder && pos.stopLoss && pos.stopLoss < pos.entryPrice && !pos.pm) {
+        // An agent's stop-loss (see AGENT_STOP_CONFIRM_MS): judged on where the price is now, sold at that price.
+        const crash = pos.entryPrice - AGENT_STOP_CRASH * (pos.entryPrice - pos.stopLoss);
+        if (price <= crash) reason = "Stop-loss hit";
+        else if (price <= pos.stopLoss) {
+          if (!pos.underSince) {
+            pos.underSince = Date.now();
+            acct().dirty = true;
+            log(`${pos.symbol} is at its stop-loss ${fmt(pos.stopLoss)} (now ${fmt(price)}). It sells if the price is still there in about 10 seconds; one dip that bounces straight back doesn't end the trade.`);
+          } else if (Date.now() - pos.underSince >= AGENT_STOP_CONFIRM_MS) reason = "Stop-loss hit";
+        } else if (pos.underSince) {
+          delete pos.underSince;
+          acct().dirty = true;
+          log(`${pos.symbol} bounced back above its stop-loss (now ${fmt(price)}): the trade stays open.`, "good");
+        }
+        if (reason) sellAt = price;
       } else if (pos.stopLoss && (pos.stopLoss >= pos.entryPrice ? (newBestThisCheck ? price : q.closeLow) : q.low) <= pos.stopLoss) {
         reason = pos.pm ? `Profit exit: sold at about +${(((Math.min(pos.stopLoss, price) - pos.entryPrice) / pos.entryPrice) * 100 - cost).toFixed(1)}% after fees (best was +${(bestGainPct - cost).toFixed(1)}%)${pos.pm.by === "ai" ? ", at the exit the AI set" : ""}` : pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
         sellAt = Math.min(pos.stopLoss, price);
@@ -2335,8 +2368,26 @@ async function tickBot(persist: boolean) {
           entryPrice = q.price;
         }
       }
-      // By default buy the instant the trigger is hit; optionally wait for it to hold.
-      const holdSec = cfg.waitForHold ? o.confirmSeconds : 0;
+      // An agent's breakout is bought only if it is real: the price must still be above the level
+      // (a spike that already fell back is not a breakout), must stay there for the AI's own
+      // hold time (at least 15 s), and must not have run so far past the level that the planned
+      // stop no longer fits. Tested on real coins: buying where a spike ran to was the worst entry.
+      const agentBreakout = isCoinAgent(cfg) && o.kind === "buy_breakout";
+      if (agentBreakout && q.price < o.triggerPrice) {
+        if (state.bot.armedSince[i]) log(`${t3.symbol} went above ${fmt(o.triggerPrice)} but fell straight back (now ${fmt(q.price)}): not a breakout yet, still waiting.`);
+        state.bot.armedSince[i] = null;
+        continue;
+      }
+      const chasePct = agentBreakout ? Math.max(0.5, Math.min(AGENT_CHASE_PCT, (((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100) / 2)) : Infinity;
+      if (agentBreakout && (q.price / o.triggerPrice - 1) * 100 > chasePct) {
+        noteOnce(`chase:${sig.at}:${i}`, `${t3.symbol} ran ${((q.price / o.triggerPrice - 1) * 100).toFixed(1)}% past the breakout level ${fmt(o.triggerPrice)} before it could be bought. Buying up there would put the stop too far away, so the agent doesn't chase it: its AI looks again now.`);
+        state.bot.armedSince[i] = null;
+        state.bot.askNow = true;
+        acct().dirty = true;
+        continue;
+      }
+      // Otherwise: buy the instant the trigger is hit (optionally waiting for it to hold).
+      const holdSec = agentBreakout ? Math.min(90, Math.max(AGENT_HOLD_SEC, o.confirmSeconds || 0)) : cfg.waitForHold ? o.confirmSeconds : 0;
       if (!state.bot.armedSince[i]) {
         state.bot.armedSince[i] = Date.now();
         if (holdSec > 0) {
