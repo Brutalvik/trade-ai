@@ -5,7 +5,12 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "test": "tsx test/run.mts unit",
+    "test:engine": "tsx test/run.mts engine",
+    "test:all": "tsx test/run.mts all",
+    "backtest": "tsx src/backtest/run.ts",
+    "backtest:fetch": "tsx src/backtest/fetch.ts"
   },
   "keywords": [],
   "author": "",

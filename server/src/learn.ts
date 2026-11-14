@@ -30,8 +30,8 @@ export type Learned = {
   summary: string;
 };
 
-type Series = { c: Candle[]; ema9: number[]; ema21: number[]; rsi: number[]; atr: number[]; volAvg: number[]; maFast: (number | null)[]; maSlow: (number | null)[] };
-function series(c: Candle[]): Series {
+export type Series = { c: Candle[]; ema9: number[]; ema21: number[]; rsi: number[]; atr: number[]; volAvg: number[]; maFast: (number | null)[]; maSlow: (number | null)[] };
+export function series(c: Candle[]): Series {
   const ema = (n: number) => { const k = 2 / (n + 1); const o: number[] = []; c.forEach((x, i) => o.push(i ? x.close * k + o[i - 1] * (1 - k) : x.close)); return o; };
   const rsi: number[] = []; let g = 0, l = 0;
   c.forEach((x, i) => { if (!i) return rsi.push(50); const d = x.close - c[i - 1].close; g = (g * 13 + Math.max(d, 0)) / 14; l = (l * 13 + Math.max(-d, 0)) / 14; rsi.push(l === 0 ? 100 : 100 - 100 / (1 + g / l)); });

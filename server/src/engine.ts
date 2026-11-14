@@ -16,6 +16,7 @@ import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, flowText, marketText, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin } from "./agents.js";
 import { learn, type Learned, type Watch } from "./learn.js";
 import { maView, type MaView } from "./macross.js";
+import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck } from "./rules.js";
 
 import { noteCommunityBuy } from "./lists.js";
 
@@ -691,10 +692,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
     throw new Error(state.cash - spendable > 0.005 ? `Not enough available cash: $${spendable.toFixed(2)} available, $${(state.cash - spendable).toFixed(2)} is locked for your agents` : `Not enough cash ($${state.cash.toFixed(2)} available)`);
   if (!(pair.priceUsd > 0)) throw new Error("No live price for this token");
   const { feePct, slippagePct } = state.settings;
-  const feeUsd = usd * (feePct / 100);
-  const platformFeeUsd = usd * (platformFeePct() / 100);
-  const fillPrice = pair.priceUsd * (1 + (slippagePct + extraSlipPct) / 100);
-  const qty = (usd - feeUsd - platformFeeUsd) / fillPrice;
+  const { fillPrice, qty, feeUsd, platformFeeUsd } = fillBuy(usd, pair.priceUsd, { feePct, slipPct: slippagePct + extraSlipPct, platformPct: platformFeePct() });
   state.cash -= usd;
   const existing = state.positions.find((p) => p.pool === pair.pool && p.source === source && (source !== "bot" || (p.botId ?? "1") === (plan?.botId ?? "1")));
   if (existing) {
@@ -722,11 +720,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
   const f = Math.min(1, Math.max(0.01, fraction));
   const { feePct, slippagePct } = state.settings;
   const qty = p.qty * f;
-  const fillPrice = price * (1 - (slippagePct + (p.extraSlipPct ?? 0)) / 100);
-  const gross = qty * fillPrice;
-  const feeUsd = gross * (feePct / 100);
-  const platformFeeUsd = gross * (platformFeePct() / 100);
-  const net = gross - feeUsd - platformFeeUsd;
+  const { fillPrice, net, feeUsd, platformFeeUsd } = fillSell(qty, price, { feePct, slipPct: slippagePct + (p.extraSlipPct ?? 0), platformPct: platformFeePct() });
   const costPart = p.costUsd * f;
   state.cash += net;
   p.qty -= qty;
@@ -1602,7 +1596,7 @@ function buyFillPrice(o: CheckedOrder, q: Quote) {
 // ---------- Agents mode ----------
 // Eight rule-based agents score every busy Solana coin (no AI cost); the best coin that passes
 // every veto and the chart check gets one AI check, then a market buy aiming for +10% after fees.
-export const AGENT_NET_TARGET = 5; // minimum % profit after all fees an agent's trade aims for; the profit ladder starts here
+export const AGENT_NET_TARGET = EXIT_LIVE.minNetPct; // minimum % profit after all fees an agent's trade aims for (rules.ts)
 const AGENT_STOP_MIN = 4, AGENT_STOP_MAX = 7; // exit distance, % below the buy price
 export type AgentDecision = { at: number; symbol: string; mint: string; total: number; ok: boolean; why: string };
 const agentNotes = new Map<string, number>(); // mint -> skip until (failed chart / AI check)
@@ -1736,10 +1730,8 @@ export const AGENT_MOVE_PCT = 4; // ...and whenever the price has moved this muc
 // still be there this long after it was first seen there. A fall to CRASH times the planned loss
 // sells at once. Replayed on 4,500 real entries at the bot's 5-second pace, this reached the
 // minimum profit a few points more often than selling on the first touch and did slightly better on average.
-const AGENT_STOP_CONFIRM_MS = 8_000;
-const AGENT_STOP_CRASH = 1.5;
-const AGENT_HOLD_SEC = 15; // an agent's breakout must stay above its level at least this long before it is bought
-const AGENT_CHASE_PCT = 2; // ...and is not bought more than this far above the level (or half the stop distance, if that is less)
+// The numbers and the rule itself are in rules.ts (stopCheck, EXIT_LIVE), shared with the back-tester;
+// so are the breakout entry rules (breakoutHoldSec, chaseLimitPct).
 const RELEARN_MS = 60 * 60_000;
 
 // The agent's money: its budget plus everything its trades have made or lost since it started.
@@ -1829,7 +1821,7 @@ async function agentBrief(cfg: BotConfig, why = ""): Promise<string> {
 // Once a trade has reached its minimum profit, the AI is asked (in the background, so the
 // 5-second price checks keep running) whether to hold for more or sell. Its answer is applied at
 // that agent's next check. If it can't be asked, the exit follows the price by a fixed rule.
-export const PM_RULE_TRAIL = 2.5; // % behind the highest close the exit follows when the AI hasn't said otherwise
+export const PM_RULE_TRAIL = ruleTrailPct(EXIT_LIVE); // % behind the highest close the exit follows when the AI hasn't said otherwise (rules.ts)
 const PM_MIN_GAP_MS = 30_000; // never ask the AI about one trade more often than this
 const profitInbox = new Map<string, { at: number; d?: ProfitDecision; error?: string }>(); // position id -> the AI's answer, waiting to be applied
 const profitAsking = new Set<string>();
@@ -2046,14 +2038,13 @@ async function tickBot(persist: boolean) {
       // or sell now, and sets the exit and how closely it follows the price. The exit never goes
       // below the locked minimum. If the AI can't be asked, the exit follows by a fixed rule.
       let aiSell = "";
-      if (ladder && (pos.pm || bestGainPct - cost >= AGENT_NET_TARGET)) {
+      if (ladder && (pos.pm || lockDue(bestGainPct - cost, EXIT_LIVE))) {
         const now = Date.now();
         const bestNet = bestGainPct - cost;
         const nowNet = gainPct - cost;
         if (!pos.pm) {
           // A trade whose exit was already raised above the minimum (by the earlier 1% profit steps) keeps it: an exit is never lowered.
-          const minExit = pos.entryPrice * (1 + (cost + AGENT_NET_TARGET) / 100);
-          pos.pm = { floor: Math.max(minExit, pos.stopLoss ?? 0), trailPct: PM_RULE_TRAIL, by: "rule", asks: 0, fails: 0, step: 0 };
+          pos.pm = { floor: lockedFloor(pos.entryPrice, cost, pos.stopLoss, EXIT_LIVE), trailPct: ruleTrailPct(EXIT_LIVE), by: "rule", asks: 0, fails: 0, step: 0 };
           pos.locked = true;
           acct().dirty = true;
           log(`${pos.symbol} is up +${bestNet.toFixed(1)}% after fees: the +${AGENT_NET_TARGET}% minimum is locked (exit ${fmt(pos.pm.floor)}). The AI now decides how long to hold.`, "good");
@@ -2091,7 +2082,7 @@ async function tickBot(persist: boolean) {
           }
         }
         // The exit in force: the locked floor, or the trailing exit when that is higher.
-        const exit = Math.max(pm.floor, best * (1 - pm.trailPct / 100));
+        const exit = exitInForce(pm.floor, best, pm.trailPct);
         if (!pos.stopLoss || Math.abs(exit - pos.stopLoss) / exit > 1e-6) {
           pos.stopLoss = exit;
           acct().dirty = true;
@@ -2166,22 +2157,22 @@ async function tickBot(persist: boolean) {
         reason = `Trailing stop: fell ${trail}% from its high of ${fmt(pos.peak!)}`;
         sellAt = Math.min(trailStop, price);
       } else if (ladder && pos.stopLoss && pos.stopLoss < pos.entryPrice && !pos.pm) {
-        // An agent's stop-loss (see AGENT_STOP_CONFIRM_MS): judged on where the price is now, sold at that price.
-        const crash = pos.entryPrice - AGENT_STOP_CRASH * (pos.entryPrice - pos.stopLoss);
-        if (price <= crash) reason = "Stop-loss hit";
-        else if (price <= pos.stopLoss) {
-          if (!pos.underSince) {
-            pos.underSince = Date.now();
-            acct().dirty = true;
-            log(`${pos.symbol} is at its stop-loss ${fmt(pos.stopLoss)} (now ${fmt(price)}). It sells if the price is still there in about 10 seconds; one dip that bounces straight back doesn't end the trade.`);
-          } else if (Date.now() - pos.underSince >= AGENT_STOP_CONFIRM_MS) reason = "Stop-loss hit";
-        } else if (pos.underSince) {
+        // An agent's stop-loss (rules.ts, stopCheck): judged on where the price is now, sold at that price.
+        const c = stopCheck({ entry: pos.entryPrice, stop: pos.stopLoss, price, underSince: pos.underSince, now: Date.now() }, EXIT_LIVE);
+        if (c.action === "sell") reason = "Stop-loss hit";
+        else if (c.action === "arm") {
+          pos.underSince = Date.now();
+          acct().dirty = true;
+          log(`${pos.symbol} is at its stop-loss ${fmt(pos.stopLoss)} (now ${fmt(price)}). It sells if the price is still there in about 10 seconds; one dip that bounces straight back doesn't end the trade.`);
+        } else if (c.action === "clear") {
           delete pos.underSince;
           acct().dirty = true;
           log(`${pos.symbol} bounced back above its stop-loss (now ${fmt(price)}): the trade stays open.`, "good");
         }
         if (reason) sellAt = price;
-      } else if (pos.stopLoss && (pos.stopLoss >= pos.entryPrice ? (newBestThisCheck ? price : q.closeLow) : q.low) <= pos.stopLoss) {
+        // The order's time limit: only if the exit design has it on (see EXIT_LIVE.timeLimit in rules.ts).
+        else if (EXIT_LIVE.timeLimit && pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
+      } else if (pos.stopLoss && exitHit({ entry: pos.entryPrice, stop: pos.stopLoss, price, low: q.low, closeLow: q.closeLow, newBest: newBestThisCheck })) {
         reason = pos.pm ? `Profit exit: sold at about +${(((Math.min(pos.stopLoss, price) - pos.entryPrice) / pos.entryPrice) * 100 - cost).toFixed(1)}% after fees (best was +${(bestGainPct - cost).toFixed(1)}%)${pos.pm.by === "ai" ? ", at the exit the AI set" : ""}` : pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
         sellAt = Math.min(pos.stopLoss, price);
       } else if (!pos.pm && pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached"; // a trade in profit is the AI's to manage, not the clock's
@@ -2420,7 +2411,7 @@ async function tickBot(persist: boolean) {
         state.bot.armedSince[i] = null;
         continue;
       }
-      const chasePct = agentBreakout ? Math.max(0.5, Math.min(AGENT_CHASE_PCT, (((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100) / 2)) : Infinity;
+      const chasePct = agentBreakout ? chaseLimitPct(o.triggerPrice, o.stopLoss) : Infinity;
       if (agentBreakout && (q.price / o.triggerPrice - 1) * 100 > chasePct) {
         noteOnce(`chase:${sig.at}:${i}`, `${t3.symbol} ran ${((q.price / o.triggerPrice - 1) * 100).toFixed(1)}% past the breakout level ${fmt(o.triggerPrice)} before it could be bought. Buying up there would put the stop too far away, so the agent doesn't chase it: its AI looks again now.`);
         state.bot.armedSince[i] = null;
@@ -2429,7 +2420,7 @@ async function tickBot(persist: boolean) {
         continue;
       }
       // Otherwise: buy the instant the trigger is hit (optionally waiting for it to hold).
-      const holdSec = agentBreakout ? Math.min(90, Math.max(AGENT_HOLD_SEC, o.confirmSeconds || 0)) : cfg.waitForHold ? o.confirmSeconds : 0;
+      const holdSec = agentBreakout ? breakoutHoldSec(o.confirmSeconds) : cfg.waitForHold ? o.confirmSeconds : 0;
       if (!state.bot.armedSince[i]) {
         state.bot.armedSince[i] = Date.now();
         if (holdSec > 0) {
