@@ -5,7 +5,8 @@
 import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, EXIT_V058, fillBuy, fillSell, levelFor, netPct, ruleTrailPct, stepAgentTrade, stopCheck, type ExitDesign, type TradeState } from "../../src/rules.ts";
 import { simulate } from "../../src/backtest/sim.ts";
 import { metrics } from "../../src/backtest/metrics.ts";
-import { COSTS, DESIGNS, strategy } from "../../src/backtest/strategies.ts";
+import { COSTS, DESIGNS, design, strategy } from "../../src/backtest/strategies.ts";
+import { pairedBuys, pairedLines, pairedStats } from "../../src/backtest/paired.ts";
 import { loadFixtures, measuredRoundTripPct, type Fixture } from "../../src/backtest/fixtures.ts";
 
 let pass = 0, fail = 0;
@@ -97,6 +98,22 @@ const s15 = strategy("every:15");
 const all = fx.flatMap((f) => simulate(f, s15.entries(f), { tf: "1m", design: EXIT_V058, cost: COSTS.flat, budgetUsd: 1000 }));
 check("a back-test over them produces trades with sane results", all.length > 50 && all.every((t) => Number.isFinite(t.pnlUsd) && t.netPct > -60 && t.usd > 0), `${all.length} trades`);
 check("entries from a studied pattern work too", fx.flatMap((f) => simulate(f, strategy("pattern:macross").entries(f), { tf: "1m", design: EXIT_V058, cost: COSTS.flat, budgetUsd: 1000 })).length > 5, "");
+
+// ---- exit designs on identical buys ----
+expect("a design by its key: 'live' is the bot's own, 'lock8' is the bot's with the floor locked at +8%, a lock under the minimum is refused", [design("live")?.lockAtNetPct, design("live")?.trail, design("lock8")?.lockAtNetPct, design("lock8")?.minNetPct, design("lock8")?.trail, design("lock3"), design("late")?.lockAtNetPct, design("nope")], [5, EXIT_LIVE.trail, 8, 5, EXIT_LIVE.trail, undefined, 10, undefined]);
+// One coin, two buys: the first goes up to +6.2% after costs and falls back to its stop, the second only falls.
+const upDown = [...flat(3), 1.06, 1.092, 1.08, ...flat(6, 0.94), ...flat(40, 1), ...flat(8, 0.94), ...flat(3, 0.94)];
+const two = (f: Fixture) => [{ time: 1_800_000_000, stopPct: 5, maxHoldMin: 240 }, { time: 1_800_000_000 + 20 * 5, stopPct: 5, maxHoldMin: 240 }];
+const both = { live: design("live")!, late: design("late")! };
+const pb = pairedBuys([mk(upDown)], two, both, { tf: "5s", cost: COSTS.flat, budgetUsd: 1000 });
+expect("paired: every design gets the same buys, each replayed on its own (the first buy does not hide the second)", [pb.length, pb.map((b) => [b.by.live.entryTime === b.by.late.entryTime, b.by.live.usd === b.by.late.usd])], [2, [[true, true], [true, true]]]);
+expect("...a buy that touched +5% is banked by the lock at +5% and lost by the lock at +10%", [pb[0].by.live.why, pb[0].by.live.netPct > 4, pb[0].by.late.why, pb[0].by.late.netPct < -5], ["profit_exit", true, "stop", true]);
+expect("...a buy that never got there ends the same under both", [pb[1].by.live.why, r4(pb[1].by.live.netPct) === r4(pb[1].by.late.netPct)], ["stop", true]);
+const ps = pairedStats(pb, both);
+expect("paired figures: the difference from the first design, and the buys that reached its lock", [ps[0].diffPct, ps[1].diffPct < -5, ps[0].reached.buys, ps[0].reached.lost, ps[1].reached.lost, ps[0].rest.buys, r4(ps[0].rest.avgPct) === r4(ps[1].rest.avgPct)], [0, true, 1, 0, 1, 1, true]);
+const real = pairedBuys(fx, s15.entries, both, { tf: "1m", cost: COSTS.measured, budgetUsd: 1000, sizeCapPct: 2.5 });
+const rs = pairedStats(real, both);
+check("paired on the saved coins: the same buys under both designs, identical until the first lock, a difference with its range", real.length > 100 && real.every((b) => b.by.live.entryTime === b.by.late.entryTime && (b.by.live.bestNetPct >= 5 - 1e-6 || Math.abs(b.by.live.netPct - b.by.late.netPct) < 1e-9)) && rs[1].lo <= rs[1].diffPct && rs[1].diffPct <= rs[1].hi && rs[1].coinsBetter + rs[1].coinsWorse <= fx.length && pairedLines(real, both).length > 8, { buys: real.length, diff: r4(rs[1].diffPct), range: [r4(rs[1].lo), r4(rs[1].hi)], coins: [rs[1].coinsBetter, rs[1].coinsWorse] });
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

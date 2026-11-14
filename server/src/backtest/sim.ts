@@ -56,11 +56,14 @@ function atr5m(c5: Candle[]) {
   };
 }
 
-// The largest amount (at most `funds`) whose round trip costs no more than the cap; 0 if even $10 costs more.
+// The largest amount (at most `funds`) whose round trip costs no more than the cap. If no size
+// does, the smallest position an agent takes: a tenth of its funds, at least $10 (as sizeUnderCap
+// in costs.ts: the cap only makes a position smaller, it never forbids the trade).
 export function sizeFor(fx: Fixture, funds: number, cost: CostModel, capPct?: number): number {
   if (!capPct || cost.roundTripPct(fx, funds) <= capPct) return funds;
-  if (cost.roundTripPct(fx, 10) > capPct) return 0;
-  let lo = 10, hi = funds;
+  const floor = Math.min(funds, Math.max(10, funds * 0.1));
+  if (cost.roundTripPct(fx, floor) > capPct) return Math.floor(floor * 100) / 100;
+  let lo = floor, hi = funds;
   for (let i = 0; i < 24; i++) {
     const mid = (lo + hi) / 2;
     if (cost.roundTripPct(fx, mid) <= capPct) lo = mid; else hi = mid;

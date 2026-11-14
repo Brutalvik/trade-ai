@@ -5,7 +5,7 @@
 //                     breakout, pullback, squeeze, flag, rebound, macross.
 // The exit designs the back-tester can run side by side are listed here too.
 import { fires, series, stopPctFor, STRATS, type StratKey } from "../learn.js";
-import { EXIT_V058, type ExitDesign } from "../rules.js";
+import { EXIT_LIVE, EXIT_V058, type ExitDesign } from "../rules.js";
 import { measuredRoundTripPct, TF_SEC, type Fixture } from "./fixtures.js";
 import type { CostModel, Entry } from "./sim.js";
 
@@ -51,13 +51,15 @@ export function strategy(spec: string, stopPct = 5, maxHoldMin = 240): Strategy 
 // ---------- Exit designs ----------
 const ADAPTIVE: ExitDesign["trail"] = { kind: "atr", mult: 1.8, minPct: 2.5, maxPct: 12 };
 export const DESIGNS: Record<string, ExitDesign> = {
-  // What the bot runs: +5% after costs is locked the moment it is reached; the exit follows 2.5% behind the high;
-  // a trade that neither stops out nor reaches +5% is held with no time limit.
+  // What the bot ran up to v0.61.0: +5% after costs is locked the moment it is reached; the exit follows 2.5%
+  // behind the high; a trade that neither stops out nor reaches +5% is held with no time limit.
   v058: EXIT_V058,
   // The same with the order's time limit working (the trade is sold when its holding time is up).
   timed: { ...EXIT_V058, name: "v0.58.0 + time limit", timeLimit: true },
   // The same lock, but the exit follows 1.8 x the coin's usual 5-minute swing behind (2.5% to 12%).
+  // This is what the bot runs now ("live" is the engine's own copy of it).
   adaptive: { ...EXIT_V058, name: "adaptive trail", trail: ADAPTIVE },
+  live: { ...EXIT_LIVE, name: "the bot now (lock at +5%)" },
   "adaptive-timed": { ...EXIT_V058, name: "adaptive trail + time limit", trail: ADAPTIVE, timeLimit: true },
   // ...and once up 10%, at least half of the best gain is kept.
   ratchet: { ...EXIT_V058, name: "adaptive trail + keep half above 10%", trail: ADAPTIVE, ratchet: { fromNetPct: 10, keep: 0.5 } },
@@ -68,6 +70,14 @@ export const DESIGNS: Record<string, ExitDesign> = {
   // The same late lock with today's fixed 2.5% trail (to see which of the two changes matters).
   "late-fixed": { ...EXIT_V058, name: "floor locked at +10%, 2.5% trail", lockAtNetPct: 10 },
 };
+
+// A design by its key. "lock<N>" is the bot's design with the +5% floor locked only once the trade
+// is up N% after costs (lock8, lock12 ...), for any N from the minimum profit up.
+export function design(key: string): ExitDesign | undefined {
+  const m = /^lock(\d+(?:\.\d+)?)$/.exec(key);
+  if (m) return Number(m[1]) >= EXIT_LIVE.minNetPct ? { ...EXIT_LIVE, name: `floor locked at +${m[1]}%`, lockAtNetPct: Number(m[1]) } : undefined;
+  return DESIGNS[key];
+}
 
 // ---------- Cost models ----------
 export const COSTS: Record<string, CostModel> = {
