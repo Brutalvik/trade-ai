@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
@@ -14,6 +14,7 @@ import { AccessCtx, AccountButton, SIGNIN_PENDING, AdminModal, LockChip, PlansMo
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
+import { MaCrossChips } from "./MaCross";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -381,7 +382,7 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
+          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} maCross={shownPlan?.maCross} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
             <AgentsPanel state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} defaults={AGENT_DEFAULTS} request={agentReq} onRequestDone={() => setAgentReq(null)} />
           )}
@@ -672,7 +673,7 @@ function PredictionInfo({ pct }: { pct: number }) {
   );
 }
 
-function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; botPlanning?: boolean; botPaused?: string | null; analyzedAt?: number; patterns?: FramePatterns[]; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
+function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analysis["consensus"]; results?: Analysis["results"]; cost: number; onResult: (a: Analysis) => void; price?: number; botOnThisCoin: boolean; botPlanning?: boolean; botPaused?: string | null; analyzedAt?: number; patterns?: FramePatterns[]; maCross?: MaView[]; notify: (m: string, bad?: boolean) => void; hasAI: boolean; multi: boolean; botMinWin?: number; botWaitForHold?: boolean }) {
   const access = useAccess();
   const { pair, tf, sig, results, cost, onResult, price, botOnThisCoin, analyzedAt, notify, hasAI, multi, botMinWin, botWaitForHold } = props; // (fees are already applied in each order's numbers)
   // Small by default (the Agents panel sits below it); the arrow in the title shows the full plan.
@@ -844,6 +845,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
                 <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
               ))}
               <PatternChips patterns={props.patterns} />
+              <MaCrossChips items={props.maCross} />
               <div className="muted tiny">
                 Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then the AI makes a new one.
               </div>

@@ -3,6 +3,7 @@ import cors from "cors";
 import express, { type Request, type Response } from "express";
 import { hasClaude, hasOpenAI } from "./ai.js";
 import { getCandlesWithSource, getOlderCandles, getPair, searchPairs, type Timeframe } from "./data.js";
+import { fetchMaCrossover, MA_FAST, MA_SLOW } from "./macross.js";
 import * as engine from "./engine.js";
 import { scanOpportunities } from "./scan.js";
 import { scanNewCoins, type NewCoinChain } from "./newcoins.js";
@@ -104,6 +105,23 @@ app.get(
     const byTime = new Map<number, (typeof r.candles)[number]>();
     for (const c of r.candles) byTime.set(c.time, c);
     return [...byTime.values()].sort((a, b) => a.time - b.time);
+  }),
+);
+
+// The moving-average crossover signal for a coin's market (macross.ts): BUY, SELL or HOLD with
+// both averages, from its newest closed candles. Optional: ?tf=1m|5m|15m|1h|4h|1d (default 5m),
+// fast=20, slow=50, kind=sma|ema, candles=100.
+app.get(
+  "/api/signal/ma-crossover/:chain/:pool",
+  publicData((req) => (String(req.query.tf) === "1m" ? 5 : 10), async (req) => {
+    const tf = (["1m", "5m", "15m", "1h", "4h", "1d"].includes(String(req.query.tf)) ? String(req.query.tf) : "5m") as Timeframe;
+    const whole = (v: unknown, fallback: number, lo: number, hi: number) => {
+      const n = Math.floor(Number(v));
+      return v !== undefined && Number.isFinite(n) && n >= lo && n <= hi ? n : fallback;
+    };
+    const fast = whole(req.query.fast, MA_FAST, 2, 200), slow = whole(req.query.slow, MA_SLOW, 3, 400);
+    if (slow <= fast) throw new Error("slow must be larger than fast");
+    return fetchMaCrossover(String(req.params.chain), String(req.params.pool), tf, { fast, slow, kind: req.query.kind === "ema" ? "ema" : "sma", candles: whole(req.query.candles, 100, slow + 2, 1000) });
   }),
 );
 

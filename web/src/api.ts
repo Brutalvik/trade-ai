@@ -92,7 +92,7 @@ export type AppState = {
   storage: Status["storage"];
   orders?: LimitOrder[]; // open limit buys / sells
   signedOut?: boolean; // true = not signed in as the account owner: an empty $0 view
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; desk?: DeskView } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; desk?: DeskView } | null;
   bots?: BotSlot[]; // extra bots (2 and 3); bot 1 is bot / lastSignal
 };
 export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };
@@ -129,7 +129,11 @@ export type AuditEntry = { t: number; type: string; by?: string; summary: string
 export type Page<T> = { total: number; items: T[] };
 // Chart patterns the server found on each timeframe, with how each did earlier on the same chart.
 export type FramePatterns = { tf: string; hits: { key: string; label: string; bias: "up" | "down" | "neutral"; level?: number; note: string; stat?: { seen: number; worked: number; avgPct: number } }[] };
-export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus; patterns?: FramePatterns[] };
+// The moving-average crossover signal on one chart (20-candle average against 50-candle average,
+// closed candles only): BUY / SELL on the newest closed candle, else HOLD with which side the
+// fast average is on and when it last crossed.
+export type MaView = { tf: string; signal: "BUY" | "SELL" | "HOLD"; trend: "up" | "down" | "flat"; spreadPct: number; fast: number; slow: number; last?: { signal: "BUY" | "SELL"; candlesAgo: number; price: number; time: number | null } };
+export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResult[]; consensus: Consensus; patterns?: FramePatterns[]; maCross?: MaView[] };
 
 // Signed out and pressed something that needs an account (buy, start bot, analyze...):
 // open the sign-in / register window instead of showing an error.

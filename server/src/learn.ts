@@ -3,6 +3,7 @@
 // 4-7% below sized to the coin's swings, time limit), and keep the pattern that really made money.
 // Live, the agent buys when that pattern appears on the newest closed candle.
 import type { Candle } from "./data.js";
+import { crossOf, MA_FAST, MA_SLOW, movingAverage } from "./macross.js";
 
 export const STRATS = [
   { key: "breakout", label: "Breakout with volume" },
@@ -10,6 +11,7 @@ export const STRATS = [
   { key: "squeeze", label: "Breakout from a tight range" },
   { key: "flag", label: "Bull flag" },
   { key: "rebound", label: "RSI rebound" },
+  { key: "macross", label: `Moving-average crossover (${MA_FAST}/${MA_SLOW})` },
 ] as const;
 export type StratKey = (typeof STRATS)[number]["key"];
 // wins: trades that reached the minimum profit before the stop.
@@ -28,7 +30,7 @@ export type Learned = {
   summary: string;
 };
 
-type Series = { c: Candle[]; ema9: number[]; ema21: number[]; rsi: number[]; atr: number[]; volAvg: number[] };
+type Series = { c: Candle[]; ema9: number[]; ema21: number[]; rsi: number[]; atr: number[]; volAvg: number[]; maFast: (number | null)[]; maSlow: (number | null)[] };
 function series(c: Candle[]): Series {
   const ema = (n: number) => { const k = 2 / (n + 1); const o: number[] = []; c.forEach((x, i) => o.push(i ? x.close * k + o[i - 1] * (1 - k) : x.close)); return o; };
   const rsi: number[] = []; let g = 0, l = 0;
@@ -37,7 +39,8 @@ function series(c: Candle[]): Series {
   c.forEach((x, i) => { const tr = i ? Math.max(x.high - x.low, Math.abs(x.high - c[i - 1].close), Math.abs(x.low - c[i - 1].close)) : x.high - x.low; a = i < 14 ? (a * i + tr) / (i + 1) : (a * 13 + tr) / 14; atr.push(a); });
   const volAvg: number[] = []; let sum = 0;
   c.forEach((x, i) => { sum += x.volume; if (i >= 20) sum -= c[i - 20].volume; volAvg.push(sum / Math.min(i + 1, 20)); });
-  return { c, ema9: ema(9), ema21: ema(21), rsi, atr, volAvg };
+  const closes = c.map((x) => x.close);
+  return { c, ema9: ema(9), ema21: ema(21), rsi, atr, volAvg, maFast: movingAverage(closes, MA_FAST), maSlow: movingAverage(closes, MA_SLOW) };
 }
 const hi = (c: Candle[], a: number, b: number) => { let m = -Infinity; for (let i = Math.max(0, a); i < b; i++) m = Math.max(m, c[i].high); return m; };
 const lo = (c: Candle[], a: number, b: number) => { let m = Infinity; for (let i = Math.max(0, a); i < b; i++) m = Math.min(m, c[i].low); return m; };
@@ -69,6 +72,11 @@ export function fires(key: StratKey, s: Series, i: number): boolean {
     }
     case "rebound":
       return rsi[i - 1] < 32 && rsi[i] > rsi[i - 1] + 4 && x.close > c[i - 1].high;
+    case "macross": {
+      // The BUY signal of the moving-average crossover: the fast average crosses above the slow one on this candle.
+      const f = s.maFast[i], sl = s.maSlow[i], pf = s.maFast[i - 1], ps = s.maSlow[i - 1];
+      return f !== null && sl !== null && pf !== null && ps !== null && crossOf(pf, ps, f, sl) === "BUY";
+    }
   }
 }
 
@@ -157,7 +165,7 @@ export function learn(frames: { tf: "5m" | "1h"; candles: Candle[] }[], costPct:
   const summary = (best
     ? `"${best.label}" on ${best.tf} candles has paid on this coin: ${best.trades} past trades, ${best.wins} reached +${netTarget}% after fees, average ${best.avgNetPct >= 0 ? "+" : ""}${best.avgNetPct.toFixed(1)}% per trade even if every winner were sold at exactly +${netTarget}%.`
     : `No simple entry pattern has paid on this coin recently if every winner is sold at exactly +${netTarget}% after fees${table.length ? ` (closest: "${table[0].label}" on ${table[0].tf}, average ${table[0].avgNetPct >= 0 ? "+" : ""}${table[0].avgNetPct.toFixed(1)}% over ${table[0].trades} trade${table[0].trades === 1 ? "" : "s"})` : ""}.`) + runNote;
-  return { at: Date.now(), netTargetPct: netTarget, table: table.slice(0, 10), best, summary, ...(runs ? { runs } : {}) };
+  return { at: Date.now(), netTargetPct: netTarget, table: [...table.slice(0, 10), ...table.slice(10).filter((t) => t.key === "macross")], best, summary, ...(runs ? { runs } : {}) };
 }
 
 // Is the learned pattern on the newest closed candle? (the last candle may still be forming)

@@ -2,14 +2,15 @@
 // trend structure, stretched prices. Each pattern is also back-tested on the same chart: every
 // earlier time it appeared, did the price go on to gain 2 ATR before losing 1.5 ATR?
 // The AI gets both: what's on the chart now, and how that pattern has played out on this coin.
-import type { Candle } from "./data.js";
+import { isSecondsTf, type Candle, type Timeframe } from "./data.js";
+import { crossOf, MA_FAST, MA_SLOW, movingAverage, TF_SECONDS } from "./macross.js";
 
 export type Bias = "up" | "down" | "neutral";
 export type PatternHit = { key: string; label: string; bias: Bias; level?: number; note: string };
 export type PatternStat = { seen: number; worked: number; avgPct: number };
 export type FramePatterns = { tf: string; hits: (PatternHit & { stat?: PatternStat })[] };
 
-type Ctx = { c: Candle[]; atr: number[]; ema21: number[]; rsi: number[]; volAvg: number[] };
+type Ctx = { c: Candle[]; atr: number[]; ema21: number[]; rsi: number[]; volAvg: number[]; maFast: (number | null)[]; maSlow: (number | null)[] };
 
 function prep(c: Candle[]): Ctx {
   const atr: number[] = [];
@@ -36,8 +37,19 @@ function prep(c: Candle[]): Ctx {
     const s = c.slice(Math.max(0, i - 20), i);
     volAvg.push(s.length ? s.reduce((t, x) => t + x.volume, 0) / s.length : 0);
   });
-  return { c, atr, ema21, rsi, volAvg };
+  const closes = c.map((x) => x.close);
+  return { c, atr, ema21, rsi, volAvg, maFast: movingAverage(closes, MA_FAST), maSlow: movingAverage(closes, MA_SLOW) };
 }
+
+// The moving-average crossover (macross.ts) on candle i: did the fast average cross the slow one there?
+function maCrossAt({ maFast, maSlow }: Ctx, i: number): "BUY" | "SELL" | null {
+  if (i < 1) return null;
+  const f = maFast[i], s = maSlow[i], pf = maFast[i - 1], ps = maSlow[i - 1];
+  if (f === null || s === null || pf === null || ps === null) return null;
+  const x = crossOf(pf, ps, f, s);
+  return x === "HOLD" ? null : x;
+}
+const isMaCross = (key: string) => key === "ma_cross_up" || key === "ma_cross_down";
 
 const hi = (c: Candle[], a: number, b: number) => Math.max(...c.slice(a, b).map((x) => x.high));
 const lo = (c: Candle[], a: number, b: number) => Math.min(...c.slice(a, b).map((x) => x.low));
@@ -184,6 +196,20 @@ const DETECTORS: { key: string; label: string; bias: Bias; find: (x: Ctx, i: num
       return null;
     },
   },
+  // The moving-average crossover strategy: a BUY signal when the 20-candle average crosses above
+  // the 50-candle average, a SELL signal when it crosses below (closed candles only).
+  {
+    key: "ma_cross_up",
+    label: `Moving averages crossed up (${MA_FAST} over ${MA_SLOW}): BUY signal`,
+    bias: "up",
+    find: (x, i) => (maCrossAt(x, i) === "BUY" ? { level: x.maSlow[i]!, note: `the ${MA_FAST}-candle average (${sig(x.maFast[i]!)}) crossed above the ${MA_SLOW}-candle average (${sig(x.maSlow[i]!)})` } : null),
+  },
+  {
+    key: "ma_cross_down",
+    label: `Moving averages crossed down (${MA_FAST} under ${MA_SLOW}): SELL signal`,
+    bias: "down",
+    find: (x, i) => (maCrossAt(x, i) === "SELL" ? { level: x.maSlow[i]!, note: `the ${MA_FAST}-candle average (${sig(x.maFast[i]!)}) crossed below the ${MA_SLOW}-candle average (${sig(x.maSlow[i]!)})` } : null),
+  },
 ];
 
 function sig(n: number) {
@@ -224,12 +250,21 @@ export function findPatterns(tf: string, candles: Candle[]): FramePatterns {
   if (candles.length < 40) return { tf, hits: [] };
   const x = prep(candles);
   const last = candles.length - 1;
+  // The newest candle that has closed (the last one is usually still forming): the crossover is
+  // read from closed candles only, so it cannot appear and vanish while a candle is being made.
+  const step = TF_SECONDS[tf as Timeframe];
+  const lastClosed = step && candles[last].time + step > Date.now() / 1000 ? last - 1 : last;
   const hits: FramePatterns["hits"] = [];
   for (const d of DETECTORS) {
+    const ma = isMaCross(d.key);
+    if (ma && (!step || isSecondsTf(tf as Timeframe))) continue; // not on the 1- and 5-second charts: there it is noise
     // "Now" = on the latest candle, or (for one-candle events) the one or two before it.
     const lookback = d.key === "squeeze" || d.key === "uptrend" || d.key === "downtrend" || d.key === "stretched" || d.key === "bull_flag" ? 0 : 2;
     let found: { level?: number; note: string } | null = null;
-    for (let back = 0; back <= lookback && !found; back++) found = d.find(x, last - back);
+    for (let back = 0; back <= lookback && !found; back++) {
+      found = d.find(x, (ma ? lastClosed : last) - back);
+      if (found && ma) found = { ...found, note: `${found.note} ${back ? `${back} closed candle${back === 1 ? "" : "s"} ago` : "on the newest closed candle"}` };
+    }
     if (!found) continue;
     const stat = backtest(x, d);
     hits.push({ key: d.key, label: d.label, bias: d.bias, ...found, ...(stat.seen ? { stat } : {}) });

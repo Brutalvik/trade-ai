@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { Modal, useAccess } from "./Account";
 import { CoinSearch } from "./CoinSearch";
 import { findCoinPair } from "./CoinList";
+import { MaCrossChips } from "./MaCross";
 import { allBots, api, fmtPrice, fmtUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type CheckedOrder, type FcKey, type OrderPrediction, type PairInfo } from "./api";
 
 const DEFAULT_BUDGET = 1000;
@@ -154,7 +155,7 @@ function useAgent(slot: BotSlot, state: AppState | null) {
             : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}${order.kind === "buy_breakout" && order.minVolumeRatio > 0 ? `, but only on at least ${order.minVolumeRatio}× the usual trading volume` : ""}: ${chance(order)}`;
   const said = okRes && okRes.ok ? okRes.signal.stance : undefined; // what the AI itself answered, before the check on its odds
   const image = pos?.imageUrl ?? cfg?.imageUrl; // the coin's picture: from its open trade, else kept with the agent
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk };
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at };
 }
 
 // The prediction behind an agent's order: every forecaster's chance that the price reaches the
@@ -232,7 +233,7 @@ function Prediction({ a, state }: { a: ReturnType<typeof useAgent>; state: AppSt
       ) : null}
       <div className="agent-learned">
         <b>Scoreboard</b> (all your agents): {scored ? `${scored} forecast${scored === 1 ? "" : "s"} checked against what really happened` : "every forecast is checked against what really happens next; none has finished yet"}{fc?.waiting ? ` · ${fc.waiting} waiting for ${fc.waiting === 1 ? "its" : "their"} outcome` : ""}.
-        {scored && (side(fc?.stats.taken) || side(fc?.stats.refused)) ? ` Trades it made: ${side(fc?.stats.taken) ?? "none scored yet"} reached +5% (real results). Orders it did not buy: ${side(fc?.stats.refused) ?? "none yet"} would have reached it on the chart (a real order can fill worse than the chart shows). A forecaster that says more than really happens is marked down; a good streak never marks one up.` : ""}
+        {scored && (side(fc?.stats.taken) || side(fc?.stats.refused)) ? ` Trades it made: ${side(fc?.stats.taken) ? `${side(fc?.stats.taken)} reached +5% (real results)` : "none scored yet"}. Orders it did not buy: ${side(fc?.stats.refused) ? `${side(fc?.stats.refused)} would have reached it on the chart (a real order can fill worse than the chart shows)` : "none scored yet"}. A forecaster that says more than really happens is marked down; a good streak never marks one up.` : ""}
         {rows.length ? (
           <table className="agent-table fc-table">
             <thead><tr><th>Forecaster</th><th className="num">Said on average</th><th className="num">Happened on the chart</th><th className="num">Forecasts</th></tr></thead>
@@ -388,6 +389,7 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
           </>
         ) : null}
         <Prediction a={a} state={state} />
+        {a.isAgent ? <MaCrossChips items={a.maCross} at={a.planAt} /> : null}
         {a.isAgent && L ? (
           <>
             <div className="label-sm">{a.symbol}'s history, as given to the AI</div>

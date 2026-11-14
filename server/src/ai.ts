@@ -3,8 +3,9 @@ import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import type { Candle, PairInfo } from "./data.js";
+import { isSecondsTf, type Candle, type PairInfo, type Timeframe } from "./data.js";
 import { keyLevels, type Snapshot } from "./indicators.js";
+import { maCrossover, TF_SECONDS, type MaCross } from "./macross.js";
 import { combineChance, countedWin, expected, type FcKey, type FcStats, type Forecast } from "./predict.js";
 
 // What Claude returns: a PLAN of standing orders the bot carries out on its own,
@@ -119,6 +120,7 @@ Rules:
 - Set cancelBelow/cancelAbove so the plan is dropped when the market moves away from your thesis.
 - Never promise profit. Be honest about uncertainty in confidence.
 - Chart patterns found by code are listed below with how each did earlier on this same chart. Use them: a breakout from a range with volume or a bull flag supports a buy_breakout just above the level; a double top, breakdown or stretched price argues for patience. Weigh each pattern by its track record on this chart, not by its name.
+- A moving-average crossover signal is given on every chart from 1 minute up (20-candle average against 50-candle average, closed candles only): BUY = the fast average has just crossed above the slow one, SELL = it has just crossed below; otherwise the line says which side the fast average is on and when it last crossed. Use it as one more input next to everything else. It is a late signal (it confirms a turn after it has happened), so weigh it by its track record on this chart, listed with the chart patterns, and never buy or sell on it alone.
 - Your trade journal (below) shows which setups have really worked for this account; lean toward those.
 - Prices are in USD and may be tiny numbers; keep full precision.`;
 
@@ -129,6 +131,7 @@ The bot checks prices every 5 seconds and fills an order the moment its trigger 
 
 How to decide:
 - Read all timeframes, the volume, buyers vs sellers, the chart patterns, the history study and the forecast desk you are given, and form a view: where is this going next, and with what odds?
+- A moving-average crossover signal is given on every chart from 1 minute up (20-candle average against 50-candle average, closed candles only): BUY = the fast average has just crossed above the slow one, SELL = it has just crossed below; otherwise the line says which side the fast average is on and when it last crossed. Use it as one more input. It is a late signal (it confirms a turn after it has happened), so weigh it by its record: how it did earlier on this chart (listed with the chart patterns) and in the history study, where the same crossover is replayed with your own stop and minimum profit. Never buy on it alone.
 - If the entry is good right now (trend up with buyers behind it, a breakout holding, a dip that has bounced), say BUY_NOW with a buy_now order. Momentum is a reason to trade, not a reason to stay out: a coin that is running can be bought with a stop under the last higher low.
 - Otherwise say WAIT_FOR_TRIGGER and give the exact price at which you WILL buy: a breakout above a level (with a volume check) and/or a pullback to support. Put those levels close enough to be reached in the next 10-30 minutes.
 - ALWAYS give 1-2 orders you would genuinely take. Use AVOID only when the token looks like a rug or honeypot, liquidity is being pulled, or it is in free fall with no buyers; even then give the level where you would step back in.
@@ -142,6 +145,22 @@ export type Frame = { tf: string; label: string; candles: Candle[]; snap: Snapsh
 
 const sig6 = (n: number) => Number(n.toPrecision(6)); // keep prompts compact; tiny prices keep full detail
 
+// The moving-average crossover on one chart (macross.ts), from closed candles only. Not worked
+// out on the 1- and 5-second charts (there it is noise) or when there is too little history.
+export function frameCross(f: Pick<Frame, "tf" | "candles">): MaCross | null {
+  const step = TF_SECONDS[f.tf as Timeframe];
+  if (!step || isSecondsTf(f.tf as Timeframe)) return null;
+  const m = maCrossover(f.candles, { stepSec: step });
+  return m.ready ? m : null;
+}
+// The same as one line of text for the AI: the signal, both averages and the last crossover.
+export function crossText(f: Pick<Frame, "tf" | "candles">): string {
+  const m = frameCross(f);
+  if (!m) return "";
+  const lc = m.lastCross;
+  return `Moving-average crossover (${m.fastPeriod}- and ${m.slowPeriod}-candle averages of the closes, closed candles only): ${m.signal === "HOLD" ? "no crossover on the newest closed candle" : `${m.signal} signal on the newest closed candle`} | MA${m.fastPeriod} ${sig6(m.fast!)} MA${m.slowPeriod} ${sig6(m.slow!)}: fast is ${Math.abs(m.spreadPct!).toFixed(2)}% ${m.fast! >= m.slow! ? "above" : "below"} slow${lc && lc.candlesAgo > 0 ? ` | last crossover: ${lc.signal} ${lc.candlesAgo} candle${lc.candlesAgo === 1 ? "" : "s"} ago at ${sig6(lc.price)}` : lc ? "" : " | no crossover in this window"}`;
+}
+
 // One timeframe as text: indicators, key levels found by code (swing highs/lows, VWAP, where the
 // price sits in the range) and the candles themselves.
 function frameText(f: Frame, max = f.show) {
@@ -154,7 +173,8 @@ function frameText(f: Frame, max = f.show) {
   const levels = lv
     ? `\nKey levels (found by code): swing highs, newest first ${lv.swingHighs.map(sig6).join(", ") || "none"} | swing lows, newest first ${lv.swingLows.map(sig6).join(", ") || "none"} | VWAP ${sig6(lv.vwap)} | price is ${lv.fromHighPct.toFixed(1)}% from this window's high ${sig6(lv.high)} and +${lv.fromLowPct.toFixed(1)}% from its low ${sig6(lv.low)}`
     : "";
-  return `## ${f.label}\n${ind}${levels}\nLast ${rows.length} candles [unix time, open, high, low, close, volume]:\n${JSON.stringify(rows)}`;
+  const cross = crossText(f);
+  return `## ${f.label}\n${ind}${cross ? `\n${cross}` : ""}${levels}\nLast ${rows.length} candles [unix time, open, high, low, close, volume]:\n${JSON.stringify(rows)}`;
 }
 
 function buildPrompt(pair: PairInfo, frames: Frame[], costPct: number, context = "", agent = false) {
@@ -418,7 +438,8 @@ export async function reviewHold(input: {
   const sections = frames.map((f) => {
     const rows = f.candles.slice(-Math.min(f.show, 48)).map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
     const ind = f.snap ? `EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} volume ratio ${f.snap.volRatio.toFixed(2)}` : "";
-    return `## ${f.label}\n${ind}\n${JSON.stringify(rows)}`;
+    const cross = crossText(f);
+    return `## ${f.label}\n${ind}${cross ? `\n${cross}` : ""}\n${JSON.stringify(rows)}`;
   });
   const prompt = `The bot holds ${pair.symbol} (${pair.chain}). Bought at $${entry}, now $${price} (${(((price - entry) / entry) * 100).toFixed(2)}%), held ${Math.round(input.heldMin)} min.
 ${why === "stop" ? `The price just touched the stop-loss at $${stop}. Normally the bot sells now.` : `The maximum holding time just ran out. Normally the bot sells now. Current exit: $${stop}.`}
@@ -459,7 +480,8 @@ export async function reviewAgentPick(input: { pair: PairInfo; frames: Frame[]; 
   const sections = frames.map((f) => {
     const rows = f.candles.slice(-Math.min(f.show, 48)).map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
     const ind = f.snap ? `EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} volume ratio ${f.snap.volRatio.toFixed(2)}` : "";
-    return `## ${f.label}\n${ind}\n${JSON.stringify(rows)}`;
+    const cross = crossText(f);
+    return `## ${f.label}\n${ind}${cross ? `\n${cross}` : ""}\n${JSON.stringify(rows)}`;
   });
   const prompt = `Scouting agents picked ${pair.symbol} (${pair.chain}) to buy now at about $${entry}.
 Proposed exit (stop-loss) $${stop} (${(((stop - entry) / entry) * 100).toFixed(1)}%), target $${target} (+${(((target - entry) / entry) * 100).toFixed(1)}%, which is the minimum profit after the ${input.costPct.toFixed(1)}% round-trip costs). At the target the bot sells half and trails the rest.
@@ -509,6 +531,7 @@ Your job is to get the most out of this move: keep holding while it is still goi
 How to decide:
 - HOLD while the move is alive: higher lows on the 5-second and 1-minute charts, buyers out-trading sellers, volume supporting the push, no rejection at a level. Give it room: a pause or a shallow pullback inside an uptrend is normal.
 - SELL_NOW when it is ending: lower highs forming, a sharp rejection wick at a level, sellers taking over, volume drying up after a spike, or the price stalling right under clear resistance with nothing behind it.
+- Each chart from 1 minute up carries a moving-average crossover line (20-candle average against 50-candle average, closed candles only). A fresh SELL signal on the 1-minute chart is one sign the push is tiring, on the 5-minute chart a stronger one; it is late and can be wrong in a healthy pause, so weigh it with the rest and with its record on this chart (listed with the chart patterns).
 - When holding, set exitPrice under the level that must hold for the move to stay alive (the last higher low / reclaimed level), never below the locked exit. It only ever moves up, so raise it only to where you are happy to be sold.
 - Set trailPct from how much this coin really wiggles (look at the 5-second and 1-minute ATR%): too tight and normal noise sells you, too loose and you give back the gain. Tighten it as the move gets stretched; loosen it when a healthy trend needs room.
 - Be honest in confidence. Do not hold out of hope and do not sell out of fear: read the tape.

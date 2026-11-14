@@ -2,7 +2,7 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { audit, ledger, type AuditType } from "./audit.js";
-import { analyze, BOT_MODEL, CLAUDE_MODEL, combine, forecastPanel, orderKey, reviewAgentPick, reviewHold, reviewProfit, type AgentEval, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult, type OrderPrediction, type PlanOrder } from "./ai.js";
+import { analyze, BOT_MODEL, CLAUDE_MODEL, combine, forecastPanel, frameCross, orderKey, reviewAgentPick, reviewHold, reviewProfit, type AgentEval, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult, type OrderPrediction, type PlanOrder } from "./ai.js";
 import { countedWin, desk, expected, resolve, score, type ConePoint, type Desk, type FcStats, type Forecast, type ForecastRec, type Shape } from "./predict.js";
 import { findPatterns, patternsText, patternTags, type FramePatterns } from "./patterns.js";
 import { cachedJson, fromDexScreener, getCandles, getPair, getRecentTokenCandles, knownToken, type Candle, type PairInfo, type Timeframe } from "./data.js";
@@ -15,6 +15,7 @@ import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, flowText, marketText, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin } from "./agents.js";
 import { learn, type Learned, type Watch } from "./learn.js";
+import { maView, type MaView } from "./macross.js";
 
 import { noteCommunityBuy } from "./lists.js";
 
@@ -211,7 +212,8 @@ type State = {
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; priceAt?: number; desk?: DeskView } | null;
+  // maCross: the moving-average crossover signal on each chart from 1 minute up, as the AI was given it.
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; priceAt?: number; desk?: DeskView } | null;
   // Extra bots (2 and 3). Bot 1 is `bot` / `lastSignal` above, so older saved states keep working.
   bots?: BotSlot[];
   // The forecast scoreboard (whole account): forecasts waiting for their outcome, every
@@ -922,6 +924,8 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const frames = await loadFrames(chain, pool, pair);
   // Chart patterns found by code on each timeframe, with how each did earlier on the same chart.
   const patterns = frames.map((f) => findPatterns(f.tf, f.candles));
+  // The moving-average crossover on each chart from 1 minute up (the AI reads it in the chart data).
+  const maCross = frames.map((f) => maView(f.tf, frameCross(f))).filter((m): m is MaView => m !== null);
   const primary = frames.find((f) => f.tf === "5m" && f.snap) ?? frames.find((f) => f.snap);
   if (!primary?.snap) throw new Error("Not enough candle history for this token yet");
   const snap = primary.snap;
@@ -1054,12 +1058,12 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   // the agent's orders are judged differently (the prediction check) and must stay its own.
   // The analysis is still returned to you; it just isn't something the agent trades on.
   if (opts.forBot || !state.bot.running) {
-    state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results: shown, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}) };
+    state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results: shown, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, maCross, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}) };
     state.bot.armedSince = []; // a new plan: its triggers start fresh
     state.bot.skipNoted = [];
   }
   save();
-  return { pair, snapshot: snap, results: shown, consensus, patterns };
+  return { pair, snapshot: snap, results: shown, consensus, patterns, maCross };
 }
 
 // ---------- Bot ----------
@@ -1500,7 +1504,7 @@ async function autoPick(cfg: BotConfig) {
   }
   const { pair, result } = best;
   state.bot.target = { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, chosenAt: Date.now() };
-  state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus, atrPct: result.snapshot?.atrPct, patterns: result.patterns };
+  state.lastSignal = { at: Date.now(), pool: pair.pool, symbol: pair.symbol, tf: cfg.tf, results: result.results, consensus: result.consensus, atrPct: result.snapshot?.atrPct, patterns: result.patterns, maCross: result.maCross };
   log(`Auto-pick chose ${pair.symbol}. AI: ${summary}. ${result.consensus.note}`, "good");
 }
 
@@ -1796,7 +1800,8 @@ async function agentBrief(cfg: BotConfig, why = ""): Promise<string> {
   ];
   if (L) {
     lines.push(`A study of this coin's own history (simple entry patterns replayed with the same stop and minimum profit): ${L.summary}`);
-    if (L.table.length) lines.push(...L.table.slice(0, 6).map((t) => `- ${t.label} on ${t.tf}: ${t.trades} past trades, ${t.wins} reached +${AGENT_NET_TARGET}% before the stop${t.wins && t.runMedPct !== undefined ? ` (in the ${t.tf === "5m" ? "hour" : "3 hours"} after, their typical best was +${t.runMedPct.toFixed(1)}%, and ${t.ran10 ?? 0} of ${t.wins} got to +10%)` : ""}; average ${t.avgNetPct >= 0 ? "+" : ""}${t.avgNetPct.toFixed(1)}% if every winner were sold at exactly +${AGENT_NET_TARGET}%`));
+    const rows = [...L.table.slice(0, 6), ...L.table.slice(6).filter((t) => t.key === "macross")]; // the crossover's rows are always shown
+    if (rows.length) lines.push(...rows.map((t) => `- ${t.label} on ${t.tf}: ${t.trades} past trades, ${t.wins} reached +${AGENT_NET_TARGET}% before the stop${t.wins && t.runMedPct !== undefined ? ` (in the ${t.tf === "5m" ? "hour" : "3 hours"} after, their typical best was +${t.runMedPct.toFixed(1)}%, and ${t.ran10 ?? 0} of ${t.wins} got to +10%)` : ""}; average ${t.avgNetPct >= 0 ? "+" : ""}${t.avgNetPct.toFixed(1)}% if every winner were sold at exactly +${AGENT_NET_TARGET}%`));
   }
   try {
     const pair = await getPair(cfg.chain, cfg.pool);
