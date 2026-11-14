@@ -128,7 +128,9 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const stage = pos ? 2 : !c ? 0 : 1;
   const paused = !pos && !!bot.blocked;
   // In a trade: profit after fees now, at its best, and at the exit in force.
-  const cost = state?.roundTripCostPct ?? 3;
+  // An agent's trade carries its own cost (measured for its size in its pool); before a trade, the cost its plan was judged with.
+  const cost = pos?.costPct ?? plan?.cost?.pct ?? state?.roundTripCostPct ?? 3;
+  const tradeCost = plan?.cost;
   const netAt = (p: number) => (pos ? ((p - pos.entryPrice) / pos.entryPrice) * 100 - cost : 0);
   const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
   const pm = pos?.pm;
@@ -155,7 +157,7 @@ function useAgent(slot: BotSlot, state: AppState | null) {
             : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}${order.kind === "buy_breakout" && order.minVolumeRatio > 0 ? `, but only on at least ${order.minVolumeRatio}× the usual trading volume` : ""}: ${chance(order)}`;
   const said = okRes && okRes.ok ? okRes.signal.stance : undefined; // what the AI itself answered, before the check on its odds
   const image = pos?.imageUrl ?? cfg?.imageUrl; // the coin's picture: from its open trade, else kept with the agent
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at };
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at, cost, tradeCost };
 }
 
 // The prediction behind an agent's order: every forecaster's chance that the price reaches the
@@ -351,6 +353,13 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
           {a.isAgent ? <div><small>Budget</small><b>{fmtUsd(a.budget)}</b></div> : null}
           {a.isAgent ? <div><small>Funds now</small><b>{fmtUsd(a.budget + a.realized)}</b></div> : null}
           {a.isAgent ? <div><small>Locked cash</small><b>{fmtUsd(state?.locks?.find((l) => l.id === a.id)?.usd ?? 0)}</b></div> : null}
+          {a.isAgent && a.pos?.costPct !== undefined ? <div data-tip="What buying and later selling this trade's size costs in this coin's pool: pool fees plus the price the trade itself moves, both ways. Measured when it was bought."><small>This trade's cost</small><b>{a.pos.costPct.toFixed(1)}% round trip</b></div> : null}
+          {a.isAgent && !a.pos && a.tradeCost ? (
+            <div data-tip={`${a.tradeCost.source === "jupiter" ? "Measured with two-way Jupiter quotes" : "Estimated from the pool's depth"} for this size: pool fees plus the price the trade itself moves, both ways.${a.tradeCost.usd < a.tradeCost.funds - 0.5 ? ` All ${fmtUsd(a.tradeCost.funds)} would cost ${a.tradeCost.fullPct.toFixed(1)}%, so it buys less to stay under ${a.tradeCost.capPct}%.` : ""}`}>
+              <small>{a.tradeCost.usd < a.tradeCost.funds - 0.5 ? `Buys with (of ${fmtUsd(a.tradeCost.funds)})` : "Next buy costs"}</small>
+              <b>{a.tradeCost.usd < a.tradeCost.funds - 0.5 ? `${fmtUsd(a.tradeCost.usd)} · ${a.tradeCost.pct.toFixed(1)}% round trip` : `${a.tradeCost.pct.toFixed(1)}% round trip`}</b>
+            </div>
+          ) : null}
           <div><small>Trades</small><b>{a.sells.length}</b></div>
           <div><small>Profitable</small><b>{a.sells.length ? `${wins} of ${a.sells.length}` : "–"}</b></div>
           {a.order && !a.pos && !a.refused ? <div><small>{a.order.kind === "buy_now" ? "Buys now up to" : a.order.kind === "buy_breakout" ? (a.order.minVolumeRatio > 0 ? `Buys above, on ${a.order.minVolumeRatio}× volume` : "Buys above") : "Buys at"}</small><b>{fmtPrice(a.order.triggerPrice)}</b></div> : null}

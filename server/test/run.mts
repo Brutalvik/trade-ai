@@ -17,6 +17,7 @@ const here = path.dirname(new URL(import.meta.url).pathname);
 
 const UNIT: Job[] = [
   { name: "rules", file: "unit/rules.mts", what: "fills, the stop that waits, the profit lock, breakouts, and the back-tester's replay of them" },
+  { name: "costs", file: "unit/costs.mts", what: "what a round trip really costs: Jupiter quotes, the pool-depth fallback, the size cap" },
   { name: "order-check", file: "unit/order-check.mts", what: "an agent's order is used only if the combined chance beats what it needs" },
   { name: "prediction", file: "unit/prediction.mts", what: "the prediction engine on made-up candles with a known answer" },
   { name: "macross", file: "unit/macross.mts", what: "moving-average crossover: the averages, the rule, closed candles only" },
@@ -32,6 +33,7 @@ const ENGINE: Job[] = [
   { name: "agent-lose", file: "engine/agent.mts", env: { SC: "lose" }, what: "a stop-out, then the agent trades on (no daily limit, no cool-down)" },
   { name: "agent-wick", file: "engine/agent.mts", env: { SC: "wick" }, what: "the stop waits about 10 seconds: a wick doesn't sell, a real fall does" },
   { name: "agent-crash", file: "engine/agent.mts", env: { SC: "crash" }, what: "a crash through the stop sells at once" },
+  { name: "agent-thin-pool", file: "engine/agent.mts", env: { SC: "thin" }, what: "a thin pool: the agent buys less, so the cost stays under its cap" },
   { name: "agent-quiet", file: "engine/agent.mts", env: { SC: "quiet" }, what: "a coin that isn't moving: the prediction check refuses the buy" },
   { name: "agent-manual", file: "engine/agent.mts", env: { SC: "quiet", MANUAL: "1" }, what: "your own Analyze never replaces an agent's plan" },
   { name: "breakout-buy", file: "engine/breakout.mts", env: { SC: "buy" }, what: "a breakout is bought only once it has held" },

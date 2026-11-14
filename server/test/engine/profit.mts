@@ -70,6 +70,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
           : (planCalls++, briefSeen = briefSeen || body.includes("dedicated trading agent"), { stance: "BUY_NOW", confidence: 70, riskLevel: "MEDIUM", reasoning: "Breakout holding on rising volume with room above.", orders: [{ kind: "buy_now", triggerPrice: B() * 1.002, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: B() * 0.95, target: B() * 1.15, maxHoldMinutes: 180, winChancePct: Number(process.env.AIWIN ?? 62) }], cancelBelow: 0, cancelAbove: 0, validMinutes: 60 });
     return json({ id: `m${aiCalls}`, type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify(out) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
   }
+  if (url.includes("api.jup.ag/swap/")) return new Response("{}", { status: 503 }); // no Jupiter quotes in tests: costs come from the fake pool's depth
   if (url.includes("api.jup.ag/tokens/v2/")) return json([jupToken()]);
   if (url.includes("api.dexscreener.com/tokens/v1/solana/")) return json([dexPair()]);
   if (url.includes("api.dexscreener.com/latest/dex/pairs")) return json({ pairs: [dexPair()] });
@@ -133,11 +134,11 @@ show("before the minimum");
 await step(8, "1.092 (+5.7% after fees): minimum locked, the AI is asked", 1.092);
 show("at +5.7%");
 if (SC === "min") {
-  await step(8, "1.08: falls straight back: sells at the locked +5% exit", 1.08);
+  await step(8, "1.06: falls straight back: sells at the locked +5% exit (1.066)", 1.06);
 } else if (SC === "noai") {
   await step(8, "1.12 (+8.4%): the AI can't be reached: the exit follows 2.5% behind", 1.12);
   show("at 1.12");
-  await step(8, "1.10: above the exit (1.092): holds", 1.10);
+  await step(8, "1.10: above the exit (1.092, 2.5% under 1.12): holds", 1.10);
   show("at 1.10");
   await step(8, "1.09: below the 2.5% trailing exit: sells", 1.09);
 } else {
@@ -177,6 +178,8 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   const sells = s.trades.filter((t) => t.side === "SELL"), buys = s.trades.filter((t) => t.side === "BUY");
   const r = sells[0]?.reason ?? "", pnl = sells[0]?.pnlUsd ?? 0;
   expect("one buy, one sell, nothing left open", [buys.length, sells.length, s.positions.length], [1, 1, 0]);
+  // $400,000 of liquidity: 0.6% fees + 2 x $1,000 / $400,000 each way = 1.6% for the round trip, half on each side.
+  expect("the trade paid the pool's own cost for its size (1.6% round trip), not a flat 3%", [Math.round(buys[0].feeUsd * 100) / 100, Math.round(buys[0].price * 1e4) / 1e4], [8, 1]);
   expect("the trade's real result is on the scoreboard as a win", (s as any).fc?.stats.taken, { n: 1, hits: 1 });
   check("the AI was asked to manage the profit", profitCalls >= 1, profitCalls);
   if (SC === "ride") {
@@ -185,15 +188,15 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   }
   if (SC === "trail") {
     check("sold at the exit the AI set, following the high", /^Profit exit: .*at the exit the AI set/.test(r), r);
-    check("kept most of the run (P&L $100 to $130)", pnl > 100 && pnl < 130, pnl.toFixed(2));
+    check("kept most of the run (P&L $115 to $150)", pnl > 115 && pnl < 150, pnl.toFixed(2));
   }
   if (SC === "noai") {
     check("with the AI unreachable, a fixed rule still takes the profit", r.startsWith("Profit exit") && !r.includes("the AI set"), r);
-    check("never below the locked minimum (P&L $48 to $70)", pnl > 48 && pnl < 70, pnl.toFixed(2));
+    check("never below the locked minimum (P&L $60 to $85)", pnl > 60 && pnl < 85, pnl.toFixed(2));
   }
   if (SC === "min") {
     check("a fall straight back sells at the locked minimum", r.startsWith("Profit exit"), r);
-    check("about +5% after fees (P&L $40 to $56)", pnl > 40 && pnl < 56, pnl.toFixed(2));
+    check("about +5% after costs (P&L $35 to $56)", pnl > 35 && pnl < 56, pnl.toFixed(2));
   }
 }
 engine.stopBot("test over");

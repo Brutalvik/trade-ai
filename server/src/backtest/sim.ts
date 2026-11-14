@@ -98,8 +98,9 @@ export function simulate(fx: Fixture, entries: Entry[], opt: SimOptions): SimTra
       const usd = sizeFor(fx, Math.floor(funds * 100) / 100, opt.cost, opt.sizeCapPct);
       if (usd < 10) continue; // too thin a pool for any size under the cost cap
       const costPct = opt.cost.roundTripPct(fx, usd);
-      // Half the round trip on each side. With the flat model the split is the app's own 1% fee + 0.5% slippage.
-      const side: SideCost = opt.cost.name === "flat" ? { feePct: costPct / 3, slipPct: costPct / 6 } : { feePct: 0, slipPct: costPct / 2 };
+      // Half the round trip on each side, charged the way the engine charges it: the flat model is the
+      // app's own 1% fee + 0.5% slippage; a measured cost is taken as a fee on each side (as for an agent's trade).
+      const side: SideCost = opt.cost.name === "flat" ? { feePct: costPct / 3, slipPct: costPct / 6 } : { feePct: costPct / 2, slipPct: 0 };
       const b = fillBuy(usd, x.open, side);
       pos = { st: { entry: b.fillPrice, stop: b.fillPrice * (1 - sig.stopPct / 100), best: b.fillPrice, sellBy: (x.time + sig.maxHoldMin * 60) * 1000 }, qty: b.qty, usd, side, costPct, openedAt: x.time, tag: sig.tag };
       if (exact) continue; // the buy happens at this check; the next check is the first to manage it

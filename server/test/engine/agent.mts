@@ -20,20 +20,21 @@ Date.now = () => realNow() + offset;
 const POOL = "AgentPool1111", MINT = "AgentMint1111pump";
 let price = 1.0;
 const B = () => (price < 0.95 ? price : 1.0); // the fake AI's order levels: fixed around $1.00, or around a clearly lower price
+const LIQ = SC === "thin" ? 80_000 : 400_000; // the pool's liquidity: a thin pool makes a large trade expensive
 let aiCalls = 0;
 let panelCalls = 0;
 let planCalls = 0;
 let briefSeen = false;
 
 const jupToken = () => ({
-  id: MINT, symbol: "AGT", name: "Agent Test", icon: "", usdPrice: price, mcap: 5e6, fdv: 5e6, liquidity: 400_000, holderCount: 4200,
+  id: MINT, symbol: "AGT", name: "Agent Test", icon: "", usdPrice: price, mcap: 5e6, fdv: 5e6, liquidity: LIQ, holderCount: 4200,
   organicScore: 72, graduatedAt: new Date(realNow() - 20 * 3600_000).toISOString(),
   audit: { mintAuthorityDisabled: true, freezeAuthorityDisabled: true, topHoldersPercentage: 18, devBalancePercentage: 0.5, devMints: 1 },
   stats5m: { priceChange: 1.2, holderChange: 0.6, liquidityChange: 0.4, buyVolume: 60_000, sellVolume: 35_000, numOrganicBuyers: 30, numTraders: 400 },
   stats1h: { priceChange: 14, holderChange: 3, buyVolume: 300_000, sellVolume: 220_000, buyOrganicVolume: 40_000, sellOrganicVolume: 30_000, numOrganicBuyers: 80, numTraders: 1500 },
   tags: ["verified"],
 });
-const dexPair = () => ({ chainId: "solana", dexId: "test", pairAddress: POOL, baseToken: { address: MINT, symbol: "AGT", name: "Agent Test" }, priceUsd: String(price), priceChange: { m5: 1.2, h1: 14, h24: 30 }, volume: { m5: 95_000, h1: 520_000, h24: 3e6 }, txns: { h1: { buys: 900, sells: 600 } }, liquidity: { usd: 400_000 }, marketCap: 5e6 });
+const dexPair = () => ({ chainId: "solana", dexId: "test", pairAddress: POOL, baseToken: { address: MINT, symbol: "AGT", name: "Agent Test" }, priceUsd: String(price), priceChange: { m5: 1.2, h1: 14, h24: 30 }, volume: { m5: 95_000, h1: 520_000, h24: 3e6 }, txns: { h1: { buys: 900, sells: 600 } }, liquidity: { usd: LIQ }, marketCap: 5e6 });
 
 const json = (v: unknown) => new Response(JSON.stringify(v), { headers: { "content-type": "application/json" } });
 const realFetch = globalThis.fetch;
@@ -57,6 +58,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
           : (planCalls++, briefSeen = briefSeen || body.includes("dedicated trading agent"), { stance: "BUY_NOW", confidence: 70, riskLevel: "MEDIUM", reasoning: "Breakout holding on rising volume with room above.", orders: [{ kind: "buy_now", triggerPrice: B() * 1.002, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: B() * 0.95, target: B() * 1.15, maxHoldMinutes: 180, winChancePct: Number(process.env.AIWIN ?? 62) }], cancelBelow: 0, cancelAbove: 0, validMinutes: 60 });
     return json({ id: `m${aiCalls}`, type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify(out) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
   }
+  if (url.includes("api.jup.ag/swap/")) return new Response("{}", { status: 503 }); // no Jupiter quotes in tests: costs come from the fake pool's depth
   if (url.includes("api.jup.ag/tokens/v2/")) return json([jupToken()]);
   if (url.includes("api.dexscreener.com/tokens/v1/solana/")) return json([dexPair()]);
   if (url.includes("api.dexscreener.com/latest/dex/pairs")) return json({ pairs: [dexPair()] });
@@ -172,6 +174,14 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
     check("staying under the stop sells after the confirmation, near where the price settled", sells.length === 1 && /^Stop-loss hit/.test(sells[0].reason) && Math.abs(sells[0].price - 0.9353) < 0.01, sells.map((t) => `${t.reason} @ ${t.price.toFixed(4)}`));
   }
   if (SC === "crash") check("exactly one sale", sells.length === 1, sells.length);
+  if (SC === "thin") {
+    // $80,000 of liquidity: all $1,000 would cost 0.6% + 5% = 5.6% for the round trip. Under the 2.5% cap fits about $379.
+    const p: any = s.positions[0];
+    check("in a thin pool the agent invests only what keeps the round trip under 2.5%", buys.length === 1 && buys[0].usd > 340 && buys[0].usd < 400 && p?.costPct <= 2.5 && p?.costPct > 2.3, { usd: buys[0]?.usd, costPct: p?.costPct });
+    check("the rest of its budget stays set aside for it", Math.round((s as any).locked) === Math.round(1000 - buys[0].usd) && Math.round((s as any).available) === 0, { locked: (s as any).locked, available: (s as any).available });
+    check("the log says why it bought less", logs.includes("because all of it would cost 5.6%"), "");
+    check("the plan was judged with that cost", Math.abs(((s.lastSignal as any)?.cost?.pct ?? 0) - p?.costPct) < 0.01 && (s.lastSignal as any)?.cost?.fullPct === 5.6, (s.lastSignal as any)?.cost);
+  }
   if (SC === "quiet") {
     check("a coin that barely moves: the prediction check refuses the buy", s.trades.length === 0 && s.positions.length === 0 && s.lastSignal?.consensus.stance === "AVOID", { trades: s.trades.length, stance: s.lastSignal?.consensus.stance });
     check("the forecaster panel is not asked about an order that cannot pass", panelCalls === 0, panelCalls);

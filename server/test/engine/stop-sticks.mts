@@ -57,6 +57,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
           : (planCalls++, briefSeen = briefSeen || body.includes("dedicated trading agent"), { stance: "BUY_NOW", confidence: 70, riskLevel: "MEDIUM", reasoning: "Breakout holding on rising volume with room above.", orders: [{ kind: "buy_now", triggerPrice: B() * 1.002, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: B() * 0.95, target: B() * 1.15, maxHoldMinutes: 180, winChancePct: Number(process.env.AIWIN ?? 62) }], cancelBelow: 0, cancelAbove: 0, validMinutes: 60 });
     return json({ id: `m${aiCalls}`, type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify(out) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
   }
+  if (url.includes("api.jup.ag/swap/")) return new Response("{}", { status: 503 }); // no Jupiter quotes in tests: costs come from the fake pool's depth
   if (url.includes("api.jup.ag/tokens/v2/")) return json([jupToken()]);
   if (url.includes("api.dexscreener.com/tokens/v1/solana/")) return json([dexPair()]);
   if (url.includes("api.dexscreener.com/latest/dex/pairs")) return json({ pairs: [dexPair(url.split("/").pop()!.split("?")[0])] });

@@ -55,6 +55,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
         : (planCalls++, agentSystem = agentSystem || body.includes("active short-term crypto trader"), { stance: "AVOID", confidence: 55, riskLevel: "HIGH", reasoning: "Running hard; only worth it if it clears the high.", orders: [{ kind: "buy_breakout", triggerPrice: price * 1.02, confirmSeconds: 0, minVolumeRatio: Number(process.env.VOLREQ ?? 0), stopLoss: price * 0.95, target: price * 1.02 * 1.15, maxHoldMinutes: 120, winChancePct: Number(process.env.AIWIN ?? 60) }], cancelBelow: 0, cancelAbove: 0, validMinutes: 20 });
     return json({ id: `m${aiCalls}`, type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify(out) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
   }
+  if (url.includes("api.jup.ag/swap/")) return new Response("{}", { status: 503 }); // no Jupiter quotes in tests: costs come from the fake pool's depth
   if (url.includes("api.jup.ag/tokens/v2/")) return json([jupToken()]);
   if (url.includes("api.dexscreener.com/tokens/v1/solana/")) return json([dexPair()]);
   if (url.includes("api.dexscreener.com/latest/dex/pairs")) return json({ pairs: [dexPair()] });

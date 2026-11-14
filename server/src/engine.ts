@@ -16,7 +16,8 @@ import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, flowText, marketText, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin } from "./agents.js";
 import { learn, type Learned, type Watch } from "./learn.js";
 import { maView, type MaView } from "./macross.js";
-import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck } from "./rules.js";
+import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck, type SideCost } from "./rules.js";
+import { costAt, costCurve, knownCurve, sizeUnderCap, type CostCurve } from "./costs.js";
 
 import { noteCommunityBuy } from "./lists.js";
 
@@ -43,6 +44,10 @@ export type Position = {
   trailing?: boolean;
   predictedWinPct?: number; // the win chance of the order that opened it (for an agent: the combined chance)
   prediction?: OrderPrediction; // Agents: the full prediction the buy was made on (shown in the agent window)
+  // Agents: what a round trip of this trade's size was estimated to cost in its pool when it was
+  // bought (costs.ts). Every "after costs" figure of the trade uses it, and half of it is charged
+  // on each side of the trade in place of the account's fee and slippage settings.
+  costPct?: number;
   // "Protect this trade" (manual positions): sell if the price falls protectPct% from its
   // highest point since protection was switched on. Checked every 5 s, bot running or not.
   protectPct?: number;
@@ -106,6 +111,7 @@ export type BotConfig = {
   // "this" = trade the coin above; "auto" = pick the best coin from Opportunities each round.
   pick?: "this" | "auto" | "newcoins" | "agents" | "agent";
   budgetUsd?: number; // Agent: the money it may invest (default $1,000)
+  maxCostPct?: number; // Agent: invest only as much as keeps the round-trip cost at or under this % (default 2.5; 0 = always all of its funds)
   agentMaxPerDay?: number; // Agents mode: most buys per day (default 6)
   agentAiCheck?: boolean; // Agents mode: one AI check before each buy (default on)
   // New coins mode (fast, rule-based, no Claude): young coins that pass the rug-risk checks.
@@ -205,6 +211,7 @@ type State = {
     agentScan?: { at: number; scanned: number; top: AgentCoin[] }; // Agents mode: the latest scores (top 8)
     agentLog?: AgentDecision[]; // Agents mode: recent picks and skips
     learned?: Learned; // Agent: what it learned from its coin's history
+    costCurve?: CostCurve; // Agent: the last cost measured for its coin (kept here so another server copy needn't measure again)
     aiNotes?: { at: number; price: number; text: string }[]; // Agent: its AI's last decisions on this coin (given back to it next time)
     lastFiredAt?: number; // Agent: the candle its pattern last fired on (one try per signal)
     watch?: Watch | null; // Agent: the level it is watching (drawn on the chart)
@@ -214,13 +221,17 @@ type State = {
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
   // maCross: the moving-average crossover signal on each chart from 1 minute up, as the AI was given it.
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; priceAt?: number; desk?: DeskView } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; priceAt?: number; desk?: DeskView; cost?: AgentCost } | null;
   // Extra bots (2 and 3). Bot 1 is `bot` / `lastSignal` above, so older saved states keep working.
   bots?: BotSlot[];
   // The forecast scoreboard (whole account): forecasts waiting for their outcome, every
   // forecaster's running record, and the last few that were scored.
   fc?: { pending: ForecastRec[]; stats: FcStats; last: Scored[] };
 };
+// What an agent's next buy would cost and how much it would invest: `usd` of its `funds` (less
+// than all of it when that keeps the round trip at or under `capPct`), costing `pct`; `fullPct`
+// is what investing all of its funds would cost.
+export type AgentCost = { pct: number; usd: number; funds: number; fullPct: number; capPct: number; source: CostCurve["source"] };
 export type Scored = { at: number; symbol: string; kind: string; pWin: number; aiPct: number; passed: boolean; out: "win" | "stop" | "none"; real?: boolean };
 // The forecast desk as shown in the agent window: where the simulated paths put the price, and
 // the chance of reaching the minimum profit first for a buy right now at three stop distances.
@@ -684,7 +695,8 @@ export function getState() {
 
 // ---------- Broker ----------
 
-export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reason: string, plan?: Partial<Position>, extraSlipPct = 0) {
+// `side`: this trade's own cost per side (an agent's trade), in place of the account's fee and slippage settings.
+export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reason: string, plan?: Partial<Position>, extraSlipPct = 0, side?: SideCost) {
   if (!(usd > 0)) throw new Error("Amount must be positive");
   // Your own buys can't use cash locked for agents; an agent's buy uses its own locked budget.
   const spendable = source === "manual" ? availableCash() : state.cash;
@@ -692,7 +704,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
     throw new Error(state.cash - spendable > 0.005 ? `Not enough available cash: $${spendable.toFixed(2)} available, $${(state.cash - spendable).toFixed(2)} is locked for your agents` : `Not enough cash ($${state.cash.toFixed(2)} available)`);
   if (!(pair.priceUsd > 0)) throw new Error("No live price for this token");
   const { feePct, slippagePct } = state.settings;
-  const { fillPrice, qty, feeUsd, platformFeeUsd } = fillBuy(usd, pair.priceUsd, { feePct, slipPct: slippagePct + extraSlipPct, platformPct: platformFeePct() });
+  const { fillPrice, qty, feeUsd, platformFeeUsd } = fillBuy(usd, pair.priceUsd, { ...(side ?? { feePct, slipPct: slippagePct + extraSlipPct }), platformPct: platformFeePct() });
   state.cash -= usd;
   const existing = state.positions.find((p) => p.pool === pair.pool && p.source === source && (source !== "bot" || (p.botId ?? "1") === (plan?.botId ?? "1")));
   if (existing) {
@@ -720,7 +732,8 @@ export function sell(positionId: string, price: number, fraction: number, reason
   const f = Math.min(1, Math.max(0.01, fraction));
   const { feePct, slippagePct } = state.settings;
   const qty = p.qty * f;
-  const { fillPrice, net, feeUsd, platformFeeUsd } = fillSell(qty, price, { feePct, slipPct: slippagePct + (p.extraSlipPct ?? 0), platformPct: platformFeePct() });
+  // An agent's trade pays the other half of the round-trip cost estimated when it was bought.
+  const { fillPrice, net, feeUsd, platformFeeUsd } = fillSell(qty, price, { ...(p.costPct !== undefined ? { feePct: p.costPct / 2, slipPct: 0 } : { feePct, slipPct: slippagePct + (p.extraSlipPct ?? 0) }), platformPct: platformFeePct() });
   const costPart = p.costUsd * f;
   state.cash += net;
   p.qty -= qty;
@@ -913,7 +926,7 @@ function recordForecasts(pair: PairInfo, consensus: Consensus, cost: number) {
   if (fc.pending.length > 60) fc.pending.splice(0, fc.pending.length - 60);
 }
 
-export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean; agentBrief?: string } = {}) {
+export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean; agentBrief?: string; cost?: AgentCost } = {}) {
   const pair = await getPair(chain, pool);
   const frames = await loadFrames(chain, pool, pair);
   // Chart patterns found by code on each timeframe, with how each did earlier on the same chart.
@@ -953,7 +966,8 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   const journal = tradeJournal(state.trades, pool, pair.symbol);
   // Agents: the prediction engine. Past forecasts on this coin are scored first, then the
   // forecast desk is built from the same candles the AI is about to read.
-  const cost = roundTripCostPct();
+  // An agent's plan is judged with what its own trade would cost in this pool; your own Analyze with your settings.
+  const cost = opts.cost?.pct ?? roundTripCostPct();
   const managed = opts.agentBrief ? state.trades.filter((t) => t.strategy === "agents" && t.side === "SELL" && t.reachedTarget && t.usd - (t.pnlUsd ?? 0) > 0) : [];
   const measuredWinPct = managed.length >= 5 ? managed.reduce((s, t) => s + ((t.pnlUsd ?? 0) / (t.usd - (t.pnlUsd ?? 0))) * 100, 0) / managed.length : undefined;
   let D: Desk | null = null, deskOut: ReturnType<typeof deskReport> = null;
@@ -1052,7 +1066,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
   // the agent's orders are judged differently (the prediction check) and must stay its own.
   // The analysis is still returned to you; it just isn't something the agent trades on.
   if (opts.forBot || !state.bot.running) {
-    state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results: shown, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, maCross, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}) };
+    state.lastSignal = { at: Date.now(), pool, symbol: pair.symbol, tf, results: shown, consensus, trendDown, atrPct: primary.snap.atrPct, patterns, maCross, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}), ...(opts.cost ? { cost: opts.cost } : {}) };
     state.bot.armedSince = []; // a new plan: its triggers start fresh
     state.bot.skipNoted = [];
   }
@@ -1177,6 +1191,7 @@ function startBotHere(cfg: BotConfig) {
   state.bot.freshAfter = Date.now(); // never reuse a plan from before this start
   state.bot.startedAt = Date.now();
   state.bot.learned = undefined; // an agent learns its (possibly new) coin afresh
+  state.bot.costCurve = undefined; // ...and measures what trading it costs
   state.bot.aiNotes = [];
   state.bot.lastFiredAt = undefined;
   state.bot.watch = null;
@@ -1394,7 +1409,7 @@ async function secondLook(cfg: BotConfig, pos: Position, price: number, why: "st
     const pair = await getPair(pos.chain, pos.pool);
     const frames = await loadFrames(pos.chain, pos.pool, pair, ["5s", "1m", "5m", "1h"]);
     const pats = frames.map((f) => findPatterns(f.tf, f.candles));
-    const cost = roundTripCostPct();
+    const cost = pos.costPct ?? roundTripCostPct();
     const d = await Promise.race([
       reviewHold({ pair, frames, costPct: cost, why, entry: pos.entryPrice, price, stop: pos.stopLoss ?? 0, hardFloor, heldMin: (Date.now() - pos.openedAt) / 60_000, target: pos.target, patterns: patternsText(pats) }),
       new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 45_000)),
@@ -1741,6 +1756,27 @@ function agentFunds(cfg: BotConfig) {
   return (cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT) + pnl;
 }
 
+// What this agent's next buy would cost, and how much of its funds it would invest: all of it,
+// or less when that keeps the round-trip cost under the agent's cap (a large buy in a thin pool
+// moves the price against itself, on the way in and again on the way out).
+export const AGENT_COST_CAP_PCT = 2.5;
+const costCap = (cfg: BotConfig) => (isOff(cfg, "maxCostPct") ? 0 : (cfg.maxCostPct ?? AGENT_COST_CAP_PCT));
+const agentSpendable = (cfg: BotConfig) => Math.max(0, Math.floor(Math.min(state.cash, availableCash(acct().state, currentBotId()), agentFunds(cfg)) * 100) / 100);
+function costFor(curve: CostCurve, cfg: BotConfig): AgentCost {
+  const funds = agentSpendable(cfg), capPct = costCap(cfg);
+  const usd = sizeUnderCap(curve, funds, capPct);
+  return { pct: costAt(curve, usd), usd, funds, fullPct: costAt(curve, funds), capPct, source: curve.source };
+}
+const curveMint = (cfg: BotConfig, pair: PairInfo) => (cfg.chain === "solana" ? pair.tokenAddress : undefined); // Jupiter only quotes Solana coins
+async function agentCost(cfg: BotConfig, pair: PairInfo): Promise<AgentCost> {
+  const curve = await costCurve(curveMint(cfg, pair), pair.liquidityUsd, agentSpendable(cfg), state.bot.costCurve);
+  if (curve.source === "jupiter" && curve.at !== state.bot.costCurve?.at) {
+    state.bot.costCurve = curve;
+    acct().dirty = true;
+  }
+  return costFor(curve, cfg);
+}
+
 // true = the agent stopped (its budget is gone)
 async function agentPrep(cfg: BotConfig): Promise<boolean> {
   // The coin's picture for the agent's card: kept the first time the pool's details include one
@@ -1766,7 +1802,7 @@ async function agentPrep(cfg: BotConfig): Promise<boolean> {
         getCandles(cfg.chain, cfg.pool, "5m", 300, pair).catch(() => []),
         getCandles(cfg.chain, cfg.pool, "1h", 300, pair).catch(() => []),
       ]);
-      state.bot.learned = learn([{ tf: "5m", candles: c5 }, { tf: "1h", candles: c1 }], roundTripCostPct(), AGENT_NET_TARGET);
+      state.bot.learned = learn([{ tf: "5m", candles: c5 }, { tf: "1h", candles: c1 }], (await agentCost(cfg, pair)).pct, AGENT_NET_TARGET);
       if (!L) log(`${cfg.symbol} agent: studied the coin's history for the AI. ${state.bot.learned.summary}`);
       acct().dirty = true;
     } catch { /* the AI still gets the charts */ }
@@ -1775,8 +1811,14 @@ async function agentPrep(cfg: BotConfig): Promise<boolean> {
 }
 
 // What the AI is told when it plans for an agent.
-async function agentBrief(cfg: BotConfig, why = ""): Promise<string> {
-  const cost = roundTripCostPct();
+async function agentBrief(cfg: BotConfig, why = "", ac?: AgentCost): Promise<string> {
+  const cost = ac?.pct ?? roundTripCostPct();
+  const invests = !ac
+    ? "each buy invests all of it"
+    : ac.usd < ac.funds - 0.5
+      ? `each buy invests $${ac.usd.toFixed(0)} of it, not all: in this pool a round trip of $${ac.usd.toFixed(0)} costs about ${ac.pct.toFixed(1)}%, and all $${ac.funds.toFixed(0)} would cost ${ac.fullPct.toFixed(1)}%, more than the ${ac.capPct}% this agent allows`
+      : `each buy invests all of it; in this pool a round trip of that size costs about ${ac.pct.toFixed(1)}%`;
+  const costNote = ac ? ` Costs are not a flat rate: they were ${ac.source === "jupiter" ? "measured for this pool and this size with two-way Jupiter quotes" : "estimated for this size from the pool's depth"} (pool fees plus the price the trade itself moves, both ways).` : "";
   const L = state.bot.learned;
   const managed = state.trades.filter((t) => t.strategy === "agents" && t.side === "SELL" && t.reachedTarget && t.usd - (t.pnlUsd ?? 0) > 0);
   const managedNote = managed.length >= 5
@@ -1784,7 +1826,7 @@ async function agentBrief(cfg: BotConfig, why = ""): Promise<string> {
     : `+${AGENT_NET_TARGET}% plus 30% of the extra distance from there to your target, with the target counted up to +20% (winners are held for more, but not all of the extra is captured)`;
   const lines = [
     ...(why ? [`Why you are being asked right now: ${why}.${/level .* it was watching/.test(why) ? " That level came from your last answer; decide with what the chart shows now whether to buy here, and say BUY_NOW if so." : ""}`] : []),
-    `You are this coin's dedicated trading agent. Budget $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} (funds now $${agentFunds(cfg).toFixed(2)}); each buy invests all of it.`,
+    `You are this coin's dedicated trading agent. Budget $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} (funds now $${agentFunds(cfg).toFixed(2)}); ${invests}.${costNote}`,
     `YOU decide, now. If this is a good entry right now, answer BUY_NOW with a buy_now order and the bot buys at once. Otherwise give the exact level you WILL buy at (buy_dip and/or buy_breakout), close enough to be reached in the next 10-30 minutes. Do not wait for a perfect textbook setup: judge the odds from everything below and act on them. You will be asked again within 10 minutes, or sooner if the price moves ${AGENT_MOVE_PCT}%.`,
     `Every order's target must be at least ${(AGENT_NET_TARGET + cost).toFixed(1)}% above its trigger price (that is +${AGENT_NET_TARGET}% after the ${cost.toFixed(1)}% round-trip costs); orders with a smaller target are not used. That level is the MINIMUM-PROFIT level: winChancePct is your chance of reaching it before the stop. target is where you realistically expect the move to go (at or above that level). Put the stop where the idea is proved wrong.`,
     `The bot adds no other limits: no daily loss limit, no cool-down, no minimum win chance, and dips may be bought in a falling market if you judge it right. How an order is judged: a win (reaching the minimum-profit level) counts as ${managedNote}; a loss counts as the distance to your stop plus costs. The order is used only if chance x win - (1 - chance) x loss is above zero, where the chance is the COMBINED one: your winChancePct, the forecast desk's numbers below, and three more AI forecasters who are asked about any order that would pass. Every forecast is scored against what really happened and each forecaster, you included, is corrected for its record, so an inflated chance only gets you discounted.`,
@@ -1987,7 +2029,7 @@ async function tickBot(persist: boolean) {
       recordEquity();
       if (checkDrawdown(cfg)) return;
       const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
-      const cost = roundTripCostPct();
+      const cost = pos.costPct ?? roundTripCostPct(); // an agent's trade carries the cost estimated for it when it was bought
       // Profit guard: once the trade is far enough up, the stop jumps to a small locked-in profit
       // after fees, so a winner can't turn into a loss. It starts at your "protect" setting, but at
       // the latest once up fees + 1.5% (new coins: only after their half-profit sale).
@@ -2272,7 +2314,9 @@ async function tickBot(persist: boolean) {
       if (isAuto(cfg)) {
         await autoPick(cfg);
       } else {
-        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg, why) } : {}) });
+        // An agent's plan is judged with what its own trade would really cost in this pool (costs.ts).
+        const ac = isCoinAgent(cfg) ? await getPair(cfg.chain, cfg.pool).then((p) => agentCost(cfg, p)).catch(() => undefined) : undefined;
+        const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg, why, ac), ...(ac ? { cost: ac } : {}) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
         if (isCoinAgent(cfg)) {
@@ -2433,12 +2477,15 @@ async function tickBot(persist: boolean) {
       // Size: positionPct of the account (never more than the cash on hand). With a risk per
       // trade set, it may be smaller: hitting the exit then loses about riskPerTradePct of the
       // account (exit distance plus round-trip costs). Risk 0 = always use positionPct.
+      // An agent invests its funds, or less when that keeps the round trip under its cost cap (see agentCost).
+      // Read from the last measurement without asking again: a buy must not wait on a quote.
+      const ac = isCoinAgent(cfg) ? costFor(knownCurve(curveMint(cfg, pair), pair.liquidityUsd, state.bot.costCurve), cfg) : null;
       const riskPct = isOff(cfg, "riskPerTradePct") ? 0 : (cfg.riskPerTradePct ?? 1.5);
-      const exitLossPct = ((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100 + roundTripCostPct();
+      const exitLossPct = ((o.triggerPrice - o.stopLoss) / o.triggerPrice) * 100 + (ac?.pct ?? roundTripCostPct());
       const bySize = riskPct > 0 ? (equity() * riskPct) / 100 / (exitLossPct / 100) : Infinity;
       const sizePct = cfg.allowRisky ? Math.min(cfg.positionPct, RISKY_MAX_POSITION_PCT) : cfg.positionPct; // risky trades stay small
       const cap = Math.min(state.cash, equity() * (sizePct / 100));
-      const usd = isCoinAgent(cfg) ? Math.floor(Math.min(state.cash, availableCash(acct().state, currentBotId()), agentFunds(cfg)) * 100) / 100 : Math.floor(Math.min(cap, bySize) * 100) / 100;
+      const usd = ac ? ac.usd : Math.floor(Math.min(cap, bySize) * 100) / 100;
       if (usd < 1) return log("Not enough cash to open a position.", "bad");
       const riskUsd = usd * (exitLossPct / 100);
       // The forecast that becomes this trade is no longer an order the agent "did not buy": it leaves
@@ -2459,10 +2506,11 @@ async function tickBot(persist: boolean) {
         ...(o.prediction ? { prediction: o.prediction } : {}),
         ...(isCoinAgent(cfg) ? { strategy: "agents" as const } : {}),
         ...(sig.patterns ? { patterns: patternTags(sig.patterns) } : {}),
-      });
+        ...(ac ? { costPct: ac.pct } : {}),
+      }, 0, ac ? { feePct: ac.pct / 2, slipPct: 0 } : undefined);
       if (sig.patterns) t.patterns = patternTags(sig.patterns);
       if (isCoinAgent(cfg)) t.strategy = "agents";
-      log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.`, "good");
+      log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.${ac ? ` A round trip of this size in this pool costs about ${ac.pct.toFixed(1)}%${ac.usd < ac.funds - 0.5 ? `: it invests $${ac.usd.toFixed(0)} of its $${ac.funds.toFixed(0)}, because all of it would cost ${ac.fullPct.toFixed(1)}%` : ""}.` : ""}`, "good");
       alert(`🤖 Bought ${pair.symbol}: $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}, target ${fmt(o.target)}. Risking ~$${riskUsd.toFixed(2)}.`);
       // The plan is used up; Claude plans again after this trade closes.
       state.lastSignal = { ...sig, consensus: { ...c, orders: [], note: "Plan used for an entry." } };
