@@ -548,17 +548,19 @@ const PROFIT_SYSTEM = `You are managing an open trade that is in profit, for a s
 Your job is to get the most out of this move: keep holding while it is still going, and sell when it is ending. Selling too early gives away profit; holding into a reversal gives it back.
 
 How to decide:
-- HOLD while the move is alive: higher lows on the 5-second and 1-minute charts, buyers out-trading sellers, volume supporting the push, no rejection at a level. Give it room: a pause or a shallow pullback inside an uptrend is normal.
-- SELL_NOW when it is ending: lower highs forming, a sharp rejection wick at a level, sellers taking over, volume drying up after a spike, or the price stalling right under clear resistance with nothing behind it.
+- The big winners are the trades that are left alone. A trend that lasts hours or days is full of pullbacks of several percent; selling into each one turns a large win into a string of small ones. Your default is HOLD.
+- HOLD while the trend is intact: the price is above its 21-candle average on the 15-minute and 1-hour charts, the fast average is above the slow one there, and buyers are out-trading sellers by volume (the "Trend check" below gives all of these, worked out by code). A pause, a red candle, or a pullback that stays above those averages is normal inside a trend: it is not a reason to sell.
+- SELL_NOW only when the trend itself breaks or the move exhausts: a 15-minute close back under its 21-candle average with the 1-hour trend turning (fast average under slow, or price under the 1-hour average); a blow-off, where the biggest volume of the move comes with a long rejection wick and no follow-through; sellers clearly taking over by volume for more than a few minutes while price makes lower highs; or liquidity being pulled. One sign alone on the 5-second or 1-minute chart is noise.
+- You do not need to sell to protect the profit: the locked exit and the trailing exit do that on their own, every 5 seconds. Selling is for when the reason to be in the trade is gone.
 - Each chart from 1 minute up carries a moving-average crossover line (20-candle average against 50-candle average, closed candles only). A fresh SELL signal on the 1-minute chart is one sign the push is tiring, on the 5-minute chart a stronger one; it is late and can be wrong in a healthy pause, so weigh it with the rest and with its record on this chart (listed with the chart patterns).
 - When holding, set exitPrice under the level that must hold for the move to stay alive (the last higher low / reclaimed level), never below the locked exit. It only ever moves up, so raise it only to where you are happy to be sold.
-- Set trailPct from how much this coin really wiggles (look at the 5-second and 1-minute ATR%): too tight and normal noise sells you, too loose and you give back the gain. Tighten it as the move gets stretched; loosen it when a healthy trend needs room.
+- Set trailPct from how much this coin really swings: about 1.5 to 2 times its 5-minute ATR% (given in the Trend check), never tighter than its ordinary 5-minute swing, and wider (up to about 12%) while the 15-minute and 1-hour trends are intact. Too tight and ordinary noise sells you out of a move that goes on without you. Tighten it only when the trend is breaking down or the move looks exhausted.
 - Be honest in confidence. Do not hold out of hope and do not sell out of fear: read the tape.
 - Prices are USD and may be tiny; keep full precision.`;
 
 export async function reviewProfit(input: {
   pair: PairInfo; frames: Frame[]; costPct: number; entry: number; price: number; best: number; lockedExit: number; minNetPct: number;
-  trailPct: number; heldMin: number; flow: string; market: string; patterns: string; history: string; outlook?: string; last?: { secondsAgo: number; price: number; action: string; reason: string } | null;
+  trailPct: number; heldMin: number; flow: string; market: string; patterns: string; history: string; outlook?: string; trend?: string; last?: { secondsAgo: number; price: number; action: string; reason: string } | null;
 }): Promise<ProfitDecision> {
   const { pair, entry, price, best, lockedExit, costPct } = input;
   const net = (p: number) => ((p - entry) / entry) * 100 - costPct;
@@ -572,9 +574,10 @@ ${input.market}
 ${input.flow}
 ${input.history}
 ${input.outlook ?? ""}
+${input.trend ?? ""}
 ${input.patterns}
 
-${input.frames.map((f) => frameText(f, 60)).join("\n\n")}
+${input.frames.map((f) => frameText(f, f.tf === "1h" ? 24 : f.tf === "15m" ? 32 : 60)).join("\n\n")}
 
 Decide now: HOLD (with exitPrice, trailPct, targetPrice, recheckSeconds) or SELL_NOW.`;
   anthropic ??= new Anthropic();

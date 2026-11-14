@@ -25,6 +25,7 @@ let planCalls = 0;
 let briefSeen = false;
 let profitCalls = 0;
 let profitPrompt = "";
+let profitSystem = "";
 
 const jupToken = () => ({
   id: MINT, symbol: "AGT", name: "Agent Test", icon: "", usdPrice: price, mcap: 5e6, fdv: 5e6, liquidity: 400_000, holderCount: 4200,
@@ -52,6 +53,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
     if (body.includes("managing an open trade that is in profit")) {
       profitCalls++;
       if (!profitPrompt) profitPrompt = JSON.parse(body).messages[0].content;
+      if (!profitSystem) profitSystem = JSON.stringify(JSON.parse(body).system ?? "");
       if (SC === "noai") return new Response("overloaded", { status: 500 });
       const sellNow = SC === "ride" && price >= 1.2;
       const dec = sellNow
@@ -76,7 +78,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
   if (url.includes("api.dexscreener.com/latest/dex/pairs")) return json({ pairs: [dexPair()] });
   if (url.includes("coinmarketcap.com")) {
     const interval = new URL(url).searchParams.get("interval");
-    const step = interval === "5s" ? 5_000 : interval === "1min" ? 60_000 : interval === "1h" ? 3_600_000 : interval === "1d" ? 86_400_000 : 300_000;
+    const step = interval === "5s" ? 5_000 : interval === "1min" ? 60_000 : interval === "15min" ? 900_000 : interval === "1h" ? 3_600_000 : interval === "1d" ? 86_400_000 : 300_000;
     const now = Date.now();
     const last = Math.floor(now / step) * step;
     const N = 300, CYC = 44;
@@ -136,11 +138,16 @@ show("at +5.7%");
 if (SC === "min") {
   await step(8, "1.06: falls straight back: sells at the locked +5% exit (1.066)", 1.06);
 } else if (SC === "noai") {
-  await step(8, "1.12 (+8.4%): the AI can't be reached: the exit follows 2.5% behind", 1.12);
+  await step(8, "1.12: the AI can't be reached: the exit follows the price by the bot's own rule", 1.12);
   show("at 1.12");
-  await step(8, "1.10: above the exit (1.092, 2.5% under 1.12): holds", 1.10);
-  show("at 1.10");
-  await step(8, "1.09: below the 2.5% trailing exit: sells", 1.09);
+  // The rule's distance is 1.8 x the coin's usual 5-minute swing (never under 2.5% or over 12%),
+  // so where the exit sits depends on the fake market's swings: read it, then step around it.
+  const trail = P()?.pm?.trailPct ?? 0, exit = P()?.stopLoss ?? 0;
+  check("with no AI answer the exit's distance comes from the coin's own swings (2.5% to 12%)", P()?.pm?.by === "rule" && trail >= 2.5 && trail <= 12 && Math.abs(exit - Math.max(P().pm.floor, 1.12 * (1 - trail / 100))) < 1e-6, { trail, exit: Number(exit.toFixed(4)), floor: Number(P()?.pm?.floor.toFixed(4)) });
+  const above = Math.round((exit + 0.004) * 1000) / 1000, below = Math.round((exit - 0.004) * 1000) / 1000;
+  await step(8, `${above}: just above the exit (${exit.toFixed(4)}): holds`, above);
+  check("just above the exit the trade stays open", engine.getState().positions.length === 1, "");
+  await step(8, `${below}: just below the exit: sells`, below);
 } else {
   await step(8, "1.088: small dip, still above the locked exit: holds", 1.088);
   show("at 1.088");
@@ -184,6 +191,9 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   // The fake coin is a sound one (quality 87): its result is filed under that band, for calibrating the quality gate later.
   expect("...filed under the coin's quality score", (s as any).fc?.stats.byQuality, { "75+": { n: 1, hits: 1 } });
   check("the AI was asked to manage the profit", profitCalls >= 1, profitCalls);
+  check("it is given the trend check worked out by code: price against its averages, the usual swing, buyers against sellers", profitPrompt.includes("Trend check (worked out by code)") && /5-minute chart: price is [\d.]+% (above|BELOW) its 21-candle average; fast average (above|BELOW) slow/.test(profitPrompt) && profitPrompt.includes("- 1-hour chart:") && /Buyers against sellers by volume .*last 5 minutes [\d.]+x .*last hour [\d.]+x/.test(profitPrompt), profitPrompt.split("\n").filter((l: string) => /^- (5-minute|15-minute|1-hour) chart|^- Buyers|^- If you cannot/.test(l)).map((l: string) => l.slice(0, 120)));
+  check("...with the 15-minute and 1-hour charts next to the short ones", ["## 5-second candles", "## 1-minute candles", "## 5-minute candles", "## 15-minute candles", "## 1-hour candles"].every((h) => profitPrompt.includes(h)), "");
+  check("its instructions: hold by default while the trend is intact, sell only when the trend breaks or the move exhausts", profitSystem.includes("Your default is HOLD") && profitSystem.includes("SELL_NOW only when the trend itself breaks") && profitSystem.includes("1.5 to 2 times its 5-minute ATR%"), "");
   if (SC === "ride") {
     check("the AI's SELL_NOW ends the trade", r.startsWith("AI took profit"), r);
     check("it rode the move (P&L over $150 on $1,000)", pnl > 150, pnl.toFixed(2));
@@ -194,7 +204,7 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   }
   if (SC === "noai") {
     check("with the AI unreachable, a fixed rule still takes the profit", r.startsWith("Profit exit") && !r.includes("the AI set"), r);
-    check("never below the locked minimum (P&L $60 to $85)", pnl > 60 && pnl < 85, pnl.toFixed(2));
+    check("never below the locked minimum (P&L $35 to $90)", pnl > 35 && pnl < 90, pnl.toFixed(2));
   }
   if (SC === "min") {
     check("a fall straight back sells at the locked minimum", r.startsWith("Profit exit"), r);

@@ -2,10 +2,13 @@
 //
 //   npm run backtest:fetch -- <pool address> [<pool address> ...] [--hours 24] [--tf 5s,1m,5m,15m,1h]
 //   npm run backtest:fetch -- --all [--hours 24] [--tf 5s]      extend every fixture already saved
+//   npm run backtest:fetch -- --all --meta-only                 only refresh each coin's real cost and the scouts' verdict
 //
 // --hours is how far back to go for 5-second and 1-minute candles (the longer timeframes take up
 // to 1,000 candles). Requests are spaced out by the data layer; a busy source is waited out.
 // Read-only public market data.
+import { qualityGate, scoreCoin, tokenInfo } from "../agents.js";
+import { costAt, costCurve } from "../costs.js";
 import { getCandles, getOlderCandles, getPair, type Candle, type Timeframe } from "../data.js";
 import { loadFixtures, saveFixture, TF_SEC, type Fixture } from "./fixtures.js";
 
@@ -32,7 +35,16 @@ for (const pool of pools) {
     const fx: Fixture = old ?? { symbol: pair.symbol, pool, savedAt: "", liquidityUsd: 0, roundTripPct: {}, candles: {} };
     fx.savedAt = new Date().toISOString().slice(0, 10);
     fx.liquidityUsd = Math.round(pair.liquidityUsd);
-    for (const tf of tfs) {
+    // What a round trip costs right now (two-way Jupiter quotes) and what the scouts' quality gate says.
+    const curve = await costCurve(pair.tokenAddress, pair.liquidityUsd, 1000);
+    if (curve.source === "jupiter") fx.roundTripPct = { "100": costAt(curve, 100), "1000": costAt(curve, 1000) };
+    const token = pair.tokenAddress ? await tokenInfo(pair.tokenAddress) : null;
+    if (token) {
+      const g = qualityGate(scoreCoin(token, null));
+      fx.scouts = { at: fx.savedAt, ok: g.ok, quality: g.quality, reasons: g.reasons };
+    }
+    console.log(`${pair.symbol.padEnd(10)} round trip $100 ${fx.roundTripPct["100"] ?? "?"}%, $1,000 ${fx.roundTripPct["1000"] ?? "?"}% (${curve.source}) | scouts: ${fx.scouts ? (fx.scouts.ok ? `fit to trade, quality ${fx.scouts.quality}` : `refused: ${fx.scouts.reasons.join("; ")}`) : "no data"}`);
+    for (const tf of args.includes("--meta-only") ? [] : tfs) {
       const want = tf === "5s" || tf === "1m" ? Math.floor(Date.now() / 1000) - hours * 3600 : 0; // how far back to go (0 = two pages)
       let all = merge(fx.candles[tf] ?? [], await getCandles("solana", pool, tf, 300, pair).catch(() => []));
       let pages = 0, fails = 0;

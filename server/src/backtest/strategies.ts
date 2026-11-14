@@ -58,6 +58,7 @@ export const DESIGNS: Record<string, ExitDesign> = {
   timed: { ...EXIT_V058, name: "v0.58.0 + time limit", timeLimit: true },
   // The same lock, but the exit follows 1.8 x the coin's usual 5-minute swing behind (2.5% to 12%).
   adaptive: { ...EXIT_V058, name: "adaptive trail", trail: ADAPTIVE },
+  "adaptive-timed": { ...EXIT_V058, name: "adaptive trail + time limit", trail: ADAPTIVE, timeLimit: true },
   // ...and once up 10%, at least half of the best gain is kept.
   ratchet: { ...EXIT_V058, name: "adaptive trail + keep half above 10%", trail: ADAPTIVE, ratchet: { fromNetPct: 10, keep: 0.5 } },
   // Break-even after costs is locked at +5%; the +5% floor only at +8%; then the adaptive trail.

@@ -12,6 +12,7 @@
 // distance, and a winning trade is managed by the rule the bot falls back on when the AI cannot
 // be asked.
 import type { Candle } from "../data.js";
+import { desk } from "../predict.js";
 import { exitInForce, fillBuy, fillSell, levelFor, lockDue, lockedFloor, netPct, ruleTrailPct, stepAgentTrade, type ExitDesign, type Sale, type SideCost, type TradeState } from "../rules.js";
 import { TF_SEC, type Fixture } from "./fixtures.js";
 
@@ -24,6 +25,9 @@ export type SimOptions = {
   cost: CostModel;
   budgetUsd: number; // the agent's budget; each buy invests all of its funds (budget plus what it made or lost)
   sizeCapPct?: number; // invest only as much as keeps the round-trip cost at or under this
+  // The floor on the numbers: a buy is skipped when the forecast desk, built from the candles up
+  // to that moment, gives it under this chance of reaching the minimum profit before its stop.
+  minNumbersPct?: number;
 };
 export type SimTrade = {
   symbol: string; tag?: string; entryTime: number; exitTime: number; entry: number; exit: number; usd: number;
@@ -98,6 +102,13 @@ export function simulate(fx: Fixture, entries: Entry[], opt: SimOptions): SimTra
       const usd = sizeFor(fx, Math.floor(funds * 100) / 100, opt.cost, opt.sizeCapPct);
       if (usd < 10) continue; // too thin a pool for any size under the cost cap
       const costPct = opt.cost.roundTripPct(fx, usd);
+      if (opt.minNumbersPct) {
+        // Only what was known then: the last 300 one-minute and five-minute candles that had closed.
+        const c1 = (fx.candles["1m"] ?? []).filter((y) => y.time + 60 <= x.time).slice(-300), c5 = (fx.candles["5m"] ?? []).filter((y) => y.time + 300 <= x.time).slice(-300);
+        const D = c1.length >= 120 || c5.length >= 120 ? desk(c1, c5, costPct, ruleTrailPct(opt.design, atr(x.time))) : null;
+        const f = D?.ready ? D.forecast({ offsetPct: 0, upPct: costPct + opt.design.minNetPct, downPct: sig.stopPct, holdMin: sig.maxHoldMin, waitMin: 0 }) : null;
+        if (f && f.numbers < opt.minNumbersPct) continue; // (with too little history for a forecast the buy is not held back, as in the engine)
+      }
       // Half the round trip on each side, charged the way the engine charges it: the flat model is the
       // app's own 1% fee + 0.5% slippage; a measured cost is taken as a fee on each side (as for an agent's trade).
       const side: SideCost = opt.cost.name === "flat" ? { feePct: costPct / 3, slipPct: costPct / 6 } : { feePct: costPct / 2, slipPct: 0 };

@@ -13,8 +13,9 @@ const check = (name: string, ok: boolean, detail: unknown = "") => { ok ? pass++
 const expect = (name: string, got: unknown, want: unknown) => { const ok = JSON.stringify(got) === JSON.stringify(want); check(name, ok, ok ? (got as any) : `${JSON.stringify(got)} (wanted ${JSON.stringify(want)})`); };
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
 
-// ---- the live design is the one this file pins ----
-expect("the bot runs the v0.58.0 exit design", EXIT_LIVE, EXIT_V058);
+// ---- the live design ----
+expect("the bot's exit design: the v0.58.0 lock, stop and time rules", { ...EXIT_LIVE, name: "", trail: null }, { ...EXIT_V058, name: "", trail: null });
+expect("...with the exit following 1.8 x the coin's 5-minute swing behind the high (2.5% to 12%) when the AI has set no distance", [EXIT_LIVE.trail, [1, 2, 4, 10, undefined].map((a) => ruleTrailPct(EXIT_LIVE, a))], [{ kind: "atr", mult: 1.8, minPct: 2.5, maxPct: 12 }, [2.5, 3.6, 7.2, 12, 2.5]]);
 expect("its numbers", [EXIT_V058.minNetPct, EXIT_V058.lockAtNetPct, EXIT_V058.stopConfirmMs, EXIT_V058.stopCrash, ruleTrailPct(EXIT_V058), EXIT_V058.timeLimit], [5, 5, 8000, 1.5, 2.5, false]);
 
 // ---- paper fills: 1% fee + 0.5% slippage a side ----

@@ -27,7 +27,10 @@ export type ExitDesign = {
   timeLimit: boolean;
 };
 export const EXIT_V058: ExitDesign = { name: "v0.58.0", minNetPct: 5, lockAtNetPct: 5, softLock: null, trail: { kind: "fixed", pct: 2.5 }, ratchet: null, stopConfirmMs: 8_000, stopCrash: 1.5, timeLimit: false };
-export const EXIT_LIVE: ExitDesign = EXIT_V058;
+// Live since v0.62.0: when the AI has not set a distance, the exit follows 1.8 x the coin's usual
+// 5-minute swing behind the high (never under 2.5% or over 12%) in place of a fixed 2.5%, so a
+// jumpy coin is not sold on its ordinary wiggle. The lock and the time limit are as in v0.58.0.
+export const EXIT_LIVE: ExitDesign = { ...EXIT_V058, name: "v0.62.0", trail: { kind: "atr", mult: 1.8, minPct: 2.5, maxPct: 12 } };
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
 

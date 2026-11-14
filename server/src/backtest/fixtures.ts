@@ -12,6 +12,8 @@ export type Fixture = {
   savedAt: string;
   liquidityUsd: number;
   roundTripPct: Record<string, number>; // measured round-trip cost in %, by trade size in USD ("100", "1000")
+  // What the scouts' quality gate said about the coin when the fixture was saved (they have no history to replay).
+  scouts?: { at: string; ok: boolean; quality: number; reasons: string[] };
   candles: Record<string, Candle[]>; // "5s", "1m", "5m", "15m", "1h"
 };
 type Row = [number, number, number, number, number, number];

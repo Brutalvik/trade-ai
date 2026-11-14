@@ -49,6 +49,7 @@ export type Position = {
   // on each side of the trade in place of the account's fee and slippage settings.
   costPct?: number;
   quality?: number; // Agents: the scouts' quality score of the coin when it was bought
+  atrPct?: number; // Agents: the coin's usual 5-minute swing (ATR%) when it was bought
   // "Protect this trade" (manual positions): sell if the price falls protectPct% from its
   // highest point since protection was switched on. Checked every 5 s, bot running or not.
   protectPct?: number;
@@ -173,7 +174,8 @@ export type LimitOrder = {
 // Agents: a trade that reached its minimum profit. `floor` is the hard exit (starts at the locked
 // minimum; the AI can only raise it). `trailPct` is how far behind the highest close the exit
 // follows (the AI sets it each time it is asked; a fixed rule when it can't be asked).
-export type ProfitPlan = { floor: number; trailPct: number; by: "ai" | "rule"; asks: number; fails: number; step: number; at?: number; nextAt?: number; target?: number; note?: string; confidence?: number; lastPrice?: number; lastAction?: string };
+// atrPct: the coin's usual 5-minute swing (ATR%), which sizes the exit's distance while no AI answer is in force.
+export type ProfitPlan = { atrPct?: number; floor: number; trailPct: number; by: "ai" | "rule"; asks: number; fails: number; step: number; at?: number; nextAt?: number; target?: number; note?: string; confidence?: number; lastPrice?: number; lastAction?: string };
 
 type State = {
   resetAt?: number; // when this account was last reset (older copies are never saved over it)
@@ -791,10 +793,13 @@ const PLAN_FRAMES: { tf: Timeframe; label: string; show: number }[] = [
   { tf: "1d", label: "1-day candles (last ~month): the big picture", show: 30 },
 ];
 
+// Asked for by name only (profit management reads the 15-minute chart; plans do not).
+const EXTRA_FRAMES: typeof PLAN_FRAMES = [{ tf: "15m", label: "15-minute candles (last ~8 hours): the swing the trade is riding", show: 32 }];
+const FRAME_ORDER: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 async function loadFrames(chain: string, pool: string, pair: PairInfo, only?: Timeframe[]) {
   // One timeframe at a time (CoinMarketCap allows ~1 request/second); skip any that fail,
   // e.g. no daily candles yet for a brand-new coin.
-  const wanted = PLAN_FRAMES.filter((x) => !only || only.includes(x.tf));
+  const wanted = (only ? [...PLAN_FRAMES, ...EXTRA_FRAMES].filter((x) => only.includes(x.tf)) : PLAN_FRAMES).sort((a, b) => FRAME_ORDER.indexOf(a.tf) - FRAME_ORDER.indexOf(b.tf));
   const got = await Promise.all(
     wanted.map(async (f, i): Promise<Frame | null> => {
       await new Promise((r) => setTimeout(r, i * 250));
@@ -1015,7 +1020,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     const c1 = frames.find((f) => f.tf === "1m")?.candles ?? [], c5 = frames.find((f) => f.tf === "5m")?.candles ?? [];
     try {
       settleForecasts(pool, c1, c5);
-      D = desk(c1, c5, cost, PM_RULE_TRAIL);
+      D = desk(c1, c5, cost, ruleTrailPct(EXIT_LIVE, primary.snap.atrPct)); // simulated winners are followed the way the bot would follow them
       deskOut = deskReport(D, cost, measuredWinPct, state.fc?.stats, usualSwing(c1), usualSwing(c5));
     } catch (err: any) {
       console.error("[predict]", err?.message ?? err); // the plan goes ahead on the AI alone
@@ -1960,8 +1965,31 @@ async function agentBrief(cfg: BotConfig, why = "", ac?: AgentCost): Promise<str
 // that agent's next check. If it can't be asked, the exit follows the price by a fixed rule.
 export const PM_RULE_TRAIL = ruleTrailPct(EXIT_LIVE); // % behind the highest close the exit follows when the AI hasn't said otherwise (rules.ts)
 const PM_MIN_GAP_MS = 30_000; // never ask the AI about one trade more often than this
-const profitInbox = new Map<string, { at: number; d?: ProfitDecision; error?: string }>(); // position id -> the AI's answer, waiting to be applied
+const profitInbox = new Map<string, { at: number; d?: ProfitDecision; error?: string; atrPct?: number }>(); // position id -> the AI's answer, waiting to be applied
 const profitAsking = new Set<string>();
+
+// What the trend is doing, worked out by code for the AI that manages a winning trade: where the
+// price is against its 21-candle average and whether the fast average is above the slow one on the
+// 5-minute, 15-minute and 1-hour charts, the coin's usual swing (ATR%), and buyers against sellers
+// by volume over the last 5 minutes and the last hour.
+export function trendCheck(frames: Frame[], token: any, price: number): string {
+  const lines: string[] = [];
+  for (const [tf, name] of [["5m", "5-minute"], ["15m", "15-minute"], ["1h", "1-hour"]] as const) {
+    const s = frames.find((f) => f.tf === tf)?.snap;
+    if (!s) continue;
+    const off = ((price - s.ema21) / s.ema21) * 100;
+    lines.push(`- ${name} chart: price is ${Math.abs(off).toFixed(1)}% ${off >= 0 ? "above" : "BELOW"} its 21-candle average; fast average ${s.ema9 >= s.ema21 ? "above" : "BELOW"} slow (EMA 9 vs EMA 21); usual swing (ATR) ${s.atrPct.toFixed(1)}% a candle`);
+  }
+  const ratio = (st: any) => {
+    const b = Number(st?.buyVolume) || 0, sl = Number(st?.sellVolume) || 0;
+    return b + sl > 0 ? `${sl > 0 ? (b / sl).toFixed(2) : "all buys"}${sl > 0 ? "x" : ""} ($${Math.round(b / 1000)}K bought, $${Math.round(sl / 1000)}K sold)` : null;
+  };
+  const f5 = ratio(token?.stats5m), f1 = ratio(token?.stats1h);
+  if (f5 || f1) lines.push(`- Buyers against sellers by volume (above 1 = more bought than sold): ${[f5 ? `last 5 minutes ${f5}` : "", f1 ? `last hour ${f1}` : ""].filter(Boolean).join("; ")}`);
+  const a5 = frames.find((f) => f.tf === "5m")?.snap?.atrPct;
+  if (a5) lines.push(`- If you cannot be asked, the bot's own exit follows ${ruleTrailPct(EXIT_LIVE, a5)}% behind the highest close (1.8 x the 5-minute swing, never under 2.5% or over 12%).`);
+  return lines.length ? `Trend check (worked out by code):\n${lines.join("\n")}` : "";
+}
 
 function askProfit(pos: Position, price: number, best: number, cost: number) {
   const a = acct();
@@ -1975,11 +2003,13 @@ function askProfit(pos: Position, price: number, best: number, cost: number) {
     ? `On this coin's recent ${R.tf} chart, ${R.moves} separate moves reached +${AGENT_NET_TARGET}% after costs; in the ${R.tf === "5m" ? "hour" : "3 hours"} after, ${R.ran10} of them went on to +10% or more and ${R.ran20} to +20% or more (typical best +${R.medianBestPct.toFixed(0)}%). That is how it has traded lately, not a forecast for this move.`
     : "";
   profitAsking.add(id);
+  let atr5m: number | undefined; // read from the charts this check loads; applied even if the AI cannot be asked
   const work = (async () => {
     try {
       const pair = await getPair(chain, pool);
-      const frames = await loadFrames(chain, pool, pair, ["5s", "1m", "5m"]);
+      const frames = await loadFrames(chain, pool, pair, ["5s", "1m", "5m", "15m", "1h"]);
       const pats = frames.filter((f) => f.tf !== "5s").map((f) => findPatterns(f.tf, f.candles));
+      atr5m = frames.find((f) => f.tf === "5m")?.snap?.atrPct;
       const [t, market] = chain === "solana" && pair.tokenAddress ? await Promise.all([tokenInfo(pair.tokenAddress), marketText(pair.tokenAddress).catch(() => "")]) : [null, ""];
       const now = pair.priceUsd > 0 ? pair.priceUsd : price;
       // What the simulated paths say about holding on from here: the chance of climbing further
@@ -1997,14 +2027,15 @@ function askProfit(pos: Position, price: number, best: number, cost: number) {
             outlook = `Simulated outlook from here (worked out by code from this coin's own recent candles; no opinion in it): the chance the price climbs ${more.map((x) => `another ${x.upPct}% before falling to the exit in force (${money(exitNow)}, ${down.toFixed(1)}% below) within the hour is ${Math.round(x.w!.pWin)}% (${Math.round(x.w!.trend.pWin)}% if the trend continues, ${Math.round(x.w!.flat.pWin)}% with no trend)`).join("; ")}.${cone.length ? ` Where the paths put the price (middle 80%): ${cone.map((c) => `in ${c.min} min ${money(c.lo)} to ${money(c.hi)}`).join("; ")}.` : ""} Weigh this against what the tape shows right now.`;
         }
       } catch { /* optional */ }
+      const trend = trendCheck(frames, t, now);
       const d = await Promise.race([
-        reviewProfit({ pair, frames, costPct: cost, entry, price: now, best: Math.max(best, now), lockedExit, minNetPct: AGENT_NET_TARGET, trailPct, heldMin: (Date.now() - openedAt) / 60_000, outlook, flow: t ? flowText(t) : "", market, patterns: patternsText(pats), history, last }),
+        reviewProfit({ pair, frames, costPct: cost, entry, price: now, best: Math.max(best, now), lockedExit, minNetPct: AGENT_NET_TARGET, trailPct, heldMin: (Date.now() - openedAt) / 60_000, outlook, trend, flow: t ? flowText(t) : "", market, patterns: patternsText(pats), history, last }),
         new Promise<never>((_, no) => setTimeout(() => no(new Error("took too long")), 30_000)),
       ]);
       await chargeTokens([{ model: BOT_MODEL, ok: false, error: "", ms: 0, tokens: d.tokens }]);
-      profitInbox.set(id, { at: Date.now(), d });
+      profitInbox.set(id, { at: Date.now(), d, ...(atr5m ? { atrPct: atr5m } : {}) });
     } catch (err: any) {
-      profitInbox.set(id, { at: Date.now(), error: err?.message ?? String(err) });
+      profitInbox.set(id, { at: Date.now(), error: err?.message ?? String(err), ...(atr5m ? { atrPct: atr5m } : {}) });
     } finally {
       profitAsking.delete(id);
     }
@@ -2181,7 +2212,8 @@ async function tickBot(persist: boolean) {
         const nowNet = gainPct - cost;
         if (!pos.pm) {
           // A trade whose exit was already raised above the minimum (by the earlier 1% profit steps) keeps it: an exit is never lowered.
-          pos.pm = { floor: lockedFloor(pos.entryPrice, cost, pos.stopLoss, EXIT_LIVE), trailPct: ruleTrailPct(EXIT_LIVE), by: "rule", asks: 0, fails: 0, step: 0 };
+          const atr = pos.atrPct ?? state.lastSignal?.atrPct;
+          pos.pm = { floor: lockedFloor(pos.entryPrice, cost, pos.stopLoss, EXIT_LIVE), trailPct: ruleTrailPct(EXIT_LIVE, atr), by: "rule", asks: 0, fails: 0, step: 0, ...(atr ? { atrPct: atr } : {}) };
           pos.locked = true;
           acct().dirty = true;
           log(`${pos.symbol} is up +${bestNet.toFixed(1)}% after fees: the +${AGENT_NET_TARGET}% minimum is locked (exit ${fmt(pos.pm.floor)}). The AI now decides how long to hold.`, "good");
@@ -2190,6 +2222,12 @@ async function tickBot(persist: boolean) {
         // An answer from the AI that arrived since the last check.
         const got = profitInbox.get(pos.id);
         if (got) profitInbox.delete(pos.id);
+        if (got?.atrPct) pm.atrPct = got.atrPct;
+        // While no AI answer is in force, the exit's distance follows the coin's own swings.
+        if (pm.by === "rule") {
+          const t = ruleTrailPct(EXIT_LIVE, pm.atrPct);
+          if (t !== pm.trailPct) { pm.trailPct = t; acct().dirty = true; }
+        }
         if (got && now - got.at > 60_000) pm.nextAt = now; // too old to act on (the price has moved on): ask again
         else if (got) {
           acct().dirty = true;
@@ -2617,6 +2655,7 @@ async function tickBot(persist: boolean) {
         ...(sig.patterns ? { patterns: patternTags(sig.patterns) } : {}),
         ...(ac ? { costPct: ac.pct } : {}),
         ...(isCoinAgent(cfg) && typeof state.bot.quality === "number" ? { quality: state.bot.quality } : {}),
+        ...(isCoinAgent(cfg) && sig.atrPct ? { atrPct: sig.atrPct } : {}),
       }, 0, ac ? { feePct: ac.pct / 2, slipPct: 0 } : undefined);
       if (sig.patterns) t.patterns = patternTags(sig.patterns);
       if (isCoinAgent(cfg)) t.strategy = "agents";
