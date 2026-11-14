@@ -148,6 +148,8 @@ function useAgent(slot: BotSlot, state: AppState | null) {
       : `In a trade since ${at(pos.openedAt)}: bought at ${fmtPrice(pos.entryPrice)}, now ${pct(netAt(pos.lastPrice))} after fees. Stop ${pos.stopLoss ? fmtPrice(pos.stopLoss) : "–"}; at ${fmtPrice(pos.entryPrice * (1 + (cost + 5) / 100))} the +5% minimum locks and the AI takes over the exit.`
     : bot.blocked
       ? `Paused: ${bot.blocked}`
+      : plan?.gate
+        ? `${plan.gate.kind === "scouts" ? `Standing aside: the scouts ruled ${symbol} out (${plan.gate.reasons.join("; ")})` : `Standing aside: the numbers rule out a buy right now (${plan.gate.reasons.join("; ")})`}. Its AI was not asked, so no AI tokens were spent. It checks again by ${at(nextLook)}${plan.gate.kind === "numbers" ? ", or at once on a real move" : ""}.`
       : !c
         ? "The AI is reading the charts and deciding…"
         : c.stance === "AVOID" || !order
@@ -157,7 +159,56 @@ function useAgent(slot: BotSlot, state: AppState | null) {
             : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}${order.kind === "buy_breakout" && order.minVolumeRatio > 0 ? `, but only on at least ${order.minVolumeRatio}× the usual trading volume` : ""}: ${chance(order)}`;
   const said = okRes && okRes.ok ? okRes.signal.stance : undefined; // what the AI itself answered, before the check on its odds
   const image = pos?.imageUrl ?? cfg?.imageUrl; // the coin's picture: from its open trade, else kept with the agent
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at, cost, tradeCost };
+  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at, cost, tradeCost, gate: plan?.gate, gateOff: !!cfg?.disabled?.includes("qualityGate") };
+}
+
+// The agent stood aside without asking its AI: the reasons, and (for the scouts) a recorded "trade it anyway".
+function GateBox({ a, notify, refresh }: { a: ReturnType<typeof useAgent>; notify: Notify; refresh: () => void }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const g = a.gate!;
+  const warning = `The scouts ruled ${a.symbol} out: ${g.reasons.join("; ")}. The scouts treat these as deal-breakers. If you go on, the agent's AI is asked about this coin every time, whatever the scouts say, until you turn the gate back on.`;
+  const go = async () => {
+    setBusy(true);
+    try {
+      await api.consentOff({ setting: "qualityGate", label: `Coin quality gate (${a.symbol})`, warning, botId: a.id });
+      await api.botQualityGate(false, a.id);
+      notify(`The AI will be asked about ${a.symbol} now`);
+      refresh();
+    } catch (e: any) {
+      notify(e.message, true);
+    } finally {
+      setBusy(false);
+      setAsking(false);
+    }
+  };
+  return (
+    <>
+      <div className="label-sm">{g.kind === "scouts" ? "Why it is standing aside: the scouts" : "Why it is standing aside: the numbers"}</div>
+      <div className="agent-learned gate-box">
+        {g.kind === "scouts" ? (
+          <>
+            <b>The scouts ruled this coin out before the AI was asked.</b> No AI tokens were spent.
+            <ul>{g.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
+            {g.quality !== undefined ? <span className="muted">Quality score {g.quality} of 100 (this agent asks for {g.min ?? 45}). It is checked again every 5 minutes; a coin's holders and liquidity do change.</span> : null}
+            {asking ? (
+              <div className="gate-confirm">
+                <span>{warning}</span>
+                <div>
+                  <button className="btn sell" disabled={busy} onClick={() => void go()}>{busy ? "Switching…" : "I understand, ask the AI"}</button>
+                  <button className="btn" disabled={busy} onClick={() => setAsking(false)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div><button className="link-btn" onClick={() => setAsking(true)}>Trade it anyway…</button></div>
+            )}
+          </>
+        ) : (
+          <>{a.plan?.note}</>
+        )}
+      </div>
+    </>
+  );
 }
 
 // The prediction behind an agent's order: every forecaster's chance that the price reaches the
@@ -210,7 +261,7 @@ function Prediction({ a, state }: { a: ReturnType<typeof useAgent>; state: AppSt
           </span>
         </div>
       ) : (
-        <div className="agent-learned">{a.pos ? "This trade was opened before predictions were recorded." : d ? "No order to forecast yet." : "No forecast yet: it is made on the AI's next look, once this coin has a few hours of history."}</div>
+        <div className="agent-learned">{a.pos ? "This trade was opened before predictions were recorded." : a.gate ? "No order to forecast: the agent stood aside before its AI was asked." : d ? "No order to forecast yet." : "No forecast yet: it is made on the AI's next look, once this coin has a few hours of history."}</div>
       )}
       {d && !a.pos ? (
         <div className="agent-learned">
@@ -236,6 +287,7 @@ function Prediction({ a, state }: { a: ReturnType<typeof useAgent>; state: AppSt
       <div className="agent-learned">
         <b>Scoreboard</b> (all your agents): {scored ? `${scored} forecast${scored === 1 ? "" : "s"} checked against what really happened` : "every forecast is checked against what really happens next; none has finished yet"}{fc?.waiting ? ` · ${fc.waiting} waiting for ${fc.waiting === 1 ? "its" : "their"} outcome` : ""}.
         {scored && (side(fc?.stats.taken) || side(fc?.stats.refused)) ? ` Trades it made: ${side(fc?.stats.taken) ? `${side(fc?.stats.taken)} reached +5% (real results)` : "none scored yet"}. Orders it did not buy: ${side(fc?.stats.refused) ? `${side(fc?.stats.refused)} would have reached it on the chart (a real order can fill worse than the chart shows)` : "none scored yet"}. A forecaster that says more than really happens is marked down; a good streak never marks one up.` : ""}
+        {fc?.stats.byQuality && Object.keys(fc.stats.byQuality).length ? ` By the scouts' quality score of the coin: ${["under 45", "45-59", "60-74", "75+"].filter((b) => fc.stats.byQuality![b]).map((b) => `${b}: ${fc.stats.byQuality![b].hits} of ${fc.stats.byQuality![b].n} reached +5%`).join(" · ")}.` : ""}
         {rows.length ? (
           <table className="agent-table fc-table">
             <thead><tr><th>Forecaster</th><th className="num">Said on average</th><th className="num">Happened on the chart</th><th className="num">Forecasts</th></tr></thead>
@@ -387,7 +439,14 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
             </div>
           </>
         ) : null}
-        {a.plan && !a.pos ? (
+        {a.gate && !a.pos ? <GateBox a={a} notify={notify} refresh={refresh} /> : null}
+        {a.isAgent && a.gateOff ? (
+          <div className="agent-learned">
+            <b>Coin quality gate: off.</b> You chose to trade {a.symbol} whatever the scouts say; its AI is asked every time.{" "}
+            <button className="link-btn" onClick={() => api.botQualityGate(true, a.id).then(refresh).catch((e) => notify(e.message, true))}>Turn the gate back on</button>
+          </div>
+        ) : null}
+        {a.plan && !a.pos && !a.gate ? (
           <>
             <div className="label-sm">The AI's decision</div>
             <div className={`agent-learned ${a.plan.stance === "AVOID" ? "" : "has"}`}>

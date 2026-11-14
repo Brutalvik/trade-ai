@@ -29,7 +29,7 @@ let briefSeen = false;
 const jupToken = () => ({
   id: MINT, symbol: "AGT", name: "Agent Test", icon: "", usdPrice: price, mcap: 5e6, fdv: 5e6, liquidity: LIQ, holderCount: 4200,
   organicScore: 72, graduatedAt: new Date(realNow() - 20 * 3600_000).toISOString(),
-  audit: { mintAuthorityDisabled: true, freezeAuthorityDisabled: true, topHoldersPercentage: 18, devBalancePercentage: 0.5, devMints: 1 },
+  audit: { mintAuthorityDisabled: true, freezeAuthorityDisabled: true, topHoldersPercentage: SC === "scouts" ? 60 : 18, devBalancePercentage: 0.5, devMints: 1 }, // "scouts": ten wallets own 60% of the coin
   stats5m: { priceChange: 1.2, holderChange: 0.6, liquidityChange: 0.4, buyVolume: 60_000, sellVolume: 35_000, numOrganicBuyers: 30, numTraders: 400 },
   stats1h: { priceChange: 14, holderChange: 3, buyVolume: 300_000, sellVolume: 220_000, buyOrganicVolume: 40_000, sellOrganicVolume: 30_000, numOrganicBuyers: 80, numTraders: 1500 },
   tags: ["verified"],
@@ -111,9 +111,21 @@ const waitPlan = async (note: string, need: () => boolean, max = 70) => {
   for (let k = 0; k < 8; k++) { await sleep(250); showLogs(); }
 };
 engine.reset(1000);
-engine.startBot({ chain: "solana", pool: POOL, symbol: "AGT", tf: "5m", positionPct: 100, minConfidence: 45, analyzeEverySec: 1800, checkEverySec: 5, maxDrawdownPct: 25, goalUsd: 1e9, pick: "agent", budgetUsd: 1000, trailPct: 3, riskPerTradePct: 0, dailyLossPct: 10, cooldownMin: 30, breakEvenAtPct: 6, lockPct: 50, strongMode: true, rewardRule: true, disabled: [] } as any);
-await waitPlan("agent starts: the AI is asked at once", () => engine.getState().positions.length > 0 || (SC === "avoid" || SC === "quiet") && !!engine.getState().lastSignal);
+engine.startBot({ chain: "solana", pool: POOL, symbol: "AGT", tf: "5m", positionPct: 100, minConfidence: 45, analyzeEverySec: 1800, checkEverySec: 5, maxDrawdownPct: 25, goalUsd: 1e9, pick: "agent", budgetUsd: 1000, ...(process.env.MINNUM ? { minNumbersPct: Number(process.env.MINNUM) } : {}), trailPct: 3, riskPerTradePct: 0, dailyLossPct: 10, cooldownMin: 30, breakEvenAtPct: 6, lockPct: 50, strongMode: true, rewardRule: true, disabled: [] } as any);
+await waitPlan("agent starts: the AI is asked at once", () => engine.getState().positions.length > 0 || (SC === "avoid" || SC === "quiet" || SC === "scouts") && !!engine.getState().lastSignal);
 console.log("   plan calls:", planCalls, "| brief reached the AI:", briefSeen, "| open:", engine.getState().positions.length, "| blocked:", engine.getState().bot.blocked);
+if (SC === "scouts") {
+  // Ten wallets own 60% of this coin: the scouts rule it out before the AI is asked.
+  const g: any = engine.getState();
+  expect("the scouts refuse the coin before the AI is asked: no AI call, nothing bought", [aiCalls, g.positions.length, g.lastSignal?.consensus.stance, g.lastSignal?.gate?.kind], [0, 0, "AVOID", "scouts"]);
+  check("the plan and the agent's log give the scouts' exact reason", g.lastSignal?.gate?.reasons.join() === "the top 10 wallets own 60%" && g.bot.log.some((l: any) => l.msg.includes("The scouts ruled AGT out") && l.msg.includes("the top 10 wallets own 60%") && l.msg.includes("no AI tokens spent")), g.lastSignal?.gate);
+  await step(8, "still 1.00: the agent stays out and still does not ask its AI", 1.0);
+  expect("it keeps standing aside at no cost", [aiCalls, engine.getState().positions.length], [0, 0]);
+  // You choose to trade it anyway: the gate is switched off for this agent, and the AI is asked at once.
+  engine.setQualityGate(false, "1");
+  for (let i = 0; i < 160 && engine.getState().positions.length === 0; i++) { await sleep(250); showLogs(); }
+  check("with the gate switched off the AI is asked and the agent trades", planCalls >= 1 && engine.getState().positions.length === 1 && (engine.getState().bot.config as any).disabled.includes("qualityGate"), { planCalls, open: engine.getState().positions.length });
+}
 if (SC === "quiet" && process.env.MANUAL) {
   // Your own Analyze on the agent's coin: answered to you, but never traded on by the agent.
   const before = (engine.getState().lastSignal as any)?.at;
@@ -163,7 +175,7 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
 {
   const sells = s.trades.filter((t) => t.side === "SELL"), buys = s.trades.filter((t) => t.side === "BUY");
   const logs = s.bot.log.map((l) => l.msg).join("\n");
-  check("the agent's brief reached the AI", briefSeen, "");
+  if (!(SC === "quiet" && process.env.MINNUM !== "0")) check("the agent's brief reached the AI", briefSeen, "");
   if (SC === "lose") {
     check("stopped out once, at a loss, after the AI's second look", sells.length === 1 && /^Stop-loss hit/.test(sells[0].reason) && (sells[0].pnlUsd ?? 0) < -100, sells.map((t) => `${t.reason} ${t.pnlUsd?.toFixed(2)}`));
     check("no daily limit and no cool-down: still running, and it bought again", s.bot.running && !s.bot.blocked && buys.length === 2 && s.positions.length === 1, { running: s.bot.running, blocked: s.bot.blocked, buys: buys.length, open: s.positions.length });
@@ -184,8 +196,16 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   }
   if (SC === "quiet") {
     check("a coin that barely moves: the prediction check refuses the buy", s.trades.length === 0 && s.positions.length === 0 && s.lastSignal?.consensus.stance === "AVOID", { trades: s.trades.length, stance: s.lastSignal?.consensus.stance });
-    check("the forecaster panel is not asked about an order that cannot pass", panelCalls === 0, panelCalls);
-    check("the refused order carries its prediction", !!(s.lastSignal as any)?.consensus.orders[0]?.prediction && !!(s.lastSignal as any)?.consensus.orders[0]?.warning, "");
+    if (process.env.MINNUM !== "0") {
+      // The numbers give no order even a 10% chance (the floor), so the agent's AI is not asked.
+      const mine = aiCalls - (process.env.MANUAL ? 1 : 0); // your own Analyze (the manual scenario) does ask the AI
+      expect("the numbers rule a buy out before the AI is asked: no AI call by the agent, no panel", [mine, panelCalls, (s.lastSignal as any)?.gate?.kind], [0, 0, "numbers"]);
+      check("the plan says why, with the best the numbers gave", /The numbers rule out a buy right now, so the AI was not asked .*no plain order has even a 10% chance.*\(the best is (under 1|\d+)%\)/.test(s.lastSignal?.consensus.note ?? ""), s.lastSignal?.consensus.note);
+      check("the forecast desk is still shown, and the agent's log says it once", !!(s.lastSignal as any)?.desk && s.bot.log.filter((l) => l.msg.includes("The numbers rule out a buy")).length === 1, "");
+    } else {
+      check("the forecaster panel is not asked about an order that cannot pass", panelCalls === 0, panelCalls);
+      check("the refused order carries its prediction", !!(s.lastSignal as any)?.consensus.orders[0]?.prediction && !!(s.lastSignal as any)?.consensus.orders[0]?.warning, "");
+    }
   }
 }
 engine.stopBot("test over");

@@ -2,7 +2,7 @@
 // Every trade here is simulated with realistic fees and slippage so you can
 // see how the strategy would perform before risking real money.
 import { audit, ledger, type AuditType } from "./audit.js";
-import { analyze, BOT_MODEL, CLAUDE_MODEL, combine, forecastPanel, frameCross, orderKey, reviewAgentPick, reviewHold, reviewProfit, type AgentEval, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult, type OrderPrediction, type PlanOrder } from "./ai.js";
+import { analyze, BOT_MODEL, checkOrders, CLAUDE_MODEL, combine, forecastPanel, frameCross, numbersOf, orderKey, reviewAgentPick, reviewHold, reviewProfit, type AgentEval, type ProfitDecision, type CheckedOrder, type Consensus, type Frame, type ModelResult, type OrderPrediction, type PlanOrder } from "./ai.js";
 import { countedWin, desk, expected, resolve, score, type ConePoint, type Desk, type FcStats, type Forecast, type ForecastRec, type Shape } from "./predict.js";
 import { findPatterns, patternsText, patternTags, type FramePatterns } from "./patterns.js";
 import { cachedJson, fromDexScreener, getCandles, getPair, getRecentTokenCandles, knownToken, type Candle, type PairInfo, type Timeframe } from "./data.js";
@@ -13,7 +13,7 @@ import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type 
 import { createStore } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
-import { AGENT_KEYS, AGENT_PASS, flowText, marketText, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin } from "./agents.js";
+import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin, type CoinGate } from "./agents.js";
 import { learn, type Learned, type Watch } from "./learn.js";
 import { maView, type MaView } from "./macross.js";
 import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck, type SideCost } from "./rules.js";
@@ -48,6 +48,7 @@ export type Position = {
   // bought (costs.ts). Every "after costs" figure of the trade uses it, and half of it is charged
   // on each side of the trade in place of the account's fee and slippage settings.
   costPct?: number;
+  quality?: number; // Agents: the scouts' quality score of the coin when it was bought
   // "Protect this trade" (manual positions): sell if the price falls protectPct% from its
   // highest point since protection was switched on. Checked every 5 s, bot running or not.
   protectPct?: number;
@@ -112,6 +113,8 @@ export type BotConfig = {
   pick?: "this" | "auto" | "newcoins" | "agents" | "agent";
   budgetUsd?: number; // Agent: the money it may invest (default $1,000)
   maxCostPct?: number; // Agent: invest only as much as keeps the round-trip cost at or under this % (default 2.5; 0 = always all of its funds)
+  minQuality?: number; // Agent: the scouts' quality score (0-100) its coin needs before the AI is asked (default 45). "qualityGate" in `disabled` switches the gate off.
+  minNumbersPct?: number; // Agent: the least chance the numbers alone must give an order (default 10; 0 = no floor). Under it an order is refused, and if no plain order reaches it the AI is not asked.
   agentMaxPerDay?: number; // Agents mode: most buys per day (default 6)
   agentAiCheck?: boolean; // Agents mode: one AI check before each buy (default on)
   // New coins mode (fast, rule-based, no Claude): young coins that pass the rug-risk checks.
@@ -212,6 +215,7 @@ type State = {
     agentLog?: AgentDecision[]; // Agents mode: recent picks and skips
     learned?: Learned; // Agent: what it learned from its coin's history
     costCurve?: CostCurve; // Agent: the last cost measured for its coin (kept here so another server copy needn't measure again)
+    quality?: number; // Agent: the scouts' quality score of its coin at the last look (remembered with each forecast)
     aiNotes?: { at: number; price: number; text: string }[]; // Agent: its AI's last decisions on this coin (given back to it next time)
     lastFiredAt?: number; // Agent: the candle its pattern last fired on (one try per signal)
     watch?: Watch | null; // Agent: the level it is watching (drawn on the chart)
@@ -221,7 +225,7 @@ type State = {
     log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
   };
   // maCross: the moving-average crossover signal on each chart from 1 minute up, as the AI was given it.
-  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; priceAt?: number; desk?: DeskView; cost?: AgentCost } | null;
+  lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; priceAt?: number; desk?: DeskView; cost?: AgentCost; gate?: PlanGate } | null;
   // Extra bots (2 and 3). Bot 1 is `bot` / `lastSignal` above, so older saved states keep working.
   bots?: BotSlot[];
   // The forecast scoreboard (whole account): forecasts waiting for their outcome, every
@@ -232,6 +236,9 @@ type State = {
 // than all of it when that keeps the round trip at or under `capPct`), costing `pct`; `fullPct`
 // is what investing all of its funds would cost.
 export type AgentCost = { pct: number; usd: number; funds: number; fullPct: number; capPct: number; source: CostCurve["source"] };
+// Why an agent stood aside without asking its AI (no AI tokens spent): the scouts ruled the coin
+// out, or the prediction engine's numbers left no order that could pass.
+export type PlanGate = { kind: "scouts" | "numbers"; reasons: string[]; quality?: number; min?: number };
 export type Scored = { at: number; symbol: string; kind: string; pWin: number; aiPct: number; passed: boolean; out: "win" | "stop" | "none"; real?: boolean };
 // The forecast desk as shown in the agent window: where the simulated paths put the price, and
 // the chance of reaching the minimum profit first for a buy right now at three stop distances.
@@ -900,7 +907,7 @@ function scoreTrade(pos: Position, reached: boolean) {
   const each: ForecastRec["p"] = { combined: p.pWin };
   for (const part of p.parts) each[part.key] = part.pct;
   const out = reached ? "win" : "stop";
-  const made: ForecastRec = { id: uid(), at: pos.openedAt, pool: pos.pool, symbol: pos.symbol, kind: "buy_now", entry: pos.entryPrice, stop: pos.stopLoss ?? 0, level: pos.entryPrice, waitMin: 0, holdMin: 0, p: each, passed: true };
+  const made: ForecastRec = { id: uid(), at: pos.openedAt, pool: pos.pool, symbol: pos.symbol, kind: "buy_now", entry: pos.entryPrice, stop: pos.stopLoss ?? 0, level: pos.entryPrice, waitMin: 0, holdMin: 0, p: each, passed: true, ...(typeof pos.quality === "number" ? { q: pos.quality } : {}) };
   fc.stats = score(fc.stats, made, out, true);
   fc.last.unshift({ at: made.at, symbol: made.symbol, kind: "trade", pWin: Math.round(p.pWin), aiPct: Math.round(each.ai ?? 0), passed: true, out, real: true });
   if (fc.last.length > 12) fc.last.length = 12;
@@ -921,9 +928,42 @@ function recordForecasts(pair: PairInfo, consensus: Consensus, cost: number) {
     if (fc.pending.some((r) => r.pool === pair.pool && r.kind === (sh.immediate ? "buy_now" : o.kind) && r.passed === passed && now - r.at < every)) continue;
     const each: ForecastRec["p"] = { combined: p.pWin };
     for (const part of p.parts) each[part.key] = part.pct;
-    fc.pending.push({ id: uid(), at: now, pool: pair.pool, symbol: pair.symbol, kind: sh.immediate ? "buy_now" : o.kind, entry: sh.entry, stop: o.stopLoss, level: sh.entry * (1 + (cost + AGENT_NET_TARGET) / 100), waitMin: sh.waitMin, holdMin: Math.min(sh.holdMin, 420), p: each, passed });
+    fc.pending.push({ id: uid(), at: now, pool: pair.pool, symbol: pair.symbol, kind: sh.immediate ? "buy_now" : o.kind, entry: sh.entry, stop: o.stopLoss, level: sh.entry * (1 + (cost + AGENT_NET_TARGET) / 100), waitMin: sh.waitMin, holdMin: Math.min(sh.holdMin, 420), p: each, passed, ...(typeof state.bot.quality === "number" ? { q: state.bot.quality } : {}) });
   }
   if (fc.pending.length > 60) fc.pending.splice(0, fc.pending.length - 60);
+}
+
+// The best any buy could do right now: a set of plain orders (buy now, a dip, a breakout; tight
+// to wide stops; a short and a longer hold) is put through the same check as the AI's own orders
+// (checkOrders), each with the AI's chance set to the ceiling. If none passes, none the AI could
+// give would, so the AI is not asked. `numbers` = the highest chance the numbers alone give any of them.
+//
+// The floor on the numbers (AgentEval.minNumbersPct) is what makes this bite. Measured on 140
+// looks at 14 real coins: without a floor it never fired (the AI is half of the combined chance,
+// so an AI at 95% passes an order the numbers put at 0%), and with real costs on a deep pool a
+// stand-in AI at 62% carried an order the numbers put at 9%. Blind tests found that when the
+// numbers say under 10% it almost never happens; they were under 10% for every plain order in
+// 18% of those looks.
+const AI_CEILING_PCT = 95;
+export const AGENT_MIN_NUMBERS_PCT = 10;
+function bestCase(D: Desk, price: number, cost: number, judge: AgentEval): { passes: boolean; pWin: number; needPct: number; numbers: number } | null {
+  let best: { passes: boolean; pWin: number; needPct: number; gap: number } | null = null;
+  let numbers = 0, any = false;
+  for (const [kind, offset] of [["buy_now", 0], ["buy_dip", -2], ["buy_dip", -4], ["buy_breakout", 2], ["buy_breakout", 4]] as const)
+    for (const stopPct of [3, 5, 8, 12])
+      for (const hold of [60, 180]) {
+        const trigger = price * (1 + offset / 100);
+        const order: PlanOrder = { kind, triggerPrice: trigger, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: trigger * (1 - stopPct / 100), target: trigger * (1 + (cost + AGENT_NET_TARGET + 10) / 100), maxHoldMinutes: hold, winChancePct: AI_CEILING_PCT };
+        const r = checkOrders([order], cost, { ...judge, panel: undefined, predict: (x, validMinutes) => D.forecast(shapeOf(x, price, cost, validMinutes)) }, 30);
+        const o = r.kept[0] ?? r.warned[0];
+        const p = o?.prediction;
+        if (!p) continue;
+        numbers = Math.max(numbers, numbersOf(p.parts) ?? 0);
+        if (r.kept.length) any = true;
+        const gap = p.pWin - p.needPct;
+        if (!best || gap > best.gap) best = { passes: r.kept.length > 0, pWin: p.pWin, needPct: p.needPct, gap };
+      }
+  return best ? { ...best, passes: any, numbers } : null;
 }
 
 export async function runAnalysis(chain: string, pool: string, tf: Timeframe, opts: { forBot?: boolean; agentBrief?: string; cost?: AgentCost } = {}) {
@@ -1010,6 +1050,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
         minNetPct: AGENT_NET_TARGET,
         ...(measuredWinPct !== undefined ? { measuredWinPct } : {}),
         stats: state.fc?.stats,
+        minNumbersPct: state.bot.config?.minNumbersPct ?? AGENT_MIN_NUMBERS_PCT,
         predict: (o, validMinutes) => {
           const k = orderKey(o);
           if (!seen.has(k)) seen.set(k, D?.ready ? D.forecast(shapeOf(o, pair.priceUsd, cost, validMinutes)) : null);
@@ -1017,6 +1058,23 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
         },
       }
     : undefined;
+  // Agents: a free check before the paid one. If no buy could pass the prediction check even with
+  // an AI that is 95% sure (the numbers are that low: a coin that is not moving enough to clear
+  // its costs), the AI is not asked.
+  if (judge && D?.ready) {
+    const best = bestCase(D, pair.priceUsd, cost, judge);
+    const floor = judge.minNumbersPct ?? 0;
+    if (best && !best.passes) {
+      const low = best.numbers < floor;
+      const why = low
+        ? `from this coin's own candles, no plain order has even a ${floor}% chance of reaching +${AGENT_NET_TARGET}% after costs before its stop (the best is ${best.numbers < 1 ? "under 1" : Math.round(best.numbers)}%)`
+        : `even if it were ${AI_CEILING_PCT}% sure, the best order would have a ${Math.round(best.pWin)}% combined chance of reaching +${AGENT_NET_TARGET}% after costs and needs ${Math.ceil(best.needPct)}%`;
+      const note = `The numbers rule out a buy right now, so the AI was not asked (no AI tokens spent): ${why}.`;
+      standAside(state.bot.config!, { kind: "numbers", reasons: [low ? `the numbers give at most ${Math.round(best.numbers)}%, under the ${floor}% floor` : `best case ${Math.round(best.pWin)}% chance, needs ${Math.ceil(best.needPct)}%`] }, note, { trendDown, atrPct: primary.snap.atrPct, patterns, maCross, priceAt: pair.priceUsd, ...(deskOut ? { desk: deskOut.view } : {}), ...(opts.cost ? { cost: opts.cost } : {}) });
+      save();
+      return { pair, snapshot: snap, results: [] as ModelResult[], consensus: state.lastSignal!.consensus, patterns, maCross };
+    }
+  }
   const first = await analyze(pair, frames, cost, context, opts.forBot ? BOT_MODEL : undefined, judge);
   const results = first.results;
   let consensus = first.consensus;
@@ -1192,6 +1250,7 @@ function startBotHere(cfg: BotConfig) {
   state.bot.startedAt = Date.now();
   state.bot.learned = undefined; // an agent learns its (possibly new) coin afresh
   state.bot.costCurve = undefined; // ...and measures what trading it costs
+  state.bot.quality = undefined;
   state.bot.aiNotes = [];
   state.bot.lastFiredAt = undefined;
   state.bot.watch = null;
@@ -1777,6 +1836,42 @@ async function agentCost(cfg: BotConfig, pair: PairInfo): Promise<AgentCost> {
   return costFor(curve, cfg);
 }
 
+// Is this agent's coin fit to trade at all? Asked of the scouts before the AI (see qualityGate).
+// null = the gate is off, or nothing is known about the coin (then it is not refused).
+async function coinGate(cfg: BotConfig): Promise<CoinGate | null> {
+  if (isOff(cfg, "qualityGate") || cfg.chain !== "solana") return null;
+  const pair = await getPair(cfg.chain, cfg.pool);
+  const t = pair.tokenAddress ? await tokenInfo(pair.tokenAddress) : null;
+  return t ? qualityGate(scoreCoin(t, null), cfg.minQuality ?? QUALITY_MIN) : null;
+}
+// The agent stands aside without asking its AI: an empty AVOID plan that says why, good for 5 minutes.
+function standAside(cfg: BotConfig, gate: PlanGate, note: string, extra: Partial<NonNullable<State["lastSignal"]>> = {}) {
+  const now = Date.now();
+  state.lastSignal = {
+    at: now, pool: cfg.pool, symbol: cfg.symbol, tf: cfg.tf, results: [],
+    consensus: { ...combine([], roundTripCostPct(), extra.priceAt ?? 0), stance: "AVOID", action: "SELL", note, expiresAt: now + AGENT_RECHECK_SEC * 1000 },
+    gate, ...extra,
+  };
+  state.bot.armedSince = [];
+  state.bot.skipNoted = [];
+  if (gate.kind === "scouts") noteOnce(`gate:scouts:${Math.floor(now / 3_600_000)}:${gate.reasons.join("|").slice(0, 160)}`, `${note} It looks again every 5 minutes.`, "bad");
+  acct().dirty = true;
+}
+// Turn an agent's quality gate off ("trade it anyway", recorded) or back on.
+export function setQualityGate(on: boolean, botId?: string): { ok: boolean; qualityGate: boolean } {
+  if (botId && botId !== currentBotId()) return withBot(botId, () => setQualityGate(on));
+  const cfg = state.bot.config;
+  if (cfg) cfg.disabled = on ? (cfg.disabled ?? []).filter((k) => k !== "qualityGate") : [...new Set([...(cfg.disabled ?? []), "qualityGate"])];
+  rec("bot.setting", on ? "Turned the coin quality gate on" : "Turned the coin quality gate off (trade this coin anyway)", { qualityGate: on, running: state.bot.running });
+  if (state.bot.running) {
+    log(on ? "Quality gate on: the scouts check this coin before the AI is asked." : "Quality gate off: the AI is asked about this coin whatever the scouts say.", on ? "good" : "bad");
+    state.lastSignal = null; // decide again now, with the new setting
+    state.bot.lastAnalysisAt = 0;
+  }
+  save();
+  return { ok: true, qualityGate: on };
+}
+
 // true = the agent stopped (its budget is gone)
 async function agentPrep(cfg: BotConfig): Promise<boolean> {
   // The coin's picture for the agent's card: kept the first time the pool's details include one
@@ -2308,6 +2403,19 @@ async function tickBot(persist: boolean) {
       state.bot.askNow = false;
       state.bot.armedSince = [];
       state.bot.skipNoted = [];
+      // Agents: a free check before the paid one. If the scouts rule the coin out, the AI is not
+      // asked (no AI tokens spent) and the agent looks again in 5 minutes.
+      if (isCoinAgent(cfg)) {
+        const gate = await coinGate(cfg).catch(() => null);
+        if (gate && gate.quality !== state.bot.quality) {
+          state.bot.quality = gate.quality;
+          acct().dirty = true;
+        }
+        if (gate && !gate.ok) {
+          standAside(cfg, { kind: "scouts", reasons: gate.reasons, quality: gate.quality, min: gate.min }, `The scouts ruled ${cfg.symbol} out, so the AI was not asked (no AI tokens spent): ${gate.reasons.join("; ")}.`);
+          return;
+        }
+      }
       log(`Asking the AI for a new plan (${why})...`);
       save();
       await flush();
@@ -2318,8 +2426,9 @@ async function tickBot(persist: boolean) {
         const ac = isCoinAgent(cfg) ? await getPair(cfg.chain, cfg.pool).then((p) => agentCost(cfg, p)).catch(() => undefined) : undefined;
         const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg, why, ac), ...(ac ? { cost: ac } : {}) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
-        log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
-        if (isCoinAgent(cfg)) {
+        if (state.lastSignal?.gate) noteOnce(`gate:numbers:${Math.floor(Date.now() / 3_600_000)}`, `${cfg.symbol}: ${consensus.note} It looks again every 5 minutes, or at once on a real move.`, "bad");
+        else log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
+        if (isCoinAgent(cfg) && !state.lastSignal?.gate) {
           const ok = results.find((x) => x.ok);
           const used = consensus.orders.filter((o) => !o.warning);
           const said = (o: CheckedOrder) => Math.round(o.prediction?.parts.find((p) => p.key === "ai")?.pct ?? o.winChancePct);
@@ -2507,6 +2616,7 @@ async function tickBot(persist: boolean) {
         ...(isCoinAgent(cfg) ? { strategy: "agents" as const } : {}),
         ...(sig.patterns ? { patterns: patternTags(sig.patterns) } : {}),
         ...(ac ? { costPct: ac.pct } : {}),
+        ...(isCoinAgent(cfg) && typeof state.bot.quality === "number" ? { quality: state.bot.quality } : {}),
       }, 0, ac ? { feePct: ac.pct / 2, slipPct: 0 } : undefined);
       if (sig.patterns) t.patterns = patternTags(sig.patterns);
       if (isCoinAgent(cfg)) t.strategy = "agents";

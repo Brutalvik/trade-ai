@@ -1,6 +1,6 @@
 // The entry gate, with exact numbers: an agent's order is used only if the combined chance
 // (its AI, the numbers, the forecaster panel, each corrected for its record) beats what it needs.
-import { checkOrders, orderKey } from "../../src/ai.ts";
+import { checkOrders, numbersOf, orderKey } from "../../src/ai.ts";
 import { resolve, score, type Forecast, type ForecastRec, type FcStats } from "../../src/predict.ts";
 
 const sim = (pWin: number) => ({ filledPct: 100, pWin, pStop: 100 - pWin, pNone: 0, evPct: 0, winNetPct: 6, noneNetPct: -3, minutesToWin: 30 });
@@ -56,5 +56,15 @@ let st: FcStats = {};
 st = score(st, rec(), "win", true); // a trade the agent really made
 st = score(st, rec({ passed: false }), "stop");
 expect("scoreboard after a real winning trade and an order it did not buy that missed", { scored: st.scored, aiN: Math.round(st.ai!.n * 100) / 100, aiHits: Math.round(st.ai!.hits * 100) / 100, taken: st.taken, refused: st.refused }, { scored: 2, aiN: 2, aiHits: 1, taken: { n: 1, hits: 1 }, refused: { n: 1, hits: 0 } });
+// ---- a floor on the numbers ----
+// The numbers say 8%; reaching the level is worth +6%; most misses only run out of time (a small loss), so little is needed.
+const low: Forecast = { ...numbers, worlds: { pWin: 8, trend: sim(8), flat: sim(8), trendShare: 0.15, paths: 4000, from: "test" }, numbers: 8, stopShare: 0.2, noneNetPct: -1 };
+const sure = { kind: "buy_now" as const, triggerPrice: 1, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: 0.95, target: 1.2, maxHoldMinutes: 180, winChancePct: 80 };
+const noFloor = checkOrders([sure], 1, { minNetPct: 5, predict: () => low });
+const withFloor = checkOrders([sure], 1, { minNetPct: 5, predict: () => low, minNumbersPct: 10 });
+expect("cheap trading and an AI at 80%: an order the numbers give 8% passes when there is no floor", [noFloor.kept.length, Math.round(noFloor.kept[0]?.prediction?.pWin ?? 0)], [1, 44]);
+expect("with a 10% floor on the numbers it is refused, whatever the AI says", [withFloor.kept.length, withFloor.warned.length, /this coin's own candles give it about 8% chance .* under the 10% floor/.test(withFloor.warned[0]?.warning ?? "")], [0, 1, true]);
+expect("an order the numbers give 40% is not touched by the floor", checkOrders([sure], 1, { minNetPct: 5, predict: () => numbers, minNumbersPct: 10 }).kept.length, 1);
+expect("the chance by the numbers alone is their weighted average, without the AI and the panel", Math.round(numbersOf([{ key: "ai", pct: 90, weight: 0.35 }, { key: "panel", pct: 70, weight: 0.15 }, { key: "worlds", pct: 10, weight: 0.3 }, { key: "baseRate", pct: 20, weight: 0.2 }]) ?? 0), 14);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -108,7 +108,7 @@ const waitPlan = async (note: string, need: () => boolean, max = 70) => {
   for (let k = 0; k < 8; k++) { await sleep(250); showLogs(); }
 };
 engine.reset(1000);
-engine.startBot({ chain: "solana", pool: POOL, symbol: "AGT", tf: "5m", positionPct: 100, minConfidence: 45, analyzeEverySec: 1800, checkEverySec: 5, maxDrawdownPct: 25, goalUsd: 1e9, pick: "agent", budgetUsd: 1000, trailPct: 3, riskPerTradePct: 0, dailyLossPct: 10, cooldownMin: 30, breakEvenAtPct: 6, lockPct: 50, strongMode: true, rewardRule: true, disabled: [] } as any);
+engine.startBot({ chain: "solana", pool: POOL, symbol: "AGT", tf: "5m", positionPct: 100, minConfidence: 45, analyzeEverySec: 1800, checkEverySec: 5, maxDrawdownPct: 25, goalUsd: 1e9, pick: "agent", budgetUsd: 1000, ...(process.env.MINNUM ? { minNumbersPct: Number(process.env.MINNUM) } : {}), trailPct: 3, riskPerTradePct: 0, dailyLossPct: 10, cooldownMin: 30, breakEvenAtPct: 6, lockPct: 50, strongMode: true, rewardRule: true, disabled: [] } as any);
 await waitPlan("agent starts: the AI labels it AVOID but gives a breakout order above 1.02", () => !!engine.getState().lastSignal);
 console.log("   agent instructions used:", agentSystem, "| stance the bot follows:", engine.getState().lastSignal?.consensus.stance, "| plan calls:", planCalls);
 if (SC === "touch") {

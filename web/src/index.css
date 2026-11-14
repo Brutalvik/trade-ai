@@ -1211,6 +1211,11 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .agent-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
 .agent-stats > div { padding: 9px 11px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.03); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .agent-stats small { font-size: 11px; color: var(--muted); }
+/* why an agent stood aside without asking its AI */
+.gate-box ul { margin: 6px 0 6px 18px; padding: 0; }
+.gate-box .link-btn { margin-top: 6px; }
+.gate-confirm { margin-top: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255, 60, 100, 0.4); background: rgba(255, 60, 100, 0.06); display: flex; flex-direction: column; gap: 8px; }
+.gate-confirm > div { display: flex; gap: 8px; }
 /* a stat with an explanation: the tip opens under the tile */
 .agent-stats > div[data-tip] { position: relative; cursor: help; }
 .agent-stats > div[data-tip]:hover::after { left: 0; top: calc(100% + 6px); transform: none; white-space: normal; width: min(320px, 80vw); line-height: 1.45; font-weight: 500; }

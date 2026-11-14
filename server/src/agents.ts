@@ -22,7 +22,10 @@ export type AgentCoin = {
   change5m: number; change1h: number;
   agents: Record<AgentKey, AgentRead>;
   total: number; // 0-100, weighted
-  vetoes: string[]; // any deal-breaker: never bought
+  vetoes: string[]; // any deal-breaker: never bought by the scouts' own mode (structural + timing)
+  structural: string[]; // deal-breakers about what the coin IS: who holds it, who can mint or freeze it, how deep and how real its market is
+  timing: string[]; // deal-breakers about what it is DOING this minute (dumping, flat, spiking): a question of when, not of which coin
+  quality: number; // 0-100 from the four scouts that describe the coin itself: real trading, holders, the dev, liquidity
 };
 export type AgentScan = { at: number; coins: AgentCoin[]; scanned: number };
 
@@ -96,27 +99,48 @@ export function scoreCoin(t: any, trendRank: number | null): AgentCoin {
       : { score: ageMin < 30 ? 20 : ageMin < 60 * 48 ? 85 : ageMin < 60 * 24 * 14 ? 60 : 40, note: ageMin < 120 ? `${Math.round(ageMin)} min old` : ageMin < 60 * 48 ? `${Math.round(ageMin / 60)} h old` : `${Math.round(ageMin / 1440)} days old` },
   };
 
-  const vetoes: string[] = [];
-  if (audit.mintAuthorityDisabled === false) vetoes.push("the creator can still mint new tokens");
-  if (audit.freezeAuthorityDisabled === false) vetoes.push("the creator can freeze wallets");
-  if (dev > 10) vetoes.push(`the dev holds ${dev.toFixed(0)}%`);
-  if (top > 45) vetoes.push(`the top 10 wallets own ${top.toFixed(0)}%`);
-  if (liq < 50_000) vetoes.push(`thin liquidity ($${Math.round(liq / 1000)}K): fees and slippage would eat the trade`);
-  if (liqCh5 < -15) vetoes.push(`liquidity fell ${Math.abs(liqCh5).toFixed(0)}% in 5 min (possible rug)`);
-  if (vol1h > 0 && orgScore < 25) vetoes.push(`mostly bot volume (organic score ${Math.round(orgScore)})`);
-  if (ch5 <= -6) vetoes.push(`dumping now (${ch5.toFixed(1)}% in 5 min)`);
-  if (ch1 < 3) vetoes.push(`no upward move to ride (${ch1 >= 0 ? "+" : ""}${ch1.toFixed(1)}% in 1h)`);
-  if (ch5 >= 15 || ch1 >= 150) vetoes.push("already spiking: buying here usually buys the top");
-  if (ageMin !== null && ageMin < 20) vetoes.push("launched minutes ago");
-  if (vol1h < 30_000) vetoes.push("too little trading");
+  // What the coin IS. An agent's quality gate refuses its coin on these (see qualityGate).
+  const structural: string[] = [];
+  if (audit.mintAuthorityDisabled === false) structural.push("the creator can still mint new tokens");
+  if (audit.freezeAuthorityDisabled === false) structural.push("the creator can freeze wallets");
+  if (dev > 10) structural.push(`the dev holds ${dev.toFixed(0)}%`);
+  if (top > 45) structural.push(`the top 10 wallets own ${top.toFixed(0)}%`);
+  if (liq < 50_000) structural.push(`thin liquidity ($${Math.round(liq / 1000)}K): fees and slippage would eat the trade`);
+  if (liqCh5 < -15) structural.push(`liquidity fell ${Math.abs(liqCh5).toFixed(0)}% in 5 min (possible rug)`);
+  if (vol1h > 0 && orgScore < 25) structural.push(`mostly bot volume (organic score ${Math.round(orgScore)})`);
+  if (ageMin !== null && ageMin < 20) structural.push("launched minutes ago");
+  // What it is DOING this minute. These decide when the scouts' own mode buys, not whether a coin is
+  // fit to trade: an agent's AI may buy a dip in a coin that is flat or falling right now.
+  const timing: string[] = [];
+  if (ch5 <= -6) timing.push(`dumping now (${ch5.toFixed(1)}% in 5 min)`);
+  if (ch1 < 3) timing.push(`no upward move to ride (${ch1 >= 0 ? "+" : ""}${ch1.toFixed(1)}% in 1h)`);
+  if (ch5 >= 15 || ch1 >= 150) timing.push("already spiking: buying here usually buys the top");
+  if (vol1h < 30_000) timing.push("too little trading");
+  const vetoes = [...structural, ...timing];
+  const quality = Math.round((a.organic.score * 1.4 + a.holders.score + a.dev.score + a.liquidity.score) / 4.4);
 
   const wsum = AGENT_KEYS.reduce((s, k) => s + WEIGHTS[k], 0);
   const total = Math.round(AGENT_KEYS.reduce((s, k) => s + a[k].score * WEIGHTS[k], 0) / wsum);
   return {
     mint: t.id, symbol: t.symbol ?? "?", name: t.name ?? "", icon: t.icon || undefined,
     priceUsd: n(t.usdPrice), mcap, liquidity: liq, ageMin: ageMin === null ? null : Math.round(ageMin),
-    change5m: ch5, change1h: ch1, agents: a, total, vetoes,
+    change5m: ch5, change1h: ch1, agents: a, total, vetoes, structural, timing, quality,
   };
+}
+
+// ---------- Quality gate: is an agent's coin fit to trade at all? ----------
+// Checked before the AI is asked for a plan, at no AI cost. A coin is refused for a structural
+// deal-breaker, or when its quality score is under the agent's minimum. Timing is not part of
+// it, and neither is the scouts' total (65 to be picked by the scouts' own mode): on 14 real
+// coins none scored 65, 11 tripped a timing veto, and the coin that then ran 30x scored 63.
+// The default minimum is deliberately low: the score has not been measured against results yet
+// (the scouts' inputs have no history to back-test on), so every look logs it for that.
+export const QUALITY_MIN = 45;
+export type CoinGate = { ok: boolean; quality: number; min: number; reasons: string[] };
+export function qualityGate(c: AgentCoin, min = QUALITY_MIN): CoinGate {
+  const reasons = [...c.structural];
+  if (c.quality < min) reasons.push(`its quality score is ${c.quality}, under the ${min} this agent asks for (real trading ${Math.round(c.agents.organic.score)}, holders ${Math.round(c.agents.holders.score)}, dev ${Math.round(c.agents.dev.score)}, liquidity ${Math.round(c.agents.liquidity.score)}, each out of 100)`);
+  return { ok: reasons.length === 0, quality: c.quality, min, reasons };
 }
 
 // Every busy Solana coin, scored by all eight agents (cached ~45 s by the data layer).

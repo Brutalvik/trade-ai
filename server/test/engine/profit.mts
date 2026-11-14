@@ -181,6 +181,8 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   // $400,000 of liquidity: 0.6% fees + 2 x $1,000 / $400,000 each way = 1.6% for the round trip, half on each side.
   expect("the trade paid the pool's own cost for its size (1.6% round trip), not a flat 3%", [Math.round(buys[0].feeUsd * 100) / 100, Math.round(buys[0].price * 1e4) / 1e4], [8, 1]);
   expect("the trade's real result is on the scoreboard as a win", (s as any).fc?.stats.taken, { n: 1, hits: 1 });
+  // The fake coin is a sound one (quality 87): its result is filed under that band, for calibrating the quality gate later.
+  expect("...filed under the coin's quality score", (s as any).fc?.stats.byQuality, { "75+": { n: 1, hits: 1 } });
   check("the AI was asked to manage the profit", profitCalls >= 1, profitCalls);
   if (SC === "ride") {
     check("the AI's SELL_NOW ends the trade", r.startsWith("AI took profit"), r);

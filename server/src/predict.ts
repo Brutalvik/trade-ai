@@ -452,7 +452,10 @@ export const FC_LABEL: Record<FcKey, string> = { ai: "The agent's AI", panel: "A
 export type FcStat = { n: number; sumP: number; hits: number; brier: number };
 // taken = trades the agents really made (real results); refused = orders they did not buy (what the
 // chart shows would have happened). v = 2 once `taken` holds real results only (see engine migrate).
-export type FcStats = Partial<Record<FcKey, FcStat>> & { taken?: { n: number; hits: number }; refused?: { n: number; hits: number }; scored?: number; v?: number };
+// byQuality = how forecasts turned out by the scouts' quality score of the coin when they were made
+// (so the agents' quality gate can be set from results, not from a guess).
+export type FcStats = Partial<Record<FcKey, FcStat>> & { taken?: { n: number; hits: number }; refused?: { n: number; hits: number }; scored?: number; v?: number; byQuality?: Record<string, { n: number; hits: number }> };
+export const qualityBand = (q: number) => (q < 45 ? "under 45" : q < 60 ? "45-59" : q < 75 ? "60-74" : "75+");
 const FADE = 0.995;
 export type Part = { key: FcKey; label: string; pct: number; weight: number; adjPct: number; note?: string };
 export type Combined = { pWin: number; parts: Part[]; needPct?: number };
@@ -513,6 +516,7 @@ export type ForecastRec = {
   entry: number; stop: number; level: number; waitMin: number; holdMin: number;
   p: Partial<Record<FcKey, number>>; // each forecaster's chance (0-100) as given
   passed: boolean; // the order passed and was armed
+  q?: number; // the scouts' quality score of the coin when the forecast was made
 };
 // Scores a forecast against the candles since it was made. null = not decided yet.
 export function resolve(rec: ForecastRec, candles: Candle[], stepSec: number): Outcome | null {
@@ -534,6 +538,10 @@ export function score(stats: FcStats, rec: ForecastRec, out: Exclude<Outcome, "u
     const p = rec.p[k];
     const faded = old ? { n: old.n * FADE, sumP: old.sumP * FADE, hits: old.hits * FADE, brier: old.brier * FADE } : { n: 0, sumP: 0, hits: 0, brier: 0 };
     next[k] = typeof p === "number" ? { n: faded.n + 1, sumP: faded.sumP + p / 100, hits: faded.hits + y, brier: faded.brier + (p / 100 - y) ** 2 } : faded;
+  }
+  if (typeof rec.q === "number") {
+    const band = qualityBand(rec.q), cur = stats.byQuality?.[band] ?? { n: 0, hits: 0 };
+    next.byQuality = { ...(stats.byQuality ?? {}), [band]: { n: cur.n + 1, hits: cur.hits + y } };
   }
   const side = real ? "taken" : "refused";
   const o = stats[side] ?? { n: 0, hits: 0 };

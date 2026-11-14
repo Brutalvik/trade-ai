@@ -11,6 +11,14 @@ delete process.env.VERCEL;
 for (const k of Object.keys(process.env)) if (/REST_API_|REDIS/.test(k)) delete process.env[k];
 process.env.ANTHROPIC_API_KEY = "fake";
 process.env.ANTHROPIC_BASE_URL = "http://fake-claude.local";
+// The fake candles are built from the clock. Shift the clock so the test starts 5 seconds into a
+// minute and 65 seconds into a 5-minute candle: no candle can close in the middle of the test and
+// move every "candles ago" by one.
+{
+  const realNow = Date.now.bind(Date);
+  const shift = (65 - (Math.floor(realNow() / 1000) % 300)) * 1000;
+  Date.now = () => realNow() + shift;
+}
 
 const POOL = "MaPool11111", MINT = "MaMint11111pump";
 const price = 1.0;
@@ -146,7 +154,7 @@ expect("other settings are accepted (EMA 9/21 on 1m)", [e.kind, e.fastPeriod, e.
 // ---- 5. An agent: its brief carries the study's crossover rows, its plan the signal ----
 engine.reset(1000);
 bodies.length = 0;
-engine.startBot({ chain: "solana", pool: POOL, symbol: "MAT", tf: "5m", positionPct: 100, minConfidence: 45, analyzeEverySec: 1800, checkEverySec: 5, maxDrawdownPct: 25, goalUsd: 1e9, pick: "agent", budgetUsd: 1000, trailPct: 3, riskPerTradePct: 0, dailyLossPct: 10, cooldownMin: 30, breakEvenAtPct: 6, lockPct: 50, strongMode: true, rewardRule: true, disabled: [] } as any);
+engine.startBot({ chain: "solana", pool: POOL, symbol: "MAT", tf: "5m", positionPct: 100, minConfidence: 45, analyzeEverySec: 1800, checkEverySec: 5, maxDrawdownPct: 25, goalUsd: 1e9, pick: "agent", budgetUsd: 1000, minNumbersPct: 0, trailPct: 3, riskPerTradePct: 0, dailyLossPct: 10, cooldownMin: 30, breakEvenAtPct: 6, lockPct: 50, strongMode: true, rewardRule: true, disabled: [] } as any);
 for (let i = 0; i < 160 && !bodies.some((b) => b.user.includes("dedicated trading agent")); i++) await sleep(250);
 const agentBody = bodies.find((b) => b.user.includes("dedicated trading agent"));
 expect("the agent's AI is asked", !!agentBody, true);

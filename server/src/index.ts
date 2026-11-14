@@ -314,6 +314,8 @@ app.post("/api/consent/setting-off", signedIn(async (req, res) => {
 app.post("/api/bot/override-daily", needs("bot.run", wrap(async () => engine.overrideDailyLimit())));
 app.post("/api/bot/strong-mode", needs("bot.run", wrap(async (req) => engine.setStrongMode(req.body?.on !== false, String(req.body?.botId ?? "1")))));
 app.post("/api/bot/reward-rule", needs("bot.run", wrap(async (req) => engine.setRewardRule(req.body?.on !== false, String(req.body?.botId ?? "1")))));
+// An agent's coin quality gate: off = "trade this coin anyway" (the page records the consent first).
+app.post("/api/bot/quality-gate", needs("bot.run", wrap(async (req) => engine.setQualityGate(req.body?.on !== false, String(req.body?.botId ?? "1")))));
 // "Protect this trade": trailing stop on a manual position ({ positionId, pct }; pct 0 removes it).
 // Limit orders: { side: "BUY", chain, pool, symbol, price, usd } or { side: "SELL", positionId, price, fraction }.
 app.post("/api/orders", needs("trade.limit", wrap(async (req) => engine.placeOrder(req.body ?? {}))));

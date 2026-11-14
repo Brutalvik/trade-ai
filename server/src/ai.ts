@@ -247,7 +247,18 @@ export type AgentEval = {
   predict?: (o: PlanOrder, validMinutes: number) => Forecast | null;
   panel?: Map<string, { pct: number; votes: { who: string; pct: number; reason: string }[] }>;
   stats?: FcStats;
+  // A floor on the numbers: an order whose chance from the coin's own candles alone is under this is
+  // refused whatever the AI's chance (0 / missing = no floor). Blind tests on real coins found that
+  // when the numbers say under 10% it almost never happens, while the AI's own chance is half of
+  // the combined one: once trading costs are low, an AI at 60% can carry such an order through.
+  minNumbersPct?: number;
 };
+// The chance by the numbers alone (the simulated paths, this coin lately, the look-alike moments, by their weights).
+export function numbersOf(parts: { key: string; pct: number; weight: number }[]): number | null {
+  const nums = parts.filter((p) => p.key !== "ai" && p.key !== "panel");
+  const w = nums.reduce((s, p) => s + p.weight, 0);
+  return w > 0 ? nums.reduce((s, p) => s + p.pct * p.weight, 0) / w : null;
+}
 export const orderKey = (o: Pick<PlanOrder, "kind" | "triggerPrice">) => `${o.kind}:${o.triggerPrice}`;
 
 export async function analyze(pair: PairInfo, frames: Frame[], costPct: number, context = "", model?: string, agent?: AgentEval) {
@@ -296,6 +307,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentE
     // Agents: the AI's chance is combined with the numbers (and the forecaster panel when it was
     // asked), each corrected for its own record, and the order is judged on the combined chance.
     let prediction: OrderPrediction | undefined;
+    let numbersPct: number | null = null;
     if (agent?.predict) {
       let f: Forecast | null = null;
       try {
@@ -305,6 +317,7 @@ export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentE
       const c = combineChance(clamp(o.winChancePct, 0, 100), pv ? pv.pct : null, f, agent.stats);
       if (f && agent.measuredWinPct === undefined) winPct = countedWin(f.winNetPct, agent.minNetPct);
       const ex = expected(c.pWin, winPct, netRiskPct, f);
+      numbersPct = f ? numbersOf(c.parts) : null;
       win = c.pWin / 100;
       evPct = ex.evPct;
       const w = f?.worlds;
@@ -321,6 +334,12 @@ export function checkOrders(orders: PlanOrder[], costPct: number, agent?: AgentE
       const why = `after ${costPct.toFixed(1)}% costs the gain (${netRewardPct.toFixed(1)}%) is smaller than the risk (${netRiskPct.toFixed(1)}%)`;
       dropped.push(`${o.kind}: ${why}`);
       warned.push({ ...o, ...clean(o), netRewardPct, netRiskPct, evPct, warning: `Fails the fee/risk check: ${why}.`, ...(prediction ? { prediction } : {}) });
+      continue;
+    }
+    if (agent?.minNumbersPct && numbersPct !== null && numbersPct < agent.minNumbersPct) {
+      const why = `this coin's own candles give it ${numbersPct < 1 ? "under 1" : `about ${Math.round(numbersPct)}`}% chance of reaching the minimum profit before the stop, under the ${agent.minNumbersPct}% floor (when the numbers are that low it almost never happens, whatever the AI's own estimate)`;
+      dropped.push(`${o.kind}: ${why}`);
+      warned.push({ ...o, ...clean(o), winChancePct: Math.round(win * 100), netRewardPct, netRiskPct, evPct, warning: `Fails the prediction check: ${why}.`, ...(prediction ? { prediction } : {}) });
       continue;
     }
     if (evPct <= 0) {
