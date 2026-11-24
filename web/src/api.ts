@@ -59,7 +59,8 @@ export type BotConfig = { maxCostPct?: number; chain: string; pool: string; symb
 export type AgentCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; liquidity: number; ageMin: number | null; change5m: number; change1h: number; agents: Record<string, { score: number; note: string }>; total: number; vetoes: string[] };
 export type StratResult = { key: string; label: string; tf: string; trades: number; wins: number; avgNetPct: number; winChancePct: number; runMedPct?: number; ran10?: number };
 export type Learned = { at: number; netTargetPct: number; table: StratResult[]; best: StratResult | null; summary: string };
-export type Status = { claude: boolean; openai: boolean; mode: string; storage: "redis" | "file" | "temp"; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
+// storageError: the database is set up but not answering (what it said); the bot is paused until it does.
+export type Status = { claude: boolean; openai: boolean; mode: string; storage: "supabase" | "redis" | "file" | "temp"; storageError?: string; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
 export type AppState = {
   mode: "paper";
   startCash: number;

@@ -172,7 +172,7 @@ function PrivacyModal({ onClose }: { onClose: () => void }) {
           <p>We share personal information only with service providers that help run the app, and only what each needs:</p>
           <ul>
             <li><b>Privy</b>: sign-in and your embedded wallet.</li>
-            <li><b>Vercel</b> (hosting) and <b>Upstash</b> (database storage).</li>
+            <li><b>Vercel</b> (hosting) and <b>Supabase</b> (database storage).</li>
             <li><b>Anthropic</b> (AI): coin market data and anonymous statistics about your bot's past trades are sent to create AI plans. Your name, email and username are not sent.</li>
             <li><b>Jupiter</b>, <b>Helius</b> and the <b>Solana network</b>: your wallet address and the trades you sign. Transactions on the blockchain are public and permanent by design.</li>
             <li><b>Operations alerts</b>: brief notices of bot trades may be sent to our team's alert channel (Telegram or ntfy) to monitor the service.</li>

@@ -1,7 +1,8 @@
 // Runs the test scripts and fails (exit code 1) if any check in any of them fails.
 //
 //   npm test             the quick checks (about 2 minutes): order check, prediction, crossover,
-//                        scoreboard migration, chart source
+//                        scoreboard migration, chart source, and the storage (the Supabase store on
+//                        a real Postgres engine in memory, the move from Upstash, the server's routes)
 //   npm run test:engine  the engine scenarios (about 8 minutes, three at a time): the real engine
 //                        against a fake market and a scripted AI, in real 5-second steps
 //   npm run test:all     both
@@ -25,6 +26,11 @@ const UNIT: Job[] = [
   { name: "macross-engine", file: "unit/macross-engine.mts", what: "the crossover reaches the AI, the plan, the coin study and the endpoint" },
   { name: "scoreboard-migration", file: "unit/scoreboard-migration.mts", what: "the scoreboard's real results are rebuilt from real trades" },
   { name: "chart-source", file: "unit/chart-source.mts", what: "a chart stays on one candle source" },
+  { name: "supabase-store", file: "unit/supabase-store.mts", what: "the Supabase store on a real Postgres engine: records, locks, lists, accounts in compressed parts" },
+  { name: "sync-versions", file: "unit/sync-versions.mts", what: "a check asks the database for a version number; the account is loaded only when it changed" },
+  { name: "store-move", file: "unit/store-move.mts", what: "the one-time copy from Upstash: interrupted and finished, and the server waits for it" },
+  { name: "store-move-skip", file: "unit/store-move.mts", env: { MODE: "skip" }, what: "told to start empty, the server does not wait for the old database" },
+  { name: "server-storage", file: "unit/server-storage.mts", what: "the server's routes with the database missing, blocked, then working: status explains, sign-in waits, the scheduler's call never looks failed" },
 ];
 const ENGINE: Job[] = [
   { name: "profit-ride", file: "engine/profit.mts", env: { SC: "ride" }, what: "past +5% the AI holds, then sells near the top" },
@@ -49,6 +55,14 @@ const ENGINE: Job[] = [
   { name: "locked-budgets", file: "engine/locked-budgets.mts", env: { SC: "win" }, what: "an agent's budget can't be spent by you or another agent" },
   { name: "stop-sticks", file: "engine/stop-sticks.mts", env: { SC: "win" }, what: "a Stop wins over an AI answer that arrives after it" },
   { name: "stale-copy", file: "engine/stale-copy.mts", env: { SC: "win" }, what: "a stale server copy can't undo a Stop or a Reset" },
+  { name: "watch-loop@supabase", file: "engine/watch-loop.mts", what: "as deployed, on Supabase: the scheduler's call buys, watches, sells at the stop; a Stop from the dashboard's server copy ends the watch" },
+  // The same scenarios with the account kept in Supabase (a real Postgres engine in memory).
+  { name: "stale-copy@supabase", file: "engine/stale-copy.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: a stale server copy can't undo a Stop or a Reset" },
+  { name: "stop-sticks@supabase", file: "engine/stop-sticks.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: a Stop wins over an AI answer that arrives after it" },
+  { name: "agent-lose@supabase", file: "engine/agent.mts", env: { SC: "lose", STORE: "supabase" }, what: "...on Supabase: a stop-out, then the agent trades on" },
+  { name: "profit-ride@supabase", file: "engine/profit.mts", env: { SC: "ride", STORE: "supabase" }, what: "...on Supabase: past +5% the AI holds, then sells near the top" },
+  { name: "ten-agents@supabase", file: "engine/ten-agents.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: ten agents at once" },
+  { name: "locked-budgets@supabase", file: "engine/locked-budgets.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: an agent's budget can't be spent by you or another agent" },
 ];
 
 const which = process.argv[2] ?? "unit";

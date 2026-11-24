@@ -10,7 +10,7 @@ import { atr, snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
-import { createStore } from "./store.js";
+import { copyFromUpstash, createStore, oldStoreFromEnv } from "./store.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin, type CoinGate } from "./agents.js";
@@ -255,6 +255,10 @@ export type BotSlot = { id: string; bot: BotState; lastSignal: State["lastSignal
 
 const store = createStore();
 export const storeKind = () => store.kind;
+// Calls and bytes to the storage since this server copy started (null for a store that does not count).
+export const storageStats = () => store.stats?.() ?? null;
+// An error from the storage in one short line a person can read (Upstash appends the whole command).
+export const shortError = (e: unknown) => String((e as Error)?.message ?? e).replace(/,?\s*command was:[\s\S]*$/, "").slice(0, 600);
 
 function fresh(startCash = 10): State {
   return {
@@ -356,6 +360,8 @@ type Account = {
   plan?: PlanId; // the user's plan and role (refreshed from their user record about once a minute)
   role?: Role;
   planAt?: number;
+  rev?: number | null; // the saved account's version number this copy holds (stores that keep one)
+  saving?: number; // saves of this copy still on their way
 };
 const NEW_ACCOUNT_CASH = 1000;
 const als = new AsyncLocalStorage<Account>();
@@ -473,10 +479,41 @@ async function markActive(a: Account) {
 }
 export const activeAccounts = async () => (await store.kvGet<string[]>(ACTIVE_KEY)) ?? [];
 
+// Supabase must be set up (its tables there, and closed to the public keys), and what the app kept
+// in Upstash is copied over once before anything is served from it. Otherwise people would sign in
+// to empty accounts, and the copy could no longer be made without overwriting what they did since.
+let storeReady = false;
+export async function ensureStore() {
+  if (storeReady) return;
+  if (store.kind !== "supabase") return void (storeReady = true);
+  await store.check!();
+  if (!(await store.kvGet<unknown>("copied-from-upstash"))) {
+    const old = oldStoreFromEnv();
+    if (!old || process.env.SKIP_UPSTASH_COPY) {
+      const why = old ? "SKIP_UPSTASH_COPY is set" : "no Upstash settings";
+      await store.kvSet("copied-from-upstash", { skipped: true, at: Date.now(), why });
+      console.log(`[store] starting on Supabase without a copy from Upstash (${why})`);
+    } else {
+      if (!(await store.lock("copy-from-upstash", 10 * 60_000))) throw new Error("Your data is being moved to the new database right now. Try again in a minute.");
+      try {
+        const r = await copyFromUpstash(store, old);
+        await store.kvSet("copied-from-upstash", { at: Date.now(), ...r });
+        console.log(`[store] copied from Upstash: ${r.accounts} accounts, ${r.records} records, ${r.lists} lists (${r.items} entries)`);
+      } catch (e) {
+        throw new Error(`Moving to the new database: your accounts and history could not be copied from the old one yet (${shortError(e).slice(0, 160)}). Unblock it in the Upstash console, or set SKIP_UPSTASH_COPY=1 in Vercel to start with empty accounts.`);
+      } finally {
+        await store.unlock("copy-from-upstash").catch(() => {});
+      }
+    }
+  }
+  storeReady = true;
+}
+
 // One-time move: the single shared account from before logins had their own goes to the
 // owner's login (OWNER_USERNAME, or the account that claimed it). A backup copy is kept.
 let migrated = false;
 export async function ensureMigrated() {
+  await ensureStore();
   if (migrated) return;
   if (await store.kvGet<boolean>("migrated-to-accounts")) return void (migrated = true);
   const owner = process.env.OWNER_USERNAME?.trim().toLowerCase() || (await store.kvGet<string>("owner"));
@@ -494,20 +531,44 @@ export async function ensureMigrated() {
   console.log(`[accounts] moved the shared paper account to ${owner}`);
 }
 
-// Load the latest saved state. With Redis this runs on every request, because
-// on Vercel each request may land on a different short-lived server.
+// Bring this copy's account up to date with what is saved. With shared storage (Supabase,
+// Redis) this runs on every request and on every 5-second check, because on Vercel each one may
+// land on a different short-lived server.
+// A store that keeps a version number per account is asked for that number first (a few bytes):
+// the account itself is loaded only when another server copy has saved it since. Before, the
+// whole account was read every time, which is what used up the old database's allowance.
 export async function sync() {
   const a = acct();
   if (!a.key) return; // signed-out visitor: nothing to load
-  if (a.loaded && store.kind !== "redis") return;
+  const shared = store.kind === "supabase" || store.kind === "redis";
+  if (a.loaded && !shared) return;
   // Never swap the state out from under a running bot step. One server handles
   // several requests at once (e.g. dashboard refreshes while the bot waits for
   // Claude); replacing the object mid-step lost the step's updates, so the bot
   // forgot it had just asked Claude and asked again every 20 s.
   if (a.busy) return;
-  const saved = await store.load<State>(a.key);
-  if (a.busy) return; // a step started while we were loading: keep its state
-  if (saved) a.state = migrate(saved);
+  let reload = true;
+  if (a.loaded && store.rev) {
+    // This copy's own save is still on its way: what it holds is the newest there is.
+    if (a.saving) reload = false;
+    else {
+      const rev = await store.rev(a.key).catch(() => undefined); // no answer: load the account itself
+      if (a.busy) return;
+      if (rev !== undefined && rev === (a.rev ?? null)) reload = false;
+    }
+  }
+  let saved: State | null = null;
+  if (reload) {
+    const got = store.loadRev ? await store.loadRev<State>(a.key) : { value: await store.load<State>(a.key), rev: null };
+    if (a.busy) return; // a step started while we were loading: keep its state
+    // A save queued on this copy while the answer was on its way wins over what was loaded (it
+    // is about to be written anyway).
+    if (!(a.loaded && a.saving)) {
+      saved = got.value;
+      if (saved) a.state = migrate(saved);
+      a.rev = got.rev;
+    }
+  }
   const first = !a.loaded;
   a.loaded = true;
   if (!saved && first) save(); // a brand-new account: keep its starting balance
@@ -638,16 +699,21 @@ function save() {
   if (!a.key) return; // signed-out visitors' views are never saved
   const key = a.key;
   const copy = structuredClone(a.state);
+  a.saving = (a.saving ?? 0) + 1;
   a.pending = a.pending
     .then(async () => {
       const ctl = await store.kvGet<Ctl>(ctlKey(key)).catch(() => null);
       if (staleAfterReset(copy, ctl)) return; // the account was reset after this copy was loaded: never write it back
       applyStops(copy, ctl); // an agent stopped elsewhere stays stopped
       applyStops(a.state, ctl);
-      await store.save(copy, key);
+      const rev = await store.save(copy, key);
+      if (typeof rev === "number") a.rev = rev; // what this copy holds is now that version
     })
     .then(() => markActive(a))
-    .catch((e) => console.error("[store] save failed:", e));
+    .catch((e) => console.error("[store] save failed:", e))
+    .finally(() => {
+      a.saving = Math.max(0, (a.saving ?? 1) - 1);
+    });
 }
 // Wait for writes to finish (must happen before a Vercel function returns).
 export async function flush() {

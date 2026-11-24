@@ -324,7 +324,12 @@ export default function App() {
       <UpdateBanner serverCommit={status?.commit} />
       {status?.storage === "temp" && (
         <div className="banner">
-          <b>The bot can't stay on yet.</b> This server has nowhere permanent to save the bot and your paper account, so they reset. Add the free Upstash Redis database in Vercel (Storage tab), then redeploy. Steps are in the README.
+          <b>The bot can't stay on yet.</b> This server has nowhere permanent to save the bot and your paper account, so they reset. Add a Supabase database in Vercel (Storage tab), run its setup script, then redeploy. Steps are in the README.
+        </div>
+      )}
+      {status?.storageError && (
+        <div className="banner">
+          <b>The database is not answering, so the bot is paused.</b> Nothing is lost: accounts and trades are as they were, and the bot carries on by itself when the database is back. What it said: {status.storageError}
         </div>
       )}
 

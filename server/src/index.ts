@@ -23,6 +23,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Nothing that reads accounts or logins runs before the storage is ready: set up, and holding what
+// was moved from the old database. A login looked up in a still-empty database would look like a
+// stranger's, and a sign-up there would be overwritten by the move. Market data, the plans and the
+// status page do not need the storage; the scheduler's call answers for itself.
+const NO_STORE = /^\/api\/(status$|bot\/tick$|pair\/|candles\/|signal\/|agents$|search-coins$|lists\/|plans)/;
+app.use(async (req, res, next) => {
+  if (!req.path.startsWith("/api/") || NO_STORE.test(req.path)) return next();
+  try {
+    await engine.ensureStore();
+  } catch (e) {
+    res.status(503).json({ error: engine.shortError(e) });
+    return;
+  }
+  next();
+});
+
 // Every handler loads the saved state first and finishes saving before it replies
 // (on Vercel, each request may run on a different short-lived server).
 // Each request runs inside the signed-in user's own paper account (signed out: an empty one).
@@ -40,6 +56,13 @@ const publicData = (seconds: (req: Request) => number, fn: (req: Request, res: R
 };
 
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
+  // The storage first: who is signed in is read from it.
+  try {
+    await engine.ensureStore();
+  } catch (e) {
+    res.status(503).json({ error: engine.shortError(e) });
+    return;
+  }
   const a = await auth.requestAuth(req).catch(() => null);
   await engine.withAccount(a?.key ?? null, async () => {
     try {
@@ -51,28 +74,44 @@ const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (r
     } catch (e: any) {
       await engine.flush().catch(() => {});
       if (res.statusCode < 400) res.status(400);
-      res.json({ error: e?.message ?? String(e) });
+      res.json({ error: engine.shortError(e) });
     }
   }, a ? { plan: a.plan, role: a.role } : undefined);
 };
 
-app.get(
-  "/api/status",
-  wrap(async (req) => ({
-    claude: hasClaude(),
-    openai: hasOpenAI(),
-    mode: "paper",
-    storage: engine.storeKind(), // "redis" | "file" | "temp" (temp = Vercel without Redis: the bot can't stay on)
-    serverless: Boolean(process.env.VERCEL), // true = the dashboard must send heartbeats to keep the bot ticking
-    commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").slice(0, 7), // deployed build, so open pages can offer a refresh
-    alerts: alertChannel(), // "telegram" | "ntfy" | null
-    privyAppId: privy.privyAppId(), // public: the page uses it to load the wallet SDK
-    activeAccounts: (await engine.activeAccounts().catch(() => [])).length, // bots / orders the scheduler keeps watching
-    solanaRpc: await rpcHealth(req.query.rpc === "1"), // "custom" (e.g. Helius) or "public"; ?rpc=1 also pings it
-    // Only when storage isn't working: names (not values) of database settings the server can see.
-    ...(engine.storeKind() === "temp" ? { storageEnvNames: storageEnvNames() } : {}),
-  })),
-);
+// Always answers, also when the storage does not: then it says what is wrong (storageError), so
+// a dead database shows up here and in the app instead of as a bot that silently stopped.
+app.get("/api/status", async (req, res) => {
+  try {
+    let storageError: string | undefined;
+    const active = await engine
+      .ensureMigrated()
+      .then(() => engine.activeAccounts())
+      .then((list) => list.length)
+      .catch((e) => {
+        storageError = engine.shortError(e);
+        return null;
+      });
+    res.json({
+      claude: hasClaude(),
+      openai: hasOpenAI(),
+      mode: "paper",
+      storage: engine.storeKind(), // "supabase" | "redis" | "file" | "temp" (temp = Vercel without a database: the bot can't stay on)
+      ...(storageError ? { storageError } : {}),
+      serverless: Boolean(process.env.VERCEL), // true = the dashboard must send heartbeats to keep the bot ticking
+      commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").slice(0, 7), // deployed build, so open pages can offer a refresh
+      alerts: alertChannel(), // "telegram" | "ntfy" | null
+      privyAppId: privy.privyAppId(), // public: the page uses it to load the wallet SDK
+      activeAccounts: active, // bots / orders the scheduler keeps watching (null = the storage did not answer)
+      solanaRpc: await rpcHealth(req.query.rpc === "1"), // "custom" (e.g. Helius) or "public"; ?rpc=1 also pings it
+      storageStats: engine.storageStats(), // calls and bytes to the storage since this server copy started
+      // Only when storage isn't working: names (not values) of database settings the server can see.
+      ...(engine.storeKind() === "temp" || storageError ? { storageEnvNames: storageEnvNames() } : {}),
+    });
+  } catch (e) {
+    res.status(500).json({ error: engine.shortError(e) });
+  }
+});
 app.get("/api/search", wrap(async (req) => searchPairs(String(req.query.q ?? ""))));
 // The agents' live scores for the busiest Solana coins (market data only, same for everyone).
 app.get("/api/agents", publicData(() => 30, async () => {
@@ -329,22 +368,28 @@ app.post("/api/bot/heartbeat", wrap(async () => (engine.currentAccountKey() ? { 
 
 // One bot step. Locally a timer calls this; on Vercel (no long-lived process)
 // a scheduler must hit it. Protected by CRON_SECRET when that is set.
-app.get(
-  "/api/bot/tick",
-  wrap(async (req, res) => {
-    const secret = process.env.CRON_SECRET;
-    if (secret && req.headers.authorization !== `Bearer ${secret}`) {
-      res.status(401);
-      throw new Error("Unauthorized");
-    }
+app.get("/api/bot/tick", async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (secret && req.headers.authorization !== `Bearer ${secret}`) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  try {
+    await engine.ensureMigrated();
     // A scheduler calls this about once a minute. Reply immediately (cron-job.org's free plan
     // waits at most 30 s) and keep watching every 5 s for ~55 s in the background; Vercel's
     // waitUntil keeps the function alive until that finishes.
     const work = engine.watchAll(55_000, "scheduler").catch((e) => console.error("[tick] watch failed:", e));
     waitUntil(work);
-    return { ok: true, started: true, accounts: (await engine.activeAccounts()).length };
-  }),
-);
+    res.json({ ok: true, started: true, accounts: (await engine.activeAccounts()).length });
+  } catch (e) {
+    // The storage is not answering. Said in a normal reply, not as a failed call: a scheduler
+    // that sees failures for long enough switches the job off (cron-job.org after 25), and the
+    // bot would then stay off after the storage is back. /api/status and the app show the problem.
+    console.error("[tick] storage:", e);
+    res.json({ ok: false, error: engine.shortError(e) });
+  }
+});
 
 // Vercel runs the exported app as a function; locally we listen on a port.
 if (!process.env.VERCEL || process.env.FORCE_LISTEN) {

@@ -8,7 +8,9 @@ import path from "node:path";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trading-rust-test-"));
 process.chdir(dir);
 delete process.env.VERCEL;
-for (const k of Object.keys(process.env)) if (/REST_API_|REDIS/.test(k)) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE/.test(k)) delete process.env[k];
+// STORE=supabase: the same test on the Supabase store (a real Postgres engine in memory, see pg-fake.mts).
+if (process.env.STORE === "supabase") await (await import(new URL("../pg-fake.mts", import.meta.url).href)).fakeSupabase();
 process.env.ANTHROPIC_API_KEY = "fake";
 process.env.ANTHROPIC_BASE_URL = "http://fake-claude.local";
 // The fake candles are built from the clock. Shift the clock so the test starts 5 seconds into a

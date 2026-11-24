@@ -5,12 +5,14 @@ import path from "node:path";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trading-rust-test-"));
 process.chdir(dir);
 delete process.env.VERCEL;
-for (const k of Object.keys(process.env)) if (/REST_API_|REDIS/.test(k)) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE/.test(k)) delete process.env[k];
+// STORE=supabase: the same test on the Supabase store (a real Postgres engine in memory, see pg-fake.mts).
+if (process.env.STORE === "supabase") await (await import(new URL("../pg-fake.mts", import.meta.url).href)).fakeSupabase();
 
 const { expect, finish } = await import(new URL("../check.mts", import.meta.url).href);
 const engine = await import(new URL("../../src/engine.ts", import.meta.url).href);
-const { createStore } = await import(new URL("../../src/store.ts", import.meta.url).href);
-const other = createStore(); // "the other server copy": reads and writes the same storage directly
+const { newStore } = await import(new URL("../../src/store.ts", import.meta.url).href);
+const other = newStore(); // "the other server copy": its own store on the same storage, sharing nothing in memory
 const KEY = "tester";
 const cfg = { chain: "solana", pool: "Pool01", symbol: "A01", tf: "5m", positionPct: 100, minConfidence: 0, analyzeEverySec: 600, checkEverySec: 5, maxDrawdownPct: 25, goalUsd: 1e9, pick: "agent", budgetUsd: 1000, trailPct: 3, riskPerTradePct: 0, dailyLossPct: 10, cooldownMin: 30, breakEvenAtPct: 6, lockPct: 50, disabled: [] };
 
