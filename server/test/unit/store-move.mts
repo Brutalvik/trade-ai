@@ -5,6 +5,7 @@
 import { check, expect, finish } from "../check.mts";
 for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE|SKIP_UPSTASH/.test(k)) delete process.env[k];
 const SKIP = process.env.MODE === "skip";
+process.env.STORE_RETRY_MS = "0"; // these tests fix the database and look again at once
 const { fakeSupabase } = await import(new URL("../pg-fake.mts", import.meta.url).href);
 const { fakeUpstash, sampleOldData, UPSTASH_LIMIT: LIMIT } = await import(new URL("../upstash-fake.mts", import.meta.url).href);
 const fake = await fakeSupabase({ schema: false }); // the project exists, the script has not been run yet

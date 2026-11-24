@@ -482,10 +482,35 @@ export const activeAccounts = async () => (await store.kvGet<string[]>(ACTIVE_KE
 // Supabase must be set up (its tables there, and closed to the public keys), and what the app kept
 // in Upstash is copied over once before anything is served from it. Otherwise people would sign in
 // to empty accounts, and the copy could no longer be made without overwriting what they did since.
+// While it is not ready, the reason is remembered for a short while and given again without
+// asking either database: the app can sit in this state for days (waiting for the old database to
+// be unblocked) with a dashboard open, and every refresh would otherwise ask both. Requests that
+// arrive together share one attempt.
 let storeReady = false;
+let storeProblem: unknown = null, storeFailedAt = 0, storeAttempt: Promise<void> | null = null;
+const storeRetryMs = () => Number(process.env.STORE_RETRY_MS ?? 20_000);
 export async function ensureStore() {
   if (storeReady) return;
   if (store.kind !== "supabase") return void (storeReady = true);
+  if (storeProblem && Date.now() < storeFailedAt + storeRetryMs()) throw storeProblem;
+  storeAttempt ??= setUpStore()
+    .then(
+      () => {
+        storeReady = true;
+        storeProblem = null;
+      },
+      (e) => {
+        storeProblem = e;
+        storeFailedAt = Date.now();
+        throw e;
+      },
+    )
+    .finally(() => {
+      storeAttempt = null;
+    });
+  return storeAttempt;
+}
+async function setUpStore() {
   await store.check!();
   if (!(await store.kvGet<unknown>("copied-from-upstash"))) {
     const old = oldStoreFromEnv();
@@ -506,7 +531,6 @@ export async function ensureStore() {
       }
     }
   }
-  storeReady = true;
 }
 
 // One-time move: the single shared account from before logins had their own goes to the

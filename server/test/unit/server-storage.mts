@@ -9,6 +9,7 @@ import path from "node:path";
 process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), "trading-rust-test-")));
 for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE|SKIP_UPSTASH|CRON_SECRET|ANTHROPIC|OPENAI|PRIVY/.test(k)) delete process.env[k];
 process.env.VERCEL = "1"; // as deployed: no local timer, and the app does not open its own port
+process.env.STORE_RETRY_MS = "0"; // these tests fix the database and look again at once
 const { fakeSupabase } = await import(new URL("../pg-fake.mts", import.meta.url).href);
 const { fakeUpstash, sampleOldData } = await import(new URL("../upstash-fake.mts", import.meta.url).href);
 const supa = await fakeSupabase({ schema: false }); // the project exists; the script has not been run
@@ -42,6 +43,15 @@ st = await call("GET", "/api/status");
 check("now the status page says the old data cannot be copied yet, and what to do", st.status === 200 && /^Moving to the new database: .*Unblock it in the Upstash console, or set SKIP_UPSTASH_COPY=1 in Vercel to start with empty accounts\.$/.test(st.body.storageError) && !st.body.storageError.includes("command was"), st.body.storageError);
 tick = await call("GET", "/api/bot/tick");
 expect("the scheduler's call still gets a normal reply", [tick.status, tick.body.ok, typeof tick.body.error], [200, false, "string"]);
+// As deployed, a not-ready answer is remembered for a short while: a dashboard left open while
+// the old database is waited for does not make every refresh ask both databases.
+process.env.STORE_RETRY_MS = "60000";
+await call("GET", "/api/status");
+const quiet = [supa.calls.length, upstash.calls];
+for (let i = 0; i < 6; i++) await call(i % 2 ? "GET" : "POST", i % 2 ? "/api/state" : "/api/bot/heartbeat");
+await Promise.all([call("GET", "/api/status"), call("GET", "/api/bot/tick"), call("GET", "/api/auth/me")]);
+expect("while waiting, repeated requests get the same answer without either database being asked again", [[supa.calls.length, upstash.calls], (await call("GET", "/api/status")).body.storageError?.startsWith("Moving to the new database")], [quiet, true]);
+process.env.STORE_RETRY_MS = "0";
 expect("nobody can sign up into the empty database meanwhile", [(await call("POST", "/api/auth/signup", { username: "eve", email: "eve@example.test", password: "correct horse battery", firstName: "E", lastName: "V" })).status, Number((await supa.db.query("select count(*) as n from public.trade_kv")).rows[0].n)], [503, 0]);
 
 // ---- 3. the old database is unblocked ----
