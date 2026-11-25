@@ -56,9 +56,13 @@ code { color: var(--cyan); }
 .ai-dot.on::before { background: var(--up); box-shadow: 0 0 8px var(--up); }
 .equity { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.1; padding-left: 10px; border-left: 1px solid var(--border); }
 .equity b { font-family: "JetBrains Mono", monospace; font-size: 18px; }
-.equity small { font-size: 10px; color: var(--muted); }
-.equity small.up { color: var(--up); }
-.equity small.down { color: var(--down); }
+.equity small { font-size: 10px; line-height: 1; color: var(--muted); }
+/* The account's profit or loss under EQUITY: signed, bold, a size up from the label; green in
+   profit, red at a loss, grey at exactly zero. The lines are set tight so that the larger figure
+   does not make the top bar taller. */
+.equity .equity-pnl { font-family: "JetBrains Mono", monospace; font-size: 13px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+.equity .equity-pnl.up { color: var(--up); }
+.equity .equity-pnl.down { color: var(--down); }
 
 /* Layout: desktop = chart | signal+trade | bot+ladder, bottom row full width */
 .layout { position: relative; display: grid; gap: 14px; padding: 14px 20px 30px; grid-template-columns: minmax(0, 1fr) 340px 320px; grid-template-areas: "chart s1 s2" "bottom bottom bottom"; }

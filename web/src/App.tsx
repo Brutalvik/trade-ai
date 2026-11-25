@@ -15,7 +15,7 @@ import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playSoundPreview, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
 import { MaCrossChips } from "./MaCross";
-import { showTab } from "./tabTitle";
+import { pnlText, showTab, tabTone } from "./tabTitle";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -569,7 +569,7 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
           <div className="equity">
             <small>EQUITY</small>
             <b>{fmtUsd(eq)}</b>
-            <small className={pnl >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</small>
+            <span className={`equity-pnl ${tabTone(pnl)}`} title={state ? `Your profit or loss so far: your equity now, less the ${fmtUsd(state.startCash)} the account started with.` : undefined}>{pnlText(pnl)}</span>
           </div>
         )}
         <AccountButton notify={notify} onChange={refresh} state={state} />

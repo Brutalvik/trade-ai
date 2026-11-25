@@ -1,7 +1,10 @@
 // The browser tab's text and icon (web/src/tabTitle.ts): "T//R" and the account's profit or loss
 // in dollars; the icon is green in profit, red at a loss, and the usual one at zero.
 import { check, expect, finish } from "../check.mts";
-const { tabText, tabTone, tabIcon, showTab, boldDigits } = await import(new URL("../../../web/src/tabTitle.ts", import.meta.url).href);
+const { tabText, tabTone, tabIcon, showTab, boldDigits, pnlText } = await import(new URL("../../../web/src/tabTitle.ts", import.meta.url).href);
+// The same figure under EQUITY in the header: always with its sign, and no sign at zero.
+expect("under EQUITY: a profit has a plus, a loss a minus before the dollar sign, thousands are separated", [pnlText(64.41), pnlText(-11.22), pnlText(1234.567), pnlText(-9000)], ["+$64.41", "-$11.22", "+$1,234.57", "-$9,000.00"]);
+expect("under EQUITY: zero, and anything under half a cent either way, reads $0.00 with no sign", [pnlText(0), pnlText(0.004), pnlText(-0.004)], ["$0.00", "$0.00", "$0.00"]);
 // What the tab reads: "T//R", a wider gap, a green or red dot, then the amount with bold digits.
 const B = boldDigits;
 const up = (amount: string) => `T//R\u2003\u{1F7E2}\u00a0+$${B(amount)}`;

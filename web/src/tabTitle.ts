@@ -26,6 +26,13 @@ export function tabText(pnl: number): string {
   const amount = boldDigits(tone === "flat" ? "0.00" : Math.abs(pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
   return tone === "flat" ? `T//R${GAP}$${amount}` : `T//R${GAP}${DOT[tone]}\u00a0${tone === "up" ? "+" : "-"}$${amount}`;
 }
+// The same figure as the header prints it under EQUITY: always with its sign ("+$1,234.56",
+// "-$23.40"), and "$0.00" with none when it is under half a cent either way.
+export function pnlText(pnl: number): string {
+  const tone = tabTone(pnl);
+  const amount = (tone === "flat" ? 0 : Math.abs(pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${tone === "up" ? "+" : tone === "down" ? "-" : ""}$${amount}`;
+}
 export const tabIcon = (tone: TabTone): string =>
   tone === "flat" ? ICON : `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 46"><path fill="${tone === "up" ? UP : DOWN}" d="${BOLT}"/></svg>`)}`;
 
