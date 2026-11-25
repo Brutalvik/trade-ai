@@ -9,6 +9,7 @@ import { CoinSearch } from "./CoinSearch";
 import { findCoinPair } from "./CoinList";
 import { MaCrossChips } from "./MaCross";
 import { allBots, api, fmtPrice, fmtUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type CheckedOrder, type FcKey, type OrderPrediction, type PairInfo } from "./api";
+import { tradeTone } from "./tradeTone";
 
 const DEFAULT_BUDGET = 1000;
 type Notify = (m: string, bad?: boolean) => void;
@@ -183,6 +184,8 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const netAt = (p: number) => (pos ? ((p - pos.entryPrice) / pos.entryPrice) * 100 - cost : 0);
   const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
   const pm = pos?.pm;
+  // The card's colour while it is in a trade: green ahead after fees, red behind (tradeTone.ts).
+  const tone = tradeTone(pos ? netAt(pos.lastPrice) : null);
   // An agent's order is judged on the combined chance (its AI, the numbers, the forecaster panel).
   // (with one decimal when the two are within a point, so a near miss never reads "41%, needs 41%")
   const chance = (o: CheckedOrder) => {
@@ -210,7 +213,7 @@ function useAgent(slot: BotSlot, state: AppState | null) {
             : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}${order.kind === "buy_breakout" && order.minVolumeRatio > 0 ? `, but only on at least ${order.minVolumeRatio}× the usual trading volume` : ""}: ${chance(order)}`;
   const said = okRes && okRes.ok ? okRes.signal.stance : undefined; // what the AI itself answered, before the check on its odds
   const image = pos?.imageUrl ?? cfg?.imageUrl; // the coin's picture: from its open trade, else kept with the agent
-  return { isAuto, choosing, tradeSince, bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at, cost, tradeCost, gate: plan?.gate, gateOff: !!cfg?.disabled?.includes("qualityGate") };
+  return { isAuto, choosing, tradeSince, tone, bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at, cost, tradeCost, gate: plan?.gate, gateOff: !!cfg?.disabled?.includes("qualityGate") };
 }
 
 // The agent stood aside without asking its AI: the reasons, and (for the scouts) a recorded "trade it anyway".
@@ -393,7 +396,7 @@ function AgentCard({ slot, state, notify, refresh, onOpen, onDetails }: { slot: 
   const a = useAgent(slot, state);
   const { stop, stopping } = useStop(a, notify, refresh);
   return (
-    <div className={`agent-card ${a.pos ? "holding" : ""}`} role="button" tabIndex={0} aria-label={`Open the ${a.symbol} agent`} onClick={onDetails}
+    <div className={`agent-card ${a.pos ? "holding" : ""} ${a.tone}`} role="button" tabIndex={0} aria-label={`Open the ${a.symbol} agent`} onClick={onDetails}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onDetails(); } }}>
       <div className="agent-top">
         <span className={`agent-avatar ${a.pos ? "live" : a.paused ? "idle" : ""}`}><Avatar src={a.image} symbol={a.symbol} /></span>
