@@ -13,7 +13,7 @@ import zlib from "node:zlib";
 export type StoreKind = "supabase" | "redis" | "file" | "temp";
 // Calls and bytes since this server copy started (to see what the storage traffic really is).
 // auth: which kind of key the database accepted and how it was sent (never the key itself).
-export type StoreStats = { since: number; calls: Record<string, number>; sentBytes: number; receivedBytes: number; auth?: { key: "secret" | "service_role"; header: "apikey" | "apikey+bearer" } };
+export type StoreStats = { since: number; calls: Record<string, number>; sentBytes: number; receivedBytes: number; auth?: { key: "secret" | "service_role"; header: "apikey" | "apikey+bearer" }; schema?: { version: number; hours: boolean } };
 
 export interface Store {
   kind: StoreKind;
@@ -41,6 +41,10 @@ export interface Store {
   loadRev?<T>(key?: string): Promise<{ value: T | null; rev: number | null }>;
   // A batch of entries put at the end of a list in one call (reset = empty the list first).
   listReplace?<T>(key: string, items: T[], reset: boolean): Promise<void>;
+  // What an account's agents made, hour by hour (a table of its own, linked to the account).
+  // hoursAdd counts one closed trade into its hour; counting the same trade again changes nothing.
+  hoursAdd?(key: string, e: HourEntry): Promise<void>;
+  hoursGet?(key: string, fromMs: number, toMs: number): Promise<HourRow[]>; // oldest first
   // Is the store set up, and closed to the public? Throws a message a person can act on if not.
   check?(): Promise<{ accounts: number }>;
   // Saves a small account and a list entry and reads them back from the database itself (not
@@ -48,6 +52,12 @@ export interface Store {
   selfTest?(): Promise<void>;
   stats?(): StoreStats;
 }
+
+// One closed agent trade, and one hour of an account's agents.
+export type HourEntry = { tradeId: string; time: number; pnlUsd: number; bot: string; symbol: string };
+export type HourAgent = { pnl: number; trades: number; wins: number; losses: number; symbols: string[] };
+export type HourRow = { hour: number; pnlUsd: number; trades: number; wins: number; losses: number; agents: Record<string, HourAgent> };
+const HOUR_MS = 3_600_000;
 
 const localLocks = new Map<string, number>();
 const localLock = {
@@ -121,6 +131,14 @@ function fileStore(): Store {
       return [];
     }
   };
+  const hoursFile = (key: string) => path.join(dir, `hours-${key.replace(/[^a-z0-9_]/gi, "_")}.json`);
+  const readHours = (key: string): Record<string, HourRow & { ids: string[] }> => {
+    try {
+      return JSON.parse(fs.readFileSync(hoursFile(key), "utf8"));
+    } catch {
+      return {};
+    }
+  };
   type Rec = { v: unknown; exp?: number };
   const readKv = (): Record<string, Rec> => {
     try {
@@ -178,6 +196,24 @@ function fileStore(): Store {
       const text = items.map((v) => JSON.stringify(v) + "\n").join("");
       if (reset) fs.writeFileSync(listFile(key), text);
       else fs.appendFileSync(listFile(key), text);
+    },
+    // The agents' hours: one small file per account (hour -> its figures and the trades counted).
+    async hoursAdd(key: string, e: HourEntry) {
+      const all = readHours(key);
+      const h = String(Math.floor(e.time / HOUR_MS) * HOUR_MS);
+      const row = (all[h] ??= { hour: Number(h), pnlUsd: 0, trades: 0, wins: 0, losses: 0, agents: {}, ids: [] });
+      if (row.ids.includes(e.tradeId)) return;
+      const win = e.pnlUsd > 0 ? 1 : 0, loss = e.pnlUsd < 0 ? 1 : 0;
+      row.ids.push(e.tradeId);
+      row.pnlUsd += e.pnlUsd; row.trades += 1; row.wins += win; row.losses += loss;
+      const a = (row.agents[e.bot] ??= { pnl: 0, trades: 0, wins: 0, losses: 0, symbols: [] });
+      a.pnl += e.pnlUsd; a.trades += 1; a.wins += win; a.losses += loss;
+      if (!a.symbols.includes(e.symbol)) a.symbols.push(e.symbol);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(hoursFile(key), JSON.stringify(all));
+    },
+    async hoursGet(key: string, fromMs: number, toMs: number) {
+      return Object.values(readHours(key)).filter((r) => r.hour >= fromMs && r.hour <= toMs).sort((a, b) => a.hour - b.hour).map(({ ids: _ids, ...r }) => r);
     },
     ...localLock,
   };
@@ -250,6 +286,7 @@ function explain(status: number, text: string, fn: string) {
   return `Supabase (${fn}): ${msg || `HTTP ${status}`}`;
 }
 
+const HOURS_NOT_READY = "The agents' hours table is not in the database yet: run the latest server/supabase/schema.sql once in the Supabase SQL editor. Nothing is lost meanwhile: the hours are filled in from the account's trades once the table is there.";
 type Cached = { rev: number; parts: Record<string, { h: string; json: string }> };
 export function supabaseStore(url: string, key: string | string[]): Store {
   const stats: StoreStats = { since: Date.now(), calls: {}, sentBytes: 0, receivedBytes: 0 };
@@ -352,6 +389,15 @@ export function supabaseStore(url: string, key: string | string[]): Store {
   }
   const revFlights = new Map<string, Promise<number | null>>();
 
+  // A call to the hours table, with a missing table or function reported as what it is.
+  const hoursRpc = async <T>(fn: string, args: Record<string, unknown>): Promise<T> => {
+    try {
+      return await rpc<T>(fn, args);
+    } catch (e) {
+      const m = String((e as Error)?.message ?? e);
+      throw new Error(m === NOT_SET_UP || /does not exist|could not find/i.test(m) ? HOURS_NOT_READY : m);
+    }
+  };
   return {
     kind: "supabase",
     load: async <T>(key?: string) => (await loadRev<T>(key)).value,
@@ -411,8 +457,19 @@ export function supabaseStore(url: string, key: string | string[]): Store {
     async listReplace<T>(key: string, items: T[], reset: boolean) {
       await rpc("trade_list_replace", { p_key: key, p_items: items.map(wrapItem), p_reset: reset });
     },
+    // The hours table came with version 2 of schema.sql. Until that has been run in the project,
+    // these two fail saying so, and the engine leaves the sales unmarked in the account and
+    // counts them once the table is there.
+    async hoursAdd(key: string, e: HourEntry) {
+      await hoursRpc("trade_hour_add", { p_key: key, p_hour: new Date(e.time).toISOString(), p_trade: e.tradeId, p_pnl: e.pnlUsd, p_bot: e.bot, p_symbol: e.symbol });
+    },
+    async hoursGet(key: string, fromMs: number, toMs: number) {
+      const rows = (await hoursRpc<{ hour: number; pnl: number; trades: number; wins: number; losses: number; agents: Record<string, HourAgent> }[] | null>("trade_hours", { p_key: key, p_from: new Date(fromMs).toISOString(), p_to: new Date(toMs).toISOString() })) ?? [];
+      return rows.map((r) => ({ hour: Number(r.hour), pnlUsd: Number(r.pnl), trades: Number(r.trades), wins: Number(r.wins), losses: Number(r.losses), agents: r.agents ?? {} }));
+    },
     async check() {
-      const c = await rpc<{ version: number; tables: number; rls: boolean; open: boolean; accounts: number } | null>("trade_selfcheck", {});
+      const c = await rpc<{ version: number; tables: number; rls: boolean; open: boolean; accounts: number; hours?: boolean } | null>("trade_selfcheck", {});
+      if (c) stats.schema = { version: Number(c.version), hours: !!c.hours };
       if (!c || Number(c.tables) < 4 || Number(c.version) < SCHEMA_VERSION) throw new Error("The Supabase database is not fully set up: run the latest server/supabase/schema.sql in the Supabase SQL editor.");
       if (!c.rls || c.open) throw new Error("The Supabase tables are open to the public keys: run server/supabase/schema.sql again in the Supabase SQL editor (it closes them).");
       return { accounts: Number(c.accounts) };
@@ -429,7 +486,7 @@ export function supabaseStore(url: string, key: string | string[]): Store {
       const same = back.rev === rev && back.value?.nonce === nonce && JSON.stringify(back.value.trades) === JSON.stringify(doc.trades) && JSON.stringify(back.value.equity) === JSON.stringify(doc.equity) && (await this.rev!(key)) === rev && last?.nonce === nonce;
       if (!same) throw new Error("Supabase self-test failed: what was saved did not come back the same. Nothing was served from it.");
     },
-    stats: () => ({ ...stats, calls: { ...stats.calls }, ...(stats.auth ? { auth: { ...stats.auth } } : {}) }),
+    stats: () => ({ ...stats, calls: { ...stats.calls }, ...(stats.auth ? { auth: { ...stats.auth } } : {}), ...(stats.schema ? { schema: { ...stats.schema } } : {}) }),
   };
 }
 

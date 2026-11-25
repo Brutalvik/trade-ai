@@ -27,6 +27,7 @@ let aiCalls = 0;
 let panelCalls = 0;
 let planCalls = 0;
 let briefSeen = false;
+let playbookSeen = false, indicatorsSeen = false;
 
 const jupToken = () => ({
   id: MINT, symbol: "AGT", name: "Agent Test", icon: "", usdPrice: price, mcap: 5e6, fdv: 5e6, liquidity: LIQ, holderCount: 4200,
@@ -57,7 +58,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
         ? { hold: false, winChancePct: 20, target: 1.1, lastExit: 0.9, extraMinutes: 10, reason: "Support broke." }
         : SC === "avoid"
           ? { stance: "AVOID", confidence: 30, riskLevel: "HIGH", reasoning: "Fading volume under resistance; no edge right now.", orders: [{ kind: "buy_dip", triggerPrice: price * 0.9, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: price * 0.84, target: price * 1.03, maxHoldMinutes: 120, winChancePct: 30 }], cancelBelow: 0, cancelAbove: 0, validMinutes: 30 }
-          : (planCalls++, briefSeen = briefSeen || body.includes("dedicated trading agent"), { stance: "BUY_NOW", confidence: 70, riskLevel: "MEDIUM", reasoning: "Breakout holding on rising volume with room above.", orders: [{ kind: "buy_now", triggerPrice: B() * 1.002, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: B() * 0.95, target: B() * 1.15, maxHoldMinutes: 180, winChancePct: Number(process.env.AIWIN ?? 62) }], cancelBelow: 0, cancelAbove: 0, validMinutes: 60 });
+          : (planCalls++, briefSeen = briefSeen || body.includes("dedicated trading agent"), playbookSeen = playbookSeen || body.includes("The strategy playbook"), indicatorsSeen = indicatorsSeen || (/MACD (above|below) its signal line/.test(body) && /Bollinger: price at -?\d+% of the band/.test(body)), { stance: "BUY_NOW", confidence: 70, riskLevel: "MEDIUM", reasoning: "Breakout holding on rising volume with room above.", orders: [{ kind: "buy_now", triggerPrice: B() * 1.002, confirmSeconds: 0, minVolumeRatio: 0, stopLoss: B() * 0.95, target: B() * 1.15, maxHoldMinutes: 180, winChancePct: Number(process.env.AIWIN ?? 62) }], cancelBelow: 0, cancelAbove: 0, validMinutes: 60 });
     return json({ id: `m${aiCalls}`, type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify(out) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
   }
   if (url.includes("api.jup.ag/swap/")) return new Response("{}", { status: 503 }); // no Jupiter quotes in tests: costs come from the fake pool's depth
@@ -178,6 +179,7 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   const sells = s.trades.filter((t) => t.side === "SELL"), buys = s.trades.filter((t) => t.side === "BUY");
   const logs = s.bot.log.map((l) => l.msg).join("\n");
   if (!(SC === "quiet" && process.env.MINNUM !== "0")) check("the agent's brief reached the AI", briefSeen, "");
+  if (planCalls > 0) check("its AI was sent the strategy playbook, and MACD and the Bollinger bands worked out for it", playbookSeen && indicatorsSeen, { playbookSeen, indicatorsSeen });
   if (SC === "lose") {
     check("stopped out once, at a loss, after the AI's second look", sells.length === 1 && /^Stop-loss hit/.test(sells[0].reason) && (sells[0].pnlUsd ?? 0) < -100, sells.map((t) => `${t.reason} ${t.pnlUsd?.toFixed(2)}`));
     check("no daily limit and no cool-down: still running, and it bought again", s.bot.running && !s.bot.blocked && buys.length === 2 && s.positions.length === 1, { running: s.bot.running, blocked: s.bot.blocked, buys: buys.length, open: s.positions.length });

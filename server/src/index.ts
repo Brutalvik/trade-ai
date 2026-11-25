@@ -236,6 +236,11 @@ app.get("/api/activity", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;
   res.json(await history.activity(a.key, num(req.query.before, 0), num(req.query.limit, 50)));
 }));
+// What the account's agents made together, hour by hour (the last 31 days unless asked otherwise).
+app.get("/api/bot/hours", signedIn(wrap(async (req) => {
+  const now = Date.now();
+  return engine.agentHours(num(req.query.from, now - 31 * 86_400_000), num(req.query.to, now));
+})));
 // The agents' log for a stretch of time, newest first, in pages (the last week is kept: botlog.ts).
 app.get("/api/bot/log", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;

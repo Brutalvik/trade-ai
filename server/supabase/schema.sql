@@ -11,6 +11,7 @@
 --   trade_accounts, trade_account_parts   one paper account per login, stored in compressed parts
 --   trade_kv                              small records (logins, settings, the Stop/Reset record, locks)
 --   trade_list                            append-only history (activity log, full trade ledger)
+--   trade_agent_hours                     what each account's agents made, hour by hour (linked to trade_accounts)
 --   trade_* functions                     the only way the server reads and writes them
 --   trade_users                           a view for people: every account as a row (Table Editor)
 -- Every function names its tables in full ("public.") and runs with an empty search path, so it
@@ -52,11 +53,28 @@ begin
     at timestamptz not null default now()
   );
   create index if not exists trade_list_key_id on public.trade_list (key, id);
+  -- What an account's agents made, hour by hour: one row per account and hour (UTC), built from
+  -- the agents' closed trades. Linked to the account: it goes when the account's row goes.
+  -- trade_ids = the trades already counted (counting one twice changes nothing).
+  -- detail = the same figures per agent: {"<agent>": {"pnl": 12.5, "trades": 2, "wins": 1, "losses": 1, "symbols": ["ABC"]}}
+  create table if not exists public.trade_agent_hours (
+    key text not null references public.trade_accounts (key) on delete cascade,
+    hour timestamptz not null,                     -- the start of the hour
+    pnl_usd numeric not null default 0,            -- profit or loss of the trades closed in that hour, after costs
+    trades integer not null default 0,             -- trades closed in that hour
+    wins integer not null default 0,
+    losses integer not null default 0,
+    trade_ids text[] not null default '{}',
+    detail jsonb not null default '{}'::jsonb,
+    updated_at timestamptz not null default now(),
+    primary key (key, hour)
+  );
 
   alter table public.trade_accounts enable row level security;
   alter table public.trade_account_parts enable row level security;
   alter table public.trade_kv enable row level security;
   alter table public.trade_list enable row level security;
+  alter table public.trade_agent_hours enable row level security;
 
   -- ---------- Accounts ----------
   -- The version number of an account (null = no such account). The bot asks this every few
@@ -188,12 +206,59 @@ begin
     return v_n;
   end $$;
 
+  -- ---------- The agents' hours ----------
+  -- One closed agent trade is added to its hour (and to its agent's share of that hour).
+  -- Returns false when that trade was already counted.
+  create or replace function public.trade_hour_add(p_key text, p_hour timestamptz, p_trade text, p_pnl numeric, p_bot text, p_symbol text) returns boolean
+  language plpgsql set search_path = '' as $$
+  declare
+    v_hour timestamptz := date_trunc('hour', p_hour, 'UTC');
+    v_win integer := (p_pnl > 0)::integer;
+    v_loss integer := (p_pnl < 0)::integer;
+    v_n bigint;
+  begin
+    insert into public.trade_agent_hours as h (key, hour, pnl_usd, trades, wins, losses, trade_ids, detail)
+    values (p_key, v_hour, p_pnl, 1, v_win, v_loss, array[p_trade],
+            jsonb_build_object(p_bot, jsonb_build_object('pnl', p_pnl, 'trades', 1, 'wins', v_win, 'losses', v_loss, 'symbols', jsonb_build_array(p_symbol))))
+    on conflict (key, hour) do update set
+      pnl_usd = h.pnl_usd + p_pnl,
+      trades = h.trades + 1,
+      wins = h.wins + v_win,
+      losses = h.losses + v_loss,
+      trade_ids = h.trade_ids || p_trade,
+      detail = jsonb_set(h.detail, array[p_bot], jsonb_build_object(
+        'pnl', coalesce((h.detail -> p_bot ->> 'pnl')::numeric, 0) + p_pnl,
+        'trades', coalesce((h.detail -> p_bot ->> 'trades')::integer, 0) + 1,
+        'wins', coalesce((h.detail -> p_bot ->> 'wins')::integer, 0) + v_win,
+        'losses', coalesce((h.detail -> p_bot ->> 'losses')::integer, 0) + v_loss,
+        'symbols', case when coalesce(h.detail -> p_bot -> 'symbols', '[]'::jsonb) @> to_jsonb(p_symbol)
+                        then h.detail -> p_bot -> 'symbols'
+                        else coalesce(h.detail -> p_bot -> 'symbols', '[]'::jsonb) || to_jsonb(p_symbol) end
+      ), true),
+      updated_at = now()
+    where not (p_trade = any (h.trade_ids));
+    get diagnostics v_n = row_count;
+    return v_n > 0;
+  end $$;
+
+  -- An account's hours between two times, oldest first: [{"hour": <unix ms>, "pnl": .., "trades": .., "wins": .., "losses": .., "agents": {...}}]
+  create or replace function public.trade_hours(p_key text, p_from timestamptz, p_to timestamptz) returns jsonb
+  language sql stable set search_path = '' as $$
+    select coalesce(jsonb_agg(jsonb_build_object(
+             'hour', (extract(epoch from h.hour) * 1000)::bigint, 'pnl', h.pnl_usd, 'trades', h.trades,
+             'wins', h.wins, 'losses', h.losses, 'agents', h.detail) order by h.hour), '[]'::jsonb)
+    from public.trade_agent_hours h
+    where h.key = p_key and h.hour >= p_from and h.hour <= p_to
+  $$;
+
   -- ---------- Self-check ----------
   -- The server asks this when it starts: is everything here, and is it closed to the public keys?
   create or replace function public.trade_selfcheck() returns jsonb
   language sql stable set search_path = '' as $$
     select jsonb_build_object(
-      'version', 1,
+      'version', 2,
+      'hours', exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                 where n.nspname = 'public' and c.relkind = 'r' and c.relname = 'trade_agent_hours'),
       'tables', (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
                  where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('trade_accounts', 'trade_account_parts', 'trade_kv', 'trade_list')),
       'rls', coalesce((select bool_and(c.relrowsecurity) from pg_class c join pg_namespace n on n.oid = c.relnamespace
@@ -241,6 +306,10 @@ begin
   if v_server then
     grant all on table public.trade_accounts, public.trade_account_parts, public.trade_kv, public.trade_list to service_role;
   end if;
+  revoke all on table public.trade_agent_hours from public;
+  if v_anon then revoke all on table public.trade_agent_hours from anon; end if;
+  if v_auth then revoke all on table public.trade_agent_hours from authenticated; end if;
+  if v_server then grant all on table public.trade_agent_hours to service_role; end if;
   revoke all on table public.trade_users from public;
   if v_anon then revoke all on table public.trade_users from anon; end if;
   if v_auth then revoke all on table public.trade_users from authenticated; end if;

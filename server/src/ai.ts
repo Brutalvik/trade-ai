@@ -97,6 +97,21 @@ export const hasClaude = () => Boolean(process.env.ANTHROPIC_API_KEY);
 // Set ENABLE_OPENAI=true (plus OPENAI_API_KEY) to add it back as a second opinion.
 export const hasOpenAI = () => process.env.ENABLE_OPENAI === "true" && Boolean(process.env.OPENAI_API_KEY);
 
+// The strategies every planner is expected to know by name, and how each one fits what this bot
+// can do (spot, long only, one entry per trade, a minimum profit after real costs). Asked for by
+// the owner on 2026-11-25 ("all our models should know these strategies"). It is knowledge for
+// reading the chart, not a promise: every order is still judged by the same checks afterwards.
+export const PLAYBOOK = `The strategy playbook. Know which of these you are using, and name it in your reasoning:
+- Trend following: trade with the trend of the 1-hour and 5-minute charts (price above rising averages, higher highs and higher lows). In a clear downtrend, look for the reversal setup below instead of buying dips.
+- Pullback in a trend (a swing entry): in an uptrend, buy the dip to a level that held before (the last higher low, the 20- or 50-candle average), with the stop just under it. That is a buy_dip order.
+- Breakout: buy the move through resistance or out of a tight range, only when volume is clearly above the usual and the price holds above the level; a breakout nobody backs falls back. Stop just under the broken level. That is a buy_breakout order.
+- Range trading: when the price has been going sideways between a floor and a ceiling it has touched at least twice each, buy near the floor and aim just under the ceiling, but only if the range is tall enough to pay the minimum profit after costs. Inside a range, do not buy the middle and do not chase the ceiling.
+- Momentum (a day trade): one clean move with buyers behind it (buys out-trading sells, volume rising) can be bought now, with the stop under the last higher low.
+- Reversal: after a sharp fall, wait for the turn to show (a higher low, buyers back, selling volume drying up). A falling knife is not a dip.
+- What does not fit this bot: scalping (a round trip here costs 1-3%, so moves of a percent or two lose money: never plan for less than the minimum profit), averaging down or buying on a schedule (one entry per trade), arbitrage, shorting and leverage (not available).
+- Indicators are evidence, not triggers. RSI above about 70 is stretched and below about 30 is washed out, but in a strong trend it stays stretched. MACD above its signal line and growing says momentum is building; a cross is a late confirmation, like the moving-average crossover. Price at the upper Bollinger band is extended unless the bands are widening with volume behind the move (then it is a breakout); bands squeezed tight often come before a large move, in either direction.
+- Risk comes first in every one of them: the stop goes where the idea is proved wrong, and if that stop is too far away for the reward, there is no trade. No strategy wins every time; winChancePct says how often this one does.`;
+
 const SYSTEM = `You are a disciplined short-term crypto trading planner for small-cap on-chain tokens (often memecoins).
 You don't place one-off calls: you write a PLAN of standing orders that a bot carries out on its own.
 The bot checks prices every 5 seconds, including the low and high of each 5-second candle, and buys the moment an order's trigger is touched (a dip order fills at its trigger price like a limit order).
@@ -122,7 +137,9 @@ Rules:
 - Chart patterns found by code are listed below with how each did earlier on this same chart. Use them: a breakout from a range with volume or a bull flag supports a buy_breakout just above the level; a double top, breakdown or stretched price argues for patience. Weigh each pattern by its track record on this chart, not by its name.
 - A moving-average crossover signal is given on every chart from 1 minute up (20-candle average against 50-candle average, closed candles only): BUY = the fast average has just crossed above the slow one, SELL = it has just crossed below; otherwise the line says which side the fast average is on and when it last crossed. Use it as one more input next to everything else. It is a late signal (it confirms a turn after it has happened), so weigh it by its track record on this chart, listed with the chart patterns, and never buy or sell on it alone.
 - Your trade journal (below) shows which setups have really worked for this account; lean toward those.
-- Prices are in USD and may be tiny numbers; keep full precision.`;
+- Prices are in USD and may be tiny numbers; keep full precision.
+
+${PLAYBOOK}`;
 
 // Agents get their own instructions: a trader working one coin with a budget, expected to act.
 const AGENT_SYSTEM = `You are an active short-term crypto trader working ONE token with a fixed budget, through a bot that carries out your orders.
@@ -138,7 +155,9 @@ How to decide:
 - For every order give winChancePct: your honest, calibrated chance that the price reaches the MINIMUM-PROFIT level (given below) before stopLoss. Start from the forecast desk's base rates and move only as far as the evidence in front of you justifies; do not shade it down out of caution or up out of eagerness. The bot combines your chance with those numbers and with three more AI forecasters, and uses an order only if the combined chance makes money on average after costs.
 - target is where you realistically expect the move to reach if it works; it must be at least the minimum-profit level you are told. Pick trades where such a move is realistic: strong trends, breakouts with volume, sharp reversals. Once that minimum profit is reached it is locked, and you are asked again and again to manage the trade (hold for more, or sell), so the win you are estimating is "reaches the minimum profit before the stop". Put the stop where your idea is proved wrong, outside normal noise.
 - Set cancelBelow / cancelAbove just outside your thesis and validMinutes between 10 and 30.
-- reasoning: 2-3 short plain sentences on what you expect and why. Prices are USD and may be tiny; keep full precision.`;
+- reasoning: 2-3 short plain sentences on what you expect and why, starting with the strategy it is (see the playbook). Prices are USD and may be tiny; keep full precision.
+
+${PLAYBOOK}`;
 
 // One timeframe of chart data for Claude.
 export type Frame = { tf: string; label: string; candles: Candle[]; snap: Snapshot | null; show: number };
@@ -167,7 +186,7 @@ function frameText(f: Frame, max = f.show) {
   const shown = f.candles.slice(-Math.min(f.show, max));
   const rows = shown.map((c) => [c.time, sig6(c.open), sig6(c.high), sig6(c.low), sig6(c.close), Math.round(c.volume)]);
   const ind = f.snap
-    ? `Indicators: EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} EMA50 ${sig6(f.snap.ema50)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} | volume ratio (last5 vs prior20) ${f.snap.volRatio.toFixed(2)} | 50-candle range ${sig6(f.snap.low50)} - ${sig6(f.snap.high50)}`
+    ? `Indicators: EMA9 ${sig6(f.snap.ema9)} EMA21 ${sig6(f.snap.ema21)} EMA50 ${sig6(f.snap.ema50)} RSI14 ${f.snap.rsi14.toFixed(1)} ATR% ${f.snap.atrPct.toFixed(2)} | volume ratio (last5 vs prior20) ${f.snap.volRatio.toFixed(2)} | 50-candle range ${sig6(f.snap.low50)} - ${sig6(f.snap.high50)}${f.snap.macdHistPct !== undefined ? ` | MACD ${f.snap.macdHistPct >= 0 ? "above" : "below"} its signal line (histogram ${f.snap.macdHistPct.toFixed(3)}% of price, ${f.snap.macdRising ? "growing" : "shrinking"}${f.snap.macdCross ? `, crossed ${f.snap.macdCross} on the last candle` : ""})` : ""}${f.snap.bbPctB !== undefined ? ` | Bollinger: price at ${Math.round(f.snap.bbPctB * 100)}% of the band (0 = lower band, 100 = upper), bands ${f.snap.bbWidthPct!.toFixed(1)}% wide` : ""}`
     : "Indicators: not enough history";
   const lv = keyLevels(shown);
   const levels = lv
@@ -606,6 +625,7 @@ const PanelSchema = z.object({
 const PANEL_RULES = `You are one of three independent forecasters judging a short-term crypto trade for a trading bot. You do not decide the trade; you give a probability.
 For each order listed, estimate the chance (0-100) that, once it is filled, the price reaches the MINIMUM-PROFIT LEVEL before it reaches the STOP, inside the time limit. Running out of time counts as not reaching it.
 Be calibrated: of all the orders you rate 60%, about 60 in 100 should really get there. On a coin with no direction, an order that needs a rise of U% before a fall of D% gets there about D / (U + D) of the time, and less with a short time limit; move away from the numbers you are given only as far as the evidence in front of you justifies.
+See what kind of trade each order is and judge it by what that kind needs: a breakout needs volume and a hold above its level; a pullback needs the trend intact and the level holding; a range trade needs a floor that has held before and room to the ceiling; a momentum buy needs buyers still in control; a reversal needs the turn to have shown. RSI, MACD and the Bollinger bands are evidence for that, not reasons by themselves.
 Prices are USD and may be tiny; keep full precision.`;
 const PANEL: { who: string; job: string }[] = [
   { who: "Momentum trader", job: "Your job: judge the move itself. Are buyers in control right now (higher lows, buys out-trading sells, volume behind the push), and is there room to the level before resistance or exhaustion? Give credit to a move that is really alive, none to one that already happened." },

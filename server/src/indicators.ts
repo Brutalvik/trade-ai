@@ -31,6 +31,30 @@ export function atr(c: Candle[], period = 14): number {
   return recent.reduce((a, b) => a + b, 0) / recent.length;
 }
 
+// MACD (12/26/9) on closing prices: the gap between a fast and a slow average ("the MACD line"),
+// that gap's own 9-candle average ("the signal line"), and the difference between the two ("the
+// histogram"). Above zero and growing = momentum building upward; the histogram changing sign is
+// the MACD line crossing its signal line. prevHist = the histogram one candle earlier.
+export function macd(closes: number[], fast = 12, slow = 26, signal = 9): { macd: number; signal: number; hist: number; prevHist: number } | null {
+  if (closes.length < slow + signal) return null;
+  const f = ema(closes, fast), s = ema(closes, slow);
+  const line = closes.map((_, i) => f[i] - s[i]);
+  const sig = ema(line, signal);
+  return { macd: line.at(-1)!, signal: sig.at(-1)!, hist: line.at(-1)! - sig.at(-1)!, prevHist: line.at(-2)! - sig.at(-2)! };
+}
+
+// Bollinger Bands (the last 20 closes, 2 standard deviations either side of their average):
+// pctB = where the price sits between the bands (0 = on the lower band, 1 = on the upper; it can
+// go outside), widthPct = how far apart the bands are, as % of the middle.
+export function bollinger(closes: number[], period = 20, mult = 2): { mid: number; upper: number; lower: number; pctB: number; widthPct: number } | null {
+  if (closes.length < period) return null;
+  const w = closes.slice(-period);
+  const mid = w.reduce((a, b) => a + b, 0) / period;
+  const sd = Math.sqrt(w.reduce((a, b) => a + (b - mid) ** 2, 0) / period);
+  const upper = mid + mult * sd, lower = mid - mult * sd;
+  return { mid, upper, lower, pctB: upper > lower ? (closes.at(-1)! - lower) / (upper - lower) : 0.5, widthPct: mid > 0 ? ((upper - lower) / mid) * 100 : 0 };
+}
+
 export type Snapshot = {
   price: number;
   ema9: number;
@@ -44,6 +68,13 @@ export type Snapshot = {
   high50: number;
   low50: number;
   techScore: number; // -100..100 quick heuristic, NOT a prediction
+  // MACD: the histogram as % of the price, whether it grew on the last candle, and a cross of the
+  // signal line on the last candle. Missing with under 35 candles.
+  macdHistPct?: number;
+  macdRising?: boolean;
+  macdCross?: "up" | "down";
+  bbPctB?: number; // Bollinger: 0 = on the lower band, 1 = on the upper
+  bbWidthPct?: number; // ...and how wide the bands are, % of the middle
 };
 
 export function snapshot(c: Candle[]): Snapshot | null {
@@ -67,8 +98,11 @@ export function snapshot(c: Candle[]): Snapshot | null {
   score += r < 30 ? 15 : r > 75 ? -20 : r > 50 ? 10 : -5;
   score += recentVol / baseVol > 1.5 ? (pct(price, closes.at(-6)!) > 0 ? 20 : -20) : 0;
   score += pct(price, closes.at(-13)!) > 0 ? 10 : -10;
+  const m = macd(closes), bb = bollinger(closes);
 
   return {
+    ...(m && price > 0 ? { macdHistPct: (m.hist / price) * 100, macdRising: m.hist > m.prevHist, ...(m.hist > 0 && m.prevHist <= 0 ? { macdCross: "up" as const } : m.hist < 0 && m.prevHist >= 0 ? { macdCross: "down" as const } : {}) } : {}),
+    ...(bb ? { bbPctB: bb.pctB, bbWidthPct: bb.widthPct } : {}),
     price,
     ema9: e9,
     ema21: e21,

@@ -10,7 +10,7 @@ import { atr, snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
-import { copyFromUpstash, createStore, oldStoreFromEnv } from "./store.js";
+import { copyFromUpstash, createStore, oldStoreFromEnv, type HourRow } from "./store.js";
 import { keepLogLines, type LogLine } from "./botlog.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
@@ -93,6 +93,7 @@ export type Trade = {
   strategy?: "newcoin" | "agents";
   botId?: string; // bot trades: which bot ("1" when missing)
   patterns?: string[]; // bot buys: chart patterns on screen when it bought
+  hr?: 1; // an agent's sale that has been counted into the agents' hours (keepHours)
 };
 
 export type BotConfig = {
@@ -380,6 +381,7 @@ type Account = {
   rev?: number | null; // the saved account's version number this copy holds (stores that keep one)
   saving?: number; // saves of this copy still on their way
   logQueue?: LogLine[]; // log lines written since the last save, on their way to the week's log (botlog.ts)
+  hoursRetryAt?: number; // the hours table did not answer: not asked again before this time
 };
 const NEW_ACCOUNT_CASH = 10_000; // what a new paper account starts with ($1,000 until v0.63)
 const EARLIER_ACCOUNT_CASH = 1000;
@@ -764,9 +766,45 @@ function save() {
     .then(() => markActive(a))
     .catch((e) => console.error("[store] save failed:", e))
     .then(() => keepLog(a))
+    .then(() => keepHours(a))
     .finally(() => {
       a.saving = Math.max(0, (a.saving ?? 1) - 1);
     });
+}
+// The agents' hours: what all of an account's agents made together, hour by hour, in a table of
+// its own (store.hoursAdd). Every sale an agent makes is counted into its hour once: it is marked
+// on the trade when the table has taken it, so a sale that could not be written (the table not
+// made yet, the database down) stays unmarked and is written later, oldest first. At most 25 a
+// save, so catching up never holds a request for long.
+const HOURS_RETRY_MS = 10 * 60_000;
+async function keepHours(a: Account) {
+  if (!a.key || !store.hoursAdd || Date.now() < (a.hoursRetryAt ?? 0)) return;
+  const todo = a.state.trades.filter((t) => t.side === "SELL" && t.source === "bot" && !t.hr && typeof t.pnlUsd === "number").sort((x, y) => x.time - y.time).slice(0, 25);
+  for (const t of todo) {
+    try {
+      await store.hoursAdd(a.key, { tradeId: t.id, time: t.time, pnlUsd: t.pnlUsd!, bot: t.botId ?? "1", symbol: t.symbol });
+    } catch (e) {
+      a.hoursRetryAt = Date.now() + HOURS_RETRY_MS;
+      console.error("[hours] not written yet:", shortError(e));
+      return;
+    }
+    t.hr = 1;
+    // The mark is also put on the same trade in the account as it is now (it may have been loaded again meanwhile).
+    const live = a.state.trades.find((x) => x.id === t.id);
+    if (live) live.hr = 1;
+    a.dirty = true;
+  }
+}
+// The agents' hours between two times, for the signed-in account (oldest first).
+// ready: false = this store has no hours table (yet).
+export async function agentHours(fromMs: number, toMs: number): Promise<{ ready: boolean; rows: HourRow[]; error?: string }> {
+  const a = acct();
+  if (!a.key || !store.hoursGet) return { ready: false, rows: [] };
+  try {
+    return { ready: true, rows: await store.hoursGet(a.key, fromMs, toMs) };
+  } catch (e) {
+    return { ready: false, rows: [], error: shortError(e) };
+  }
 }
 // Wait for writes to finish (must happen before a Vercel function returns).
 export async function flush() {

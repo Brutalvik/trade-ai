@@ -27,6 +27,8 @@ const UNIT: Job[] = [
   { name: "scoreboard-migration", file: "unit/scoreboard-migration.mts", what: "the scoreboard's real results are rebuilt from real trades" },
   { name: "chart-source", file: "unit/chart-source.mts", what: "a chart stays on one candle source" },
   { name: "voice", file: "unit/voice.mts", what: "which of a device's voices says the trade words: an English female one when the device has one" },
+  { name: "agent-hours", file: "unit/agent-hours.mts", what: "what an account's agents made together, hour by hour, in a table linked to the account: each sale counted once, nothing lost before the table exists" },
+  { name: "indicators", file: "unit/indicators.mts", what: "MACD and Bollinger Bands as the AI is given them, and the strategy playbook the planners are sent" },
   { name: "agent-log", file: "unit/agent-log.mts", what: "the agents' log is kept for a week: written with each save, read in pages (today, the last 7 days), older lines cleared by the archive function" },
   { name: "tab-title", file: "unit/tab-title.mts", what: "the browser tab: T//R and the account's profit or loss, green or red icon" },
   { name: "supabase-store", file: "unit/supabase-store.mts", what: "the Supabase store on a real Postgres engine: records, locks, lists, accounts in compressed parts" },
