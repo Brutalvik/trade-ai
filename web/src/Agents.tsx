@@ -3,13 +3,14 @@
 // your trade journal): buy now, buy at a level, or stay out. The budget is its only limit.
 // This panel lists your agents; "+ New Agent" opens a window with the top opportunities (scored
 // by the eight scouts) and the coin search.
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Modal, useAccess } from "./Account";
 import { CoinSearch } from "./CoinSearch";
 import { findCoinPair } from "./CoinList";
 import { MaCrossChips } from "./MaCross";
 import { allBots, api, fmtPrice, fmtUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type CheckedOrder, type FcKey, type OrderPrediction, type PairInfo } from "./api";
 import { tradeTone } from "./tradeTone";
+import { agentMoney, cardOrder } from "./cardOrder";
 
 const DEFAULT_BUDGET = 1000;
 type Notify = (m: string, bad?: boolean) => void;
@@ -79,6 +80,27 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, r
     }
   };
   const fullMsg = `All ${limit} agent${limit > 1 ? "s are" : " is"} running. Stop one first${limit < 10 ? ", or see Plans for more" : ""}.`;
+  // The cards in a trade first, the highest profit at the top (cardOrder.ts). When the order
+  // changes, each card slides from where it was to its new place, so the eye can follow it.
+  const cards = cardOrder(running, state);
+  const cardKey = cards.map((b) => b.id).join(",");
+  const listRef = useRef<HTMLDivElement>(null);
+  const seen = useRef({ key: "", tops: new Map<string, number>() });
+  useLayoutEffect(() => {
+    const tops = new Map<string, number>();
+    const moved = seen.current.key !== cardKey;
+    const calm = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    for (const el of Array.from(listRef.current?.children ?? []) as HTMLElement[]) {
+      const id = el.dataset.agent;
+      if (!id) continue;
+      tops.set(id, el.offsetTop);
+      const was = seen.current.tops.get(id);
+      if (moved && !calm && was !== undefined && was !== el.offsetTop && typeof el.animate === "function") {
+        el.animate([{ transform: `translateY(${was - el.offsetTop}px)` }, { transform: "translateY(0)" }], { duration: 380, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
+      }
+    }
+    seen.current = { key: cardKey, tops };
+  });
   useEffect(() => {
     if (!request) return;
     if (request.kind === "open") {
@@ -120,8 +142,8 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, r
         </div>
       ) : null}
       {running.length ? (
-        <div className="agent-list">
-          {running.map((b) => <AgentCard key={b.id} slot={b} state={state} notify={notify} refresh={refresh} onOpen={onOpen} onDetails={() => setOpenId(b.id)} />)}
+        <div className="agent-list" ref={listRef}>
+          {cards.map((b) => <AgentCard key={b.id} slot={b} state={state} notify={notify} refresh={refresh} onOpen={onOpen} onDetails={() => setOpenId(b.id)} />)}
         </div>
       ) : (
         <p className="muted small agents-empty">
@@ -142,12 +164,9 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const cfg = bot.config;
   const isAgent = cfg?.pick === "agent";
   const isAuto = isAgent && !!cfg?.autoPick; // it chooses its own coin, and again after every trade
-  const pos = state?.positions.find((p) => p.source === "bot" && (p.botId ?? "1") === id);
-  const since = bot.startedAt ?? 0;
-  const trades = (state?.trades ?? []).filter((t) => t.source === "bot" && (t.botId ?? "1") === id && t.time >= since);
-  const sells = trades.filter((t) => t.side === "SELL");
-  const realized = sells.reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
-  const pnl = realized + (pos ? pos.qty * pos.lastPrice - pos.costUsd : 0);
+  // Its open trade, its trades since it started, and what it has made or lost so far (the figure
+  // at the card's top right; the cards are also listed by it, see cardOrder.ts).
+  const { since, pos, trades, sells, realized, pnl } = agentMoney(slot, state);
   // When its current trade began: when the agent started, or when its last trade closed. The
   // card's clock counts from here, so it starts again from zero after every trade.
   const tradeSince = Math.max(since, ...sells.map((t) => t.time));
@@ -396,7 +415,7 @@ function AgentCard({ slot, state, notify, refresh, onOpen, onDetails }: { slot: 
   const a = useAgent(slot, state);
   const { stop, stopping } = useStop(a, notify, refresh);
   return (
-    <div className={`agent-card ${a.pos ? "holding" : ""} ${a.tone}`} role="button" tabIndex={0} aria-label={`Open the ${a.symbol} agent`} onClick={onDetails}
+    <div className={`agent-card ${a.pos ? "holding" : ""} ${a.tone}`} data-agent={slot.id} role="button" tabIndex={0} aria-label={`Open the ${a.symbol} agent`} onClick={onDetails}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onDetails(); } }}>
       <div className="agent-top">
         <span className={`agent-avatar ${a.pos ? "live" : a.paused ? "idle" : ""}`}><Avatar src={a.image} symbol={a.symbol} /></span>

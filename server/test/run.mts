@@ -33,6 +33,7 @@ const UNIT: Job[] = [
   { name: "user-prefs", file: "unit/user-prefs.mts", what: "a part of the app a user hides in Settings stays hidden on every sign-in: the choice is saved on the account" },
   { name: "tab-title", file: "unit/tab-title.mts", what: "the browser tab: T//R and the account's profit or loss, green or red icon" },
   { name: "trade-tone", file: "unit/trade-tone.mts", what: "an agent's card in a trade takes the colour of the profit or loss at its top right" },
+  { name: "card-order", file: "unit/card-order.mts", what: "the agents' cards: those in a trade first, the highest profit at the top, moving as the figures change" },
   { name: "supabase-store", file: "unit/supabase-store.mts", what: "the Supabase store on a real Postgres engine: records, locks, lists, accounts in compressed parts" },
   { name: "sync-versions", file: "unit/sync-versions.mts", what: "a check asks the database for a version number; the account is loaded only when it changed" },
   { name: "store-move", file: "unit/store-move.mts", what: "the one-time copy from Upstash: interrupted and finished, and the server waits for it" },
