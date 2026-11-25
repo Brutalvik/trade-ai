@@ -76,6 +76,11 @@ export const DESIGNS: Record<string, ExitDesign> = {
 export function design(key: string): ExitDesign | undefined {
   const m = /^lock(\d+(?:\.\d+)?)$/.exec(key);
   if (m) return Number(m[1]) >= EXIT_LIVE.minNetPct ? { ...EXIT_LIVE, name: `floor locked at +${m[1]}%`, lockAtNetPct: Number(m[1]) } : undefined;
+  // "quick<N>" is the bot's design with a smaller minimum profit: +N% after costs is locked the
+  // moment the trade gets there (quick1, quick2.5 ...), for any N from 0.5 up to the live minimum.
+  // The question it answers: do quicker, smaller wins add up to more than the +5% lock does?
+  const q = /^quick(\d+(?:\.\d+)?)$/.exec(key);
+  if (q) return Number(q[1]) >= 0.5 && Number(q[1]) <= EXIT_LIVE.minNetPct ? { ...EXIT_LIVE, name: `quick: +${q[1]}% locked at once`, minNetPct: Number(q[1]), lockAtNetPct: Number(q[1]) } : undefined;
   return DESIGNS[key];
 }
 

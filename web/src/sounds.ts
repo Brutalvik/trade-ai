@@ -1,9 +1,9 @@
 // Trade sounds:
 //  bought            a woman's voice says "Order fulfilled"
-//  sold at a profit  a coin sound, and half a second after it starts the voice says "Sold"
+//  sold at a profit  a money sound, and half a second after it starts the voice says "Sold"
 //  sold at a loss    a short buzzer, and half a second after it starts the voice says "Sold"
-// The two sounds are recordings the owner chose (public/sounds/coin-win.wav and buzzer-fail.wav:
-// "Coin win notification" and "System beep buzzer fail" from mixkit.co, used under Mixkit's free
+// The two sounds are recordings the owner chose (public/sounds/money.mp3, supplied by the owner,
+// and buzzer-fail.wav: "System beep buzzer fail" from mixkit.co, used under Mixkit's free
 // sound-effects licence). Until a recording has loaded, a generated sound stands in: a cash
 // register, a buzzer. The words are spoken by the device's own speech engine, with a female
 // English voice when the device has one (voice.ts); a device that cannot speak plays the sounds
@@ -102,12 +102,29 @@ export function unlockAudioOnFirstGesture() {
 // ---------- The recorded sounds ----------
 // Each is fetched and decoded once (when sound is unlocked, or when first needed).
 const VOICE_AFTER = 0.5; // the word is spoken this many seconds after its sound starts
-type Clip = { url: string; volume: number; buffer: AudioBuffer | null; loading: boolean };
+// from = where in the recording its sound begins (found when it is loaded): playing starts there.
+type Clip = { url: string; volume: number; buffer: AudioBuffer | null; from: number; loading: boolean };
 const CLIPS: Record<"profit" | "loss", Clip> = {
-  // The volumes bring the two recordings to about the same loudness (the buzzer is recorded louder).
-  profit: { url: "/sounds/coin-win.wav", volume: 0.6, buffer: null, loading: false },
-  loss: { url: "/sounds/buzzer-fail.wav", volume: 0.4, buffer: null, loading: false },
+  // The volumes bring the two recordings to about the same loudness (the buzzer is recorded
+  // much louder than the money sound).
+  profit: { url: "/sounds/money.mp3", volume: 1.2, buffer: null, from: 0, loading: false },
+  loss: { url: "/sounds/buzzer-fail.wav", volume: 0.4, buffer: null, from: 0, loading: false },
 };
+// Where a recording's sound begins, in seconds. A recording can open with a moment of silence (an
+// MP3 always does; the money sound has a fifth of a second), and the half second before the voice
+// is counted from the first thing you hear, so that silence is skipped.
+export function soundStart(channels: ArrayLike<number>[], sampleRate: number): number {
+  let peak = 0;
+  for (const d of channels) for (let i = 0; i < d.length; i++) if (Math.abs(d[i]) > peak) peak = Math.abs(d[i]);
+  if (!(peak > 0) || !(sampleRate > 0)) return 0;
+  let first = Infinity;
+  for (const d of channels) {
+    let i = 0;
+    while (i < d.length && i < first && Math.abs(d[i]) < peak * 0.02) i++;
+    first = Math.min(first, i);
+  }
+  return Number.isFinite(first) ? Math.max(0, first / sampleRate - 0.01) : 0;
+}
 function loadClip(c: AudioContext, clip: Clip) {
   if (clip.buffer || clip.loading) return;
   clip.loading = true;
@@ -115,15 +132,17 @@ function loadClip(c: AudioContext, clip: Clip) {
     .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`${clip.url}: HTTP ${r.status}`))))
     .then((bytes) => c.decodeAudioData(bytes))
     .then((buffer) => {
+      clip.from = soundStart(Array.from({ length: buffer.numberOfChannels }, (_, i) => buffer.getChannelData(i)), buffer.sampleRate);
       clip.buffer = buffer;
     })
     .catch(() => {
       clip.loading = false; // asked for again the next time it is needed
     });
 }
-// Plays a recording from t0, if it has loaded (false = not yet: the caller plays the generated
-// stand-in). It plays in full for the first 0.4 s; then it is turned down, so that the word
-// spoken at half a second is clear, with what is left of the sound ringing quietly under it.
+// Plays a recording at t0, from where its sound begins, if it has loaded (false = not yet: the
+// caller plays the generated stand-in). It plays in full for the first 0.4 s; then it is turned
+// down, so that the word spoken at half a second is clear, with what is left of the sound ringing
+// quietly under it.
 function playClip(c: AudioContext, clip: Clip, t0: number): boolean {
   if (!clip.buffer) {
     loadClip(c, clip);
@@ -137,7 +156,7 @@ function playClip(c: AudioContext, clip: Clip, t0: number): boolean {
   gain.gain.linearRampToValueAtTime(clip.volume * 0.15, t0 + VOICE_AFTER + 0.05);
   gain.gain.linearRampToValueAtTime(0, t0 + 1.1);
   src.connect(gain).connect(c.destination);
-  src.start(t0);
+  src.start(t0, clip.from);
   src.stop(t0 + 1.15);
   return true;
 }

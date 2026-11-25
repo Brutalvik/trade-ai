@@ -4,6 +4,19 @@
 // devices offer.
 import { check, expect, finish } from "../check.mts";
 const { pickFemaleVoice, isFemaleVoice } = await import(new URL("../../../web/src/voice.ts", import.meta.url).href);
+const { soundStart } = await import(new URL("../../../web/src/sounds.ts", import.meta.url).href);
+
+// Where a recording's sound begins (the half second before "Sold" is counted from there).
+{
+  const rate = 1000; // 1,000 samples a second keeps the numbers readable
+  const clip = (silentMs: number, level = 0.5, len = 2000) => Float32Array.from({ length: len }, (_, i) => (i < silentMs ? 0 : level * (i % 2 ? 1 : -1)));
+  const at = (channels: Float32Array[]) => Math.round(soundStart(channels, rate) * 1000) / 1000; // to the millisecond
+  expect("a recording that opens with 0.2 s of silence starts playing just before its sound (10 ms of lead-in kept)", at([clip(200)]), 0.19);
+  expect("a recording whose sound starts at once plays from the start", at([clip(0)]), 0);
+  expect("a faint hiss before the sound does not count as its start", at([Float32Array.from(clip(300), (v, i) => (i < 300 ? 0.004 : v))]), 0.29);
+  expect("in stereo, the side that sounds first decides", at([clip(400), clip(150)]), 0.14);
+  expect("silence all the way through, or nothing at all: from the start", [at([new Float32Array(500)]), at([])], [0, 0]);
+}
 const pick = (voices: { name: string; lang: string; default?: boolean }[]) => pickFemaleVoice(voices)?.name ?? null;
 
 const mac = [

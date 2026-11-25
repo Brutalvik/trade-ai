@@ -49,7 +49,7 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
     if (!fresh.length) return;
     for (const t of fresh) seen.current.add(t.id);
     // One sound per batch (the newest trade), whoever made it, you or an agent: a buy says
-    // "Order fulfilled"; a sale rings a cash register (profit) or buzzes (loss), then says "Sold".
+    // "Order fulfilled"; a sale plays the money sound (profit) or buzzes (loss), then says "Sold".
     const latest = fresh[fresh.length - 1];
     playTradeSound(latest.side === "BUY" ? "buy" : (latest.pnlUsd ?? 0) >= 0 ? "profit" : "loss");
     // The cards are for trades you did not click yourself: the bot's, and protected sells.
