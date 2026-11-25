@@ -1245,3 +1245,18 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .modal.narrow .agent-foot-note { flex-basis: 100%; margin: 0 0 4px; }
 .modal.narrow .modal-foot { flex-wrap: wrap; justify-content: flex-end; }
 .modal-foot .btn { white-space: nowrap; }
+
+/* The agent card's clock: how long its current trade has taken so far (HH:MM:SS). */
+.agent-elapsed { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 8px; border: 1px solid transparent; font-family: "JetBrains Mono", monospace; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; cursor: default; }
+.agent-card.holding .agent-elapsed { color: #8ff5cd; }
+.agent-elapsed svg { flex: none; opacity: 0.85; }
+
+/* The right end of the tab row under the chart: its options, then the maximize button (icon only). */
+.tabs-right { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.tabs-right .ladder-toggle { margin: 0; }
+.tabs .panel-max-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; border-radius: 8px; border: 1px solid rgba(0, 229, 255, 0.3); background: rgba(0, 229, 255, 0.06); color: #9be9ff; }
+.tabs .panel-max-btn:hover { background: rgba(0, 229, 255, 0.14); border-color: rgba(0, 229, 255, 0.6); }
+/* Filling the window, like the chart does. */
+.layout > .panel.bottom.maximized, .panel.bottom.maximized { position: fixed; inset: 8px; z-index: 60; max-height: none; min-height: 0; overflow-y: auto; background: #070b16; box-shadow: 0 0 0 100vmax rgba(2, 4, 10, 0.75); display: flex; flex-direction: column; }
+.panel.bottom.maximized > .tabs { flex: none; }
+.panel.bottom.maximized .log { max-height: none; flex: 1 1 auto; min-height: 0; }

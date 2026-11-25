@@ -23,6 +23,27 @@ function Avatar({ src, symbol }: { src?: string; symbol: string }) {
   return src && bad !== src ? <img src={src} alt="" onError={() => setBad(src)} /> : <>{symbol.slice(0, 1).toUpperCase()}</>;
 }
 
+// Hours, minutes and seconds since `from`, ticking every second: 00:07:42.
+export const clockText = (ms: number) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(Math.floor(s / 3600))}:${two(Math.floor((s % 3600) / 60))}:${two(s % 60)}`;
+};
+function Elapsed({ from, tip }: { from: number; tip: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const text = clockText(now - from);
+  return (
+    <span className="agent-elapsed" data-tip={tip} role="timer" aria-label={`Elapsed time on this trade: ${text}`}>
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2.5 2M9 2h6" /></svg>
+      {text}
+    </span>
+  );
+}
+
 // A request from elsewhere in the app (the chart's "Start agent on X" button).
 export type AgentRequest = { kind: "start"; pair: PairInfo } | { kind: "open"; pool: string };
 
@@ -102,6 +123,9 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const sells = trades.filter((t) => t.side === "SELL");
   const realized = sells.reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
   const pnl = realized + (pos ? pos.qty * pos.lastPrice - pos.costUsd : 0);
+  // When its current trade began: when the agent started, or when its last trade closed. The
+  // card's clock counts from here, so it starts again from zero after every trade.
+  const tradeSince = Math.max(since, ...sells.map((t) => t.time));
   const budget = cfg?.budgetUsd ?? DEFAULT_BUDGET;
   const L = bot.learned;
   const roams = cfg?.pick === "auto" || cfg?.pick === "agents";
@@ -159,7 +183,7 @@ function useAgent(slot: BotSlot, state: AppState | null) {
             : `The AI will buy ${order.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmtPrice(order.triggerPrice)}${order.kind === "buy_breakout" && order.minVolumeRatio > 0 ? `, but only on at least ${order.minVolumeRatio}× the usual trading volume` : ""}: ${chance(order)}`;
   const said = okRes && okRes.ok ? okRes.signal.stance : undefined; // what the AI itself answered, before the check on its odds
   const image = pos?.imageUrl ?? cfg?.imageUrl; // the coin's picture: from its open trade, else kept with the agent
-  return { bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at, cost, tradeCost, gate: plan?.gate, gateOff: !!cfg?.disabled?.includes("qualityGate") };
+  return { tradeSince, bot, id, cfg, isAgent, pos, trades, sells, realized, pnl, budget, L, chain, pool, symbol, stage, paused, status, plan: c, order, refused, watching, said, moveAt, image, reasoning, nextLook, pm, netAt, pct, desk: plan?.desk, maCross: plan?.maCross, planAt: plan?.at, cost, tradeCost, gate: plan?.gate, gateOff: !!cfg?.disabled?.includes("qualityGate") };
 }
 
 // The agent stood aside without asking its AI: the reasons, and (for the scouts) a recorded "trade it anyway".
@@ -360,6 +384,7 @@ function AgentCard({ slot, state, notify, refresh, onOpen, onDetails }: { slot: 
       <div className="agent-actions" onClick={(e) => e.stopPropagation()}>
         {a.chain && a.pool ? <button className="chip" onClick={() => onOpen(a.chain!, a.pool!)}>View chart</button> : null}
         <button className="chip" onClick={onDetails}>Details</button>
+        {a.tradeSince ? <Elapsed from={a.tradeSince} tip={a.pos ? `Time on this trade so far (it bought at ${new Date(a.pos.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}). The clock starts again from zero when the trade closes.` : "Time on this trade so far: since the agent started, or since its last trade closed. The clock starts again from zero after every trade."} /> : null}
         <button className="chip danger" onClick={() => void stop()} disabled={stopping}>{stopping ? "Stopping…" : "Stop"}</button>
       </div>
     </div>

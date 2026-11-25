@@ -153,6 +153,18 @@ export default function App() {
     setListCollapsed(v);
     localStorage.setItem("nexus-list-collapsed", v ? "1" : "0");
   };
+  // The card under the chart (Positions, Trade history, Agent log) can fill the window too.
+  const [bottomMax, setBottomMax] = useState(false);
+  useEffect(() => {
+    if (!bottomMax) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !document.querySelector(".modal-backdrop") && setBottomMax(false);
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [bottomMax]);
   useEffect(() => {
     if (!chartMax) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setChartMax(false);
@@ -428,19 +440,28 @@ export default function App() {
           )}
         </aside>
 
-        <section className="panel bottom">
+        <section className={`panel bottom ${bottomMax ? "maximized" : ""}`}>
           <div className="tabs">
             {(["positions", "trades", "log"] as const).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
                 {t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Agent log"}
               </button>
             ))}
-            {tab === "positions" && (
-              <label className="check small ladder-toggle" title="Show or hide the Growth ladder under your positions">
-                <input type="checkbox" checked={showLadder} onChange={(e) => { setShowLadder(e.target.checked); localStorage.setItem("nexus-ladder", e.target.checked ? "1" : "0"); }} />
-                <span>Growth ladder</span>
-              </label>
-            )}
+            <span className="tabs-right">
+              {tab === "positions" && (
+                <label className="check small ladder-toggle" title="Show or hide the Growth ladder under your positions">
+                  <input type="checkbox" checked={showLadder} onChange={(e) => { setShowLadder(e.target.checked); localStorage.setItem("nexus-ladder", e.target.checked ? "1" : "0"); }} />
+                  <span>Growth ladder</span>
+                </label>
+              )}
+              <button className="panel-max-btn" onClick={() => setBottomMax((v) => !v)} aria-pressed={bottomMax} title={bottomMax ? "Minimize (Esc)" : "Fill the window"} aria-label={bottomMax ? "Minimize this panel" : "Maximize this panel"}>
+                {bottomMax ? (
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" /></svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></svg>
+                )}
+              </button>
+            </span>
           </div>
           {tab === "positions" && (
             <>
