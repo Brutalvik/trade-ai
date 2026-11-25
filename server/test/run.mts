@@ -32,7 +32,7 @@ const UNIT: Job[] = [
   { name: "agent-log", file: "unit/agent-log.mts", what: "the agents' log is kept for a week: written with each save, read in pages (today, the last 7 days), older lines cleared by the archive function" },
   { name: "user-prefs", file: "unit/user-prefs.mts", what: "a part of the app a user hides in Settings stays hidden on every sign-in: the choice is saved on the account" },
   { name: "tab-title", file: "unit/tab-title.mts", what: "the browser tab: T//R and the account's profit or loss, green or red icon" },
-  { name: "trade-tone", file: "unit/trade-tone.mts", what: "an agent's card in a trade: green while the trade is ahead after fees, red while it is behind" },
+  { name: "trade-tone", file: "unit/trade-tone.mts", what: "an agent's card in a trade takes the colour of the profit or loss at its top right" },
   { name: "supabase-store", file: "unit/supabase-store.mts", what: "the Supabase store on a real Postgres engine: records, locks, lists, accounts in compressed parts" },
   { name: "sync-versions", file: "unit/sync-versions.mts", what: "a check asks the database for a version number; the account is loaded only when it changed" },
   { name: "store-move", file: "unit/store-move.mts", what: "the one-time copy from Upstash: interrupted and finished, and the server waits for it" },

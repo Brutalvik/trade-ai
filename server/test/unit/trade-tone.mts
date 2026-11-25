@@ -1,13 +1,13 @@
-// The colour of an agent's card while it is in a trade (web/src/tradeTone.ts): green while the
-// trade is ahead after fees, red while it is behind, neither when it is level or there is no trade.
+// The colour of an agent's card while it is in a trade (web/src/tradeTone.ts): the colour of the
+// profit or loss at the card's top right. Green at zero or more, red under zero, none out of a trade.
 import { expect, finish } from "../check.mts";
 const { tradeTone } = await import(new URL("../../../web/src/tradeTone.ts", import.meta.url).href);
 
-expect("ahead after fees: green", [tradeTone(1), tradeTone(0.1), tradeTone(37.26)], ["gain", "gain", "gain"]);
-expect("behind after fees: red (a trade just bought is behind by its costs)", [tradeTone(-1.2), tradeTone(-0.1), tradeTone(-99.98)], ["loss", "loss", "loss"]);
-// The card prints the figure with one decimal, and the colour goes by what is printed.
-expect("a figure the card prints as 0.0% has no colour, whichever side of zero it is on", [tradeTone(0), tradeTone(0.04), tradeTone(-0.04)], ["", "", ""]);
-expect("...and the first figure that prints as 0.1% has one", [tradeTone(0.06), tradeTone(-0.06)], ["gain", "loss"]);
-expect("no trade, or no usable figure: no colour", [tradeTone(null), tradeTone(undefined), tradeTone(NaN), tradeTone(Infinity)], ["", "", "", ""]);
+expect("in a trade and in profit: green", [tradeTone(true, 2.26), tradeTone(true, 16.79), tradeTone(true, 0.01)], ["gain", "gain", "gain"]);
+expect("in a trade and at a loss: red", [tradeTone(true, -0.87), tradeTone(true, -250), tradeTone(true, -0.01)], ["loss", "loss", "loss"]);
+// The figure is drawn green from zero up ("+$0.00") and red under it, and the card goes with it.
+expect("at zero the card is green, as its figure is; a hair under zero it is red, as its figure is", [tradeTone(true, 0), tradeTone(true, 0.004), tradeTone(true, -0.004)], ["gain", "gain", "loss"]);
+expect("not in a trade: no colour, whatever the agent has made so far", [tradeTone(false, 26.04), tradeTone(false, -3), tradeTone(false, 0)], ["", "", ""]);
+expect("no usable figure: no colour", [tradeTone(true, null), tradeTone(true, undefined), tradeTone(true, NaN)], ["", "", ""]);
 
 finish();

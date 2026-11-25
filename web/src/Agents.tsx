@@ -184,8 +184,8 @@ function useAgent(slot: BotSlot, state: AppState | null) {
   const netAt = (p: number) => (pos ? ((p - pos.entryPrice) / pos.entryPrice) * 100 - cost : 0);
   const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
   const pm = pos?.pm;
-  // The card's colour while it is in a trade: green ahead after fees, red behind (tradeTone.ts).
-  const tone = tradeTone(pos ? netAt(pos.lastPrice) : null);
+  // The card's colour while it is in a trade: that of the profit or loss at its top right (tradeTone.ts).
+  const tone = tradeTone(!!pos, pnl);
   // An agent's order is judged on the combined chance (its AI, the numbers, the forecaster panel).
   // (with one decimal when the two are within a point, so a near miss never reads "41%, needs 41%")
   const chance = (o: CheckedOrder) => {
