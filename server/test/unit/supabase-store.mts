@@ -37,6 +37,14 @@ expect("with both databases set up, Supabase is the store", [store.kind, createS
 delete process.env.KV_REST_API_URL;
 delete process.env.KV_REST_API_TOKEN;
 expect("it is set up and closed to the public keys", await store.check(), { accounts: 0 });
+// The setup script is one command: a SQL tool that sends a whole script as a single prepared
+// statement refuses several ("cannot insert multiple commands into a prepared statement").
+const { PGlite } = await import("@electric-sql/pglite");
+const script = (await import("node:fs")).readFileSync(new URL("../../supabase/schema.sql", import.meta.url), "utf8");
+const plain = new PGlite(); // a Postgres without Supabase's roles
+expect("the setup script runs as a single prepared statement, and again, on a plain Postgres too", [await plain.query(script).then(() => "ran", (e: Error) => e.message), await plain.query(script).then(() => "ran", (e: Error) => e.message), (await plain.query<any>("select public.trade_selfcheck() as c")).rows[0].c.tables], ["ran", "ran", 4]);
+const half = new PGlite();
+expect("if it fails part-way, nothing is left half-made", [await half.query(script.replace("perform pg_notify('pgrst', 'reload schema');", "perform no_such_function();")).then(() => "ran", (e: Error) => e.message), (await half.query<any>("select count(*)::int as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname like 'trade%'")).rows[0].n], ["function no_such_function() does not exist", 0]);
 // The public roles themselves, asked directly in the database: nothing to read, nothing to run.
 const asRole = async (role: string, sql: string) => fake.db.transaction(async (tx: any) => { await tx.exec(`set local role ${role}`); return (await tx.query(sql)).rows; }).then(() => "allowed", (e: Error) => e.message);
 expect("the public roles can neither read the tables nor run the functions", [await asRole("anon", "select * from public.trade_kv"), await asRole("authenticated", "select * from public.trade_accounts"), await asRole("anon", "select public.trade_kv_get('auth:secret')"), await asRole("authenticated", "select public.trade_account_load('ada', '{}')")], ["permission denied for table trade_kv", "permission denied for table trade_accounts", "permission denied for function trade_kv_get", "permission denied for function trade_account_load"]);

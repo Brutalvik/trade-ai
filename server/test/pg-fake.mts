@@ -28,7 +28,9 @@ export async function fakeSupabase(opts: { url?: string; key?: string; schema?: 
     for (const row of r.rows) sigs.set(row.fn, row.types.map((type, i) => ({ name: row.names?.[i] ?? `$${i + 1}`, type })));
   };
   const runSchema = async () => {
-    await db.exec(fs.readFileSync(new URL("../supabase/schema.sql", import.meta.url), "utf8"));
+    // Sent as ONE prepared statement, the strict way some SQL tools send a script: the setup
+    // script must be a single command ("cannot insert multiple commands into a prepared statement").
+    await db.query(fs.readFileSync(new URL("../supabase/schema.sql", import.meta.url), "utf8"));
     await readSigs();
   };
   if (opts.schema !== false) await runSchema();
