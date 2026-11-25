@@ -88,6 +88,11 @@ export function design(key: string): ExitDesign | undefined {
   if (key === "touch") return { ...EXIT_LIVE, name: "sell on the first touch of the line", touch: true } as ExitDesign;
   const tk = /^touch-keep(\d+)$/.exec(key);
   if (tk) return Number(tk[1]) >= 10 && Number(tk[1]) <= 95 ? ({ ...EXIT_LIVE, name: `first touch + keep ${tk[1]}%`, touch: true, ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(tk[1]) / 100 } } as ExitDesign) : undefined;
+  // "confirm<S>" = the bot's design, but a profit exit waits: the price must still be under the exit
+  // line S seconds after it was first seen there (confirm10, confirm15 ...). "confirm<S>-crash<P>"
+  // also sells at once when the price is P% under the line. "confirm<S>-keep<P>" adds keep<P>.
+  const cf = /^confirm(\d+)(?:-crash(\d+(?:\.\d+)?))?(?:-keep(\d+))?$/.exec(key);
+  if (cf) return ({ ...EXIT_LIVE, name: `profit exit waits ${cf[1]} s${cf[2] ? `, at once if ${cf[2]}% under` : ""}${cf[3] ? ` + keep ${cf[3]}%` : ""}`, profitConfirmMs: Math.max(1, Number(cf[1]) - 2) * 1000, ...(cf[2] ? { profitCrashPct: Number(cf[2]) } : {}), ...(cf[3] ? { ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(cf[3]) / 100 } } : {}) } as ExitDesign);
   const k = /^keep(\d+)$/.exec(key);
   if (k) return Number(k[1]) >= 10 && Number(k[1]) <= 95 ? { ...EXIT_LIVE, name: `keep ${k[1]}% of the best gain`, ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(k[1]) / 100 } } : undefined;
   const t = /^tight(\d+(?:\.\d+)?)$/.exec(key);
