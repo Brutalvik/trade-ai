@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type LogLine, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
@@ -1592,17 +1592,93 @@ function Trades({ state, notify }: { state: AppState | null; notify: (m: string,
   );
 }
 
+// The agents' log. Today's lines by default; "Last 7 days" reaches back a week (older lines are
+// not kept). The newest lines come with the account every few seconds; the rest of the stretch is
+// read from the week's log on the server when this tab is opened, once a minute, and on "older".
+const LOG_DAY = 86_400_000;
+const logId = (l: LogLine) => `${l.t}|${l.bot}|${l.msg}`;
 function BotLog({ state }: { state: AppState | null }) {
+  const { me } = useAccess();
+  const [range, setRange] = useState<"today" | "week">("today");
+  const [kept, setKept] = useState<LogLine[]>([]);
+  const [more, setMore] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const bots = allBots(state);
   const many = bots.length > 1;
-  const lines = bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id }))).sort((a, b) => b.t - a.t).slice(0, 300);
-  if (!lines.length) return <p className="muted small pad">Bot hasn't run yet.</p>;
+  const midnight = new Date().setHours(0, 0, 0, 0);
+  const from = midnight - (range === "week" ? 6 * LOG_DAY : 0);
+  const merge = (lines: LogLine[]) => setKept((old) => {
+    const seen = new Set(old.map(logId));
+    return [...old, ...lines.filter((l) => !seen.has(logId(l)))];
+  });
+  useEffect(() => {
+    if (!me) return setKept([]);
+    let off = false;
+    setKept([]);
+    setMore(false);
+    const load = (first: boolean) => {
+      if (first) setBusy(true);
+      api.botLog(from, Date.now())
+        .then((r) => {
+          if (off) return;
+          merge(r.lines);
+          if (first) setMore(r.more);
+          setErr("");
+        })
+        .catch((e) => !off && setErr(e.message))
+        .finally(() => !off && first && setBusy(false));
+    };
+    load(true);
+    const id = window.setInterval(() => load(false), 60_000);
+    return () => {
+      off = true;
+      window.clearInterval(id);
+    };
+  }, [me?.username, from]); // eslint-disable-line react-hooks/exhaustive-deps
+  const live: LogLine[] = bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id })));
+  const ids = new Set(live.map(logId));
+  const lines = [...live, ...kept.filter((l) => !ids.has(logId(l)))].filter((l) => l.t >= from).sort((a, b) => b.t - a.t);
+  const older = () => {
+    const oldest = kept.reduce((m, l) => Math.min(m, l.t), Date.now());
+    setBusy(true);
+    api.botLog(from, oldest)
+      .then((r) => {
+        merge(r.lines);
+        setMore(r.more);
+        setErr("");
+      })
+      .catch((e) => setErr(e.message))
+      .finally(() => setBusy(false));
+  };
+  const dayName = (t: number) => (t >= midnight ? "Today" : t >= midnight - LOG_DAY ? "Yesterday" : new Date(t).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" }));
+  let lastDay = "";
   return (
-    <div className="log">
-      {lines.map((l, i) => (
-        <div key={i} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {many && <span className="bot-tag">Bot {l.bot}</span>} {aiText(l.msg)}</div>
-      ))}
-    </div>
+    <>
+      <div className="log-bar">
+        <div className="log-range" role="group" aria-label="Which days of the log to show">
+          <button className={`chip ${range === "today" ? "on" : ""}`} aria-pressed={range === "today"} onClick={() => setRange("today")}>Today</button>
+          <button className={`chip ${range === "week" ? "on" : ""}`} aria-pressed={range === "week"} onClick={() => setRange("week")}>Last 7 days</button>
+        </div>
+        <span className="muted tiny">{lines.length.toLocaleString()} line{lines.length === 1 ? "" : "s"}{busy ? " · loading…" : ""}{err ? ` · the earlier lines could not be loaded (${err})` : ""} · the log is kept for 7 days</span>
+      </div>
+      {!lines.length ? (
+        <p className="muted small pad">{busy ? "Loading the log…" : !bots.some((b) => b.bot.log.length) && range === "week" ? "No agent has run in the last 7 days." : range === "today" ? "Nothing in the log today yet. Last 7 days shows the earlier lines." : "Nothing in the log for the last 7 days."}</p>
+      ) : (
+        <div className="log">
+          {lines.map((l) => {
+            const day = range === "week" ? dayName(l.t) : "";
+            const head = day && day !== lastDay ? <div key={`d${l.t}`} className="log-day">{day}</div> : null;
+            if (day) lastDay = day;
+            return [
+              head,
+              <div key={logId(l)} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {many && <span className="bot-tag" title={l.sym ? `Agent ${l.bot}, on ${l.sym}` : undefined}>Bot {l.bot}</span>} {aiText(l.msg)}</div>,
+            ];
+          })}
+          {more ? <button className="chip log-older" onClick={older} disabled={busy}>{busy ? "Loading…" : "Show older lines"}</button> : null}
+        </div>
+      )}
+    </>
   );
 }
 

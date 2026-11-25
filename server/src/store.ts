@@ -173,6 +173,12 @@ function fileStore(): Store {
     async listRange<T>(key: string, start: number, stop: number) {
       return readList(key).slice(start, stop + 1) as T[];
     },
+    async listReplace<T>(key: string, items: T[], reset: boolean) {
+      fs.mkdirSync(dir, { recursive: true });
+      const text = items.map((v) => JSON.stringify(v) + "\n").join("");
+      if (reset) fs.writeFileSync(listFile(key), text);
+      else fs.appendFileSync(listFile(key), text);
+    },
     ...localLock,
   };
 }

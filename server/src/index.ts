@@ -12,6 +12,7 @@ import { alertChannel } from "./alerts.js";
 import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
 import * as history from "./audit.js";
+import { logHistory } from "./botlog.js";
 import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
@@ -234,6 +235,17 @@ app.get("/api/wallet", signedIn(async (req, res) => {
 app.get("/api/activity", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;
   res.json(await history.activity(a.key, num(req.query.before, 0), num(req.query.limit, 50)));
+}));
+// The agents' log for a stretch of time, newest first, in pages (the last week is kept: botlog.ts).
+app.get("/api/bot/log", signedIn(async (req, res) => {
+  const a = (await auth.requestAuth(req))!;
+  try {
+    const now = Date.now();
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await logHistory(a.key, num(req.query.from, now - 86_400_000), num(req.query.to, now), num(req.query.limit, 500)));
+  } catch (e) {
+    res.status(502).json({ error: engine.shortError(e) });
+  }
 }));
 app.get("/api/trades/history", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;

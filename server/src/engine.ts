@@ -11,6 +11,7 @@ import { scanOpportunities } from "./scan.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 import { copyFromUpstash, createStore, oldStoreFromEnv } from "./store.js";
+import { keepLogLines, type LogLine } from "./botlog.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin, type CoinGate } from "./agents.js";
@@ -378,6 +379,7 @@ type Account = {
   planAt?: number;
   rev?: number | null; // the saved account's version number this copy holds (stores that keep one)
   saving?: number; // saves of this copy still on their way
+  logQueue?: LogLine[]; // log lines written since the last save, on their way to the week's log (botlog.ts)
 };
 const NEW_ACCOUNT_CASH = 10_000; // what a new paper account starts with ($1,000 until v0.63)
 const EARLIER_ACCOUNT_CASH = 1000;
@@ -761,6 +763,7 @@ function save() {
     })
     .then(() => markActive(a))
     .catch((e) => console.error("[store] save failed:", e))
+    .then(() => keepLog(a))
     .finally(() => {
       a.saving = Math.max(0, (a.saving ?? 1) - 1);
     });
@@ -784,10 +787,30 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 export const roundTripCostPct = () => 2 * (state.settings.feePct + state.settings.slippagePct);
 
 function log(msg: string, level: "info" | "good" | "bad" = "info") {
-  acct().dirty = true;
-  state.bot.log.unshift({ t: Date.now(), msg, level });
+  const a = acct();
+  a.dirty = true;
+  const t = Date.now();
+  state.bot.log.unshift({ t, msg, level });
   state.bot.log = state.bot.log.slice(0, 200);
+  // The account keeps each agent's newest 200 lines; the week's log keeps them all (botlog.ts).
+  if (a.key) {
+    const sym = state.bot.config?.symbol;
+    (a.logQueue ??= []).push({ t, bot: currentBotId(), ...(sym ? { sym } : {}), msg, level });
+  }
   console.log(`[bot] ${msg}`);
+}
+// The log lines written since the last save go to the week's log in one write. A write that
+// fails is tried again with the next save (the newest 500 lines are held for it).
+async function keepLog(a: Account) {
+  const lines = a.logQueue;
+  if (!a.key || !lines?.length) return;
+  a.logQueue = [];
+  try {
+    await keepLogLines(a.key, lines);
+  } catch (e) {
+    a.logQueue = [...lines, ...(a.logQueue ?? [])].slice(-500);
+    console.error("[botlog] write failed:", e);
+  }
 }
 
 export function equity() {

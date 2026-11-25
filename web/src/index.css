@@ -750,7 +750,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 
 /* Chart height: set by the drag handle under the chart */
-.layout .chart-panel { position: relative; }
+/* (not while it fills the window: this rule comes later than the one that pins it to the window, and used to win, so Maximize left the chart in its column) */
+.layout .chart-panel:not(.maximized) { position: relative; }
+.layout .chart-panel.maximized, .layout > .chart-panel.maximized { position: fixed; align-self: stretch; justify-self: stretch; } /* stretch: "align-self: start" (the desktop layout) would leave it only as tall as its contents */
 .layout .chart-panel:not(.maximized) .chart-wrap, .layout .chart-panel:not(.maximized) .chart.empty { flex: none; min-height: 0; height: var(--chart-h, 420px); }
 .row-resizer { position: absolute; left: 0; right: 0; bottom: -12px; height: 10px; display: grid; place-items: center; cursor: row-resize; touch-action: none; z-index: 5; }
 .row-resizer span { width: 46px; height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.22); transition: background 0.15s, width 0.15s; }
@@ -1260,3 +1262,10 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .layout > .panel.bottom.maximized, .panel.bottom.maximized { position: fixed; inset: 8px; z-index: 60; max-height: none; min-height: 0; overflow-y: auto; background: #070b16; box-shadow: 0 0 0 100vmax rgba(2, 4, 10, 0.75); display: flex; flex-direction: column; }
 .panel.bottom.maximized > .tabs { flex: none; }
 .panel.bottom.maximized .log { max-height: none; flex: 1 1 auto; min-height: 0; }
+
+/* The agent log's filter (Today, Last 7 days) and the day headings of the week's view. */
+.log-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; }
+.log-range { display: inline-flex; gap: 6px; }
+.log-range .chip { cursor: pointer; }
+.log .log-day { position: sticky; top: 0; z-index: 1; padding: 5px 0 4px; margin-top: 4px; background: var(--panel-solid, #0b1120); color: var(--cyan); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+.log .log-older { align-self: flex-start; margin: 6px 0 2px; cursor: pointer; }

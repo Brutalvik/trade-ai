@@ -102,6 +102,8 @@ export type AppState = {
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; desk?: DeskView; cost?: AgentCost; gate?: PlanGate } | null;
   bots?: BotSlot[]; // extra bots (2 and 3); bot 1 is bot / lastSignal
 };
+// One line of the agents' log: which agent wrote it (and on which coin), when, and how it should look.
+export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad" };
 export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };
 // Every bot of the account, bot 1 first.
 export const allBots = (s: AppState | null): BotSlot[] => (s ? [{ id: "1", bot: s.bot, lastSignal: s.lastSignal }, ...(s.bots ?? [])] : []);
@@ -230,6 +232,8 @@ export const api = {
   setUserAccess: (b: { username: string; plan?: PlanId; role?: "user" | "admin" }) => req<User>("/admin/users", b),
   reset: (startCash: number) => req("/reset", { startCash }),
   startBot: (cfg: BotConfig, botId = "1") => req("/bot/start", { ...cfg, botId }),
+  // The agents' log between two times (newest first, in pages; the last week is kept).
+  botLog: (from: number, to: number, limit = 500) => req<{ lines: LogLine[]; more: boolean }>(`/bot/log?from=${Math.floor(from)}&to=${Math.floor(to)}&limit=${limit}`),
   stopBot: (botId = "1") => req("/bot/stop", { botId }),
   removeBot: (botId: string) => req("/bot/remove", { botId }),
   heartbeat: () => req<{ ticked: boolean; running: boolean }>("/bot/heartbeat", {}),
