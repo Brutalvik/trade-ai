@@ -185,7 +185,7 @@ export function GuidePage({ plans, onClose }: { plans: PlanInfo[]; onClose: () =
       body: (
         <>
           <ul>
-            <li><b>Trading costs</b> (paper, simulated): for your own trades, a DEX fee and slippage on each side, about 3% for a buy and a sell together. Change them in Settings (the wrench in the header). An agent's trades are charged what a trade of its size really costs in that coin's pool instead (see Agents). Real trades pay the real swap and network fees shown before you sign.</li>
+            <li><b>Trading costs</b> (paper, simulated): for your own trades, a DEX fee and slippage on each side, about 3% for a buy and a sell together. Change them in Settings (the wrench in the header). Settings also has <b>What the app shows</b>: untick the AI Signal card to hide it. That choice is saved to your account, so it stays hidden every time you sign in until you tick it again. An agent's trades are charged what a trade of its size really costs in that coin's pool instead (see Agents). Real trades pay the real swap and network fees shown before you sign.</li>
             {plan ? (
               <li><b>Platform charge on your plan ({planName})</b>: {plan.feePct === 0 ? "none" : plan.freeTrades > 0 ? `${plan.freeTrades} trades a month free, then ${plan.feePct}% of each trade` : `${plan.feePct}% of each trade`}.</li>
             ) : null}

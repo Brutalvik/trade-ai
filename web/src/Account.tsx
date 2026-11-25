@@ -31,15 +31,22 @@ export function Modal({ title, onClose, children, foot, narrow, wide }: { title:
 // ---------- Settings ----------
 
 export function SettingsButton({ alerts, fee, slip, onSaved, notify }: { alerts: "telegram" | "ntfy" | null; fee: number; slip: number; onSaved: () => void; notify: (m: string, bad?: boolean) => void }) {
+  const access = useAccess();
   const [open, setOpen] = useState(false);
   const [feeS, setFeeS] = useState(String(fee));
   const [slipS, setSlipS] = useState(String(slip));
   const [saving, setSaving] = useState(false);
+  // What the app shows: parts you can hide. Kept on your account, so it follows you to every sign-in.
+  const hidden = access.me?.prefs?.hide ?? [];
+  const [showSignal, setShowSignal] = useState(true);
   const openIt = () => {
     setFeeS(String(fee));
     setSlipS(String(slip));
+    setShowSignal(!hidden.includes("aiSignal"));
     setOpen(true);
   };
+  const hideNext = showSignal ? hidden.filter((x) => x !== "aiSignal") : [...new Set([...hidden, "aiSignal"])];
+  const prefsChanged = [...hideNext].sort().join() !== [...hidden].sort().join();
   const f = Number(feeS), sl = Number(slipS);
   const valid = f >= 0 && f <= 10 && sl >= 0 && sl <= 10;
   const changed = f !== fee || sl !== slip;
@@ -48,9 +55,13 @@ export function SettingsButton({ alerts, fee, slip, onSaved, notify }: { alerts:
     setSaving(true);
     try {
       if (changed) await api.settings({ feePct: f, slippagePct: sl });
+      if (prefsChanged) {
+        await api.setPrefs(hideNext);
+        access.reloadMe?.();
+      }
       onSaved();
       setOpen(false);
-      notify(changed ? "Trading costs saved." : "No changes.");
+      notify(changed && prefsChanged ? "Settings saved." : changed ? "Trading costs saved." : prefsChanged ? (showSignal ? "The AI Signal card is shown again." : "The AI Signal card is hidden. Switch it back on here in Settings.") : "No changes.");
     } catch (e: any) {
       notify(e.message, true);
     } finally {
@@ -94,6 +105,15 @@ export function SettingsButton({ alerts, fee, slip, onSaved, notify }: { alerts:
           <p className="small">
             A buy plus a sell costs about <b>{(2 * ((f || 0) + (sl || 0))).toFixed(1)}%</b>. Agents aim for at least +5% after these costs, so their first target sits that much higher on the price.
           </p>
+
+          <div className="settings-head">
+            <span>What the app shows</span>
+            <span className="muted tiny">Saved to your account</span>
+          </div>
+          <label className="check small settings-show">
+            <input type="checkbox" checked={showSignal} onChange={(e) => setShowSignal(e.target.checked)} />
+            <span><b>AI Signal card</b>: the AI's plan for the coin on the chart, with the Analyze button. Untick it to hide the card; it then stays hidden every time you sign in, on any device, until you tick it again here. Your agents are not affected.</span>
+          </label>
 
           <div className="settings-head">
             <span>Phone alerts</span>

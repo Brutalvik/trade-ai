@@ -128,7 +128,7 @@ export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.
 export type Usage = { month: string; used: number; limit: number; topup?: number }; // limit -1 = unlimited; topup = extra tokens that don't expire
 export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number }[]; yearlyMonthsPaid: number };
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[] }; // freeTrades -1 = unlimited
-export type User = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
+export type User = { prefs?: { hide: string[] }; username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
 export type AdminUser = User & { usage: Usage };
 export type RealQuote = { requestId: string; transaction: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
 export type RealTrade = { t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: "SOL" | "USDC"; status: "Success" | "Failed"; signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; feeBps: number; error?: string };
@@ -221,6 +221,8 @@ export const api = {
   privyComplete: (b: { accessToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/privy-complete", b),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   setTradeMode: (mode: "paper" | "real") => req<{ user: User }>("/auth/trade-mode", { mode }),
+  // The parts of the app this user has hidden (saved on their account).
+  setPrefs: (hide: string[]) => req<{ user: User }>("/auth/prefs", { hide }),
   plans: () => req<PlanInfo[]>("/plans"),
   agents: () => req<{ at: number; scanned: number; pass: number; coins: AgentCoin[] }>("/agents"),
   searchCoins: (q: string) => req<{ crypto: ListCoin[]; tokens: (ListCoin & { organic?: number })[]; address: boolean }>(`/search-coins?q=${encodeURIComponent(q)}`),

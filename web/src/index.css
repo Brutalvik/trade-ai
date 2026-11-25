@@ -1300,3 +1300,7 @@ body.resizing-row { cursor: row-resize; user-select: none; }
   .modal-foot:has(.agent-foot-note) .btn { flex: 1 1 0; min-width: 0; white-space: nowrap; padding-left: 8px; padding-right: 8px; }
   .modal-foot:has(.agent-foot-note) .btn.buy { flex: 2.2 1 0; }
 }
+
+/* Settings, "What the app shows": a tick box with its explanation beside it. */
+.settings-show { display: flex; align-items: flex-start; gap: 9px; line-height: 1.5; }
+.settings-show input { margin-top: 4px; flex: none; }

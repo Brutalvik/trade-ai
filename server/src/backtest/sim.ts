@@ -32,7 +32,15 @@ export type SimOptions = {
 export type SimTrade = {
   symbol: string; tag?: string; entryTime: number; exitTime: number; entry: number; exit: number; usd: number;
   pnlUsd: number; netPct: number; costPct: number; why: Sale["why"] | "end"; heldMin: number; bestNetPct: number;
+  // A profit exit: where the exit line stood when it was sold, and where the sale filled, both as
+  // % after the round-trip cost by the same sum (a sale fills under its line when the price has
+  // already fallen through it at the check).
+  linePct?: number; fillPct?: number;
 };
+// A design for the back-tester only: `touch` = a profit exit is taken the moment the price touches
+// the exit line inside a 5-second candle (as a faster check would see it), not when a 5-second
+// candle closes under it. The live rule waits for the close so that one wick does not end a trade.
+export type TestDesign = ExitDesign & { touch?: boolean };
 
 // The coin's usual 5-minute swing (ATR% of 5-minute candles), known at a given time.
 function atr5m(c5: Candle[]) {
@@ -90,6 +98,7 @@ export function simulate(fx: Fixture, entries: Entry[], opt: SimOptions): SimTra
     out.push({
       symbol: fx.symbol, tag: p.tag, entryTime: p.openedAt, exitTime: c[k].time + step, entry: p.st.entry, exit: f.fillPrice, usd: p.usd,
       pnlUsd: pnl, netPct: (pnl / p.usd) * 100, costPct: p.costPct, why: sale.why, heldMin: (c[k].time + step - p.openedAt) / 60, bestNetPct: netPct(p.st.entry, p.st.best, p.costPct),
+      ...(sale.why === "profit_exit" ? { linePct: netPct(p.st.entry, p.st.stop, p.costPct), fillPct: netPct(p.st.entry, sale.at, p.costPct) } : {}),
     });
     pos = null;
   };
@@ -122,7 +131,8 @@ export function simulate(fx: Fixture, entries: Entry[], opt: SimOptions): SimTra
     const p = pos!;
     const a = atr(x.time);
     if (exact) {
-      const r = stepAgentTrade(p.st, { price: x.close, low: x.low, high: x.high, peakHigh: x.close, closeLow: x.close }, (x.time + step) * 1000, p.costPct, opt.design, a);
+      const touch = !!(opt.design as TestDesign).touch && !!p.st.pm; // only once the minimum profit is locked
+      const r = stepAgentTrade(p.st, { price: x.close, low: x.low, high: x.high, peakHigh: x.close, closeLow: touch ? x.low : x.close }, (x.time + step) * 1000, p.costPct, opt.design, a);
       p.st = r.state;
       if (r.sale) close(k, r.sale);
       continue;

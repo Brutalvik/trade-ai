@@ -29,9 +29,14 @@ type User = {
   solanaAddress?: string; // their Privy embedded Solana wallet
   role?: Role; // user | admin
   tradeMode?: TradeMode; // paper (default) or real (their own wallet)
+  prefs?: Prefs; // what this user chose to see in the app: kept with the account, so it is the same on every sign-in and every device
 };
 export type TradeMode = "paper" | "real";
-export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role; solanaAddress: string | null; hasPassword: boolean; tradeMode: TradeMode };
+// Parts of the app a user can hide in Settings. Everything is shown unless its name is in `hide`.
+export const HIDEABLE = ["aiSignal"] as const;
+export type Prefs = { hide?: string[] };
+const cleanHide = (v: unknown): string[] => [...new Set((Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string" && (HIDEABLE as readonly string[]).includes(x)))];
+export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role; solanaAddress: string | null; hasPassword: boolean; tradeMode: TradeMode; prefs: { hide: string[] } };
 
 const COOKIE = "nexus_session";
 const SESSION_DAYS = 30;
@@ -40,7 +45,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const userKey = (u: string) => `user:${u.toLowerCase()}`;
 const emailKey = (e: string) => `email:${e.toLowerCase()}`;
-const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash && !u.privyId, tradeMode: u.tradeMode === "real" ? "real" : "paper" });
+const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash && !u.privyId, tradeMode: u.tradeMode === "real" ? "real" : "paper", prefs: { hide: cleanHide(u.prefs?.hide) } });
 
 let secret: Buffer | null = null;
 async function key() {
@@ -316,6 +321,20 @@ export async function setTradeMode(req: Request, res: Response) {
   const updated: User = { ...user, tradeMode: mode };
   await store.kvSet(userKey(user.username), updated);
   await audit(user.username, "account.mode", mode === "real" ? "Switched to Real (own wallet)" : "Switched to Paper", { from, to: mode });
+  return { user: { ...pub(updated), owner: true } };
+}
+
+// What the user wants to see (Settings, "What the app shows"): the parts they have hidden.
+// Saved on their account, so a part they hid stays hidden on every sign-in until they show it again.
+export async function setPrefs(req: Request, res: Response) {
+  const user = await sessionUser(req);
+  if (!user) {
+    res.status(401);
+    throw new Error("Sign in first");
+  }
+  if (!Array.isArray(req.body?.hide)) throw new Error("Send the list of parts to hide");
+  const updated: User = { ...user, prefs: { ...(user.prefs ?? {}), hide: cleanHide(req.body.hide) } };
+  await store.kvSet(userKey(user.username), updated);
   return { user: { ...pub(updated), owner: true } };
 }
 

@@ -79,6 +79,19 @@ export function design(key: string): ExitDesign | undefined {
   // "quick<N>" is the bot's design with a smaller minimum profit: +N% after costs is locked the
   // moment the trade gets there (quick1, quick2.5 ...), for any N from 0.5 up to the live minimum.
   // The question it answers: do quicker, smaller wins add up to more than the +5% lock does?
+  // "keep<P>" is the bot's design that, once the +5% minimum is locked, also never gives back more
+  // than (100 - P)% of the best gain so far (keep60, keep75 ...). "tight<N>" is the bot's design
+  // with the exit a fixed N% behind the highest close (tight1.5, tight2 ...). The question both
+  // answer: does selling closer to the best price add up to more than the exit the bot uses?
+  // "touch" = the bot's design with a profit exit taken on the first touch of the exit line
+  // (sim.ts, TestDesign); "touch-keep<P>" = the same together with keep<P>.
+  if (key === "touch") return { ...EXIT_LIVE, name: "sell on the first touch of the line", touch: true } as ExitDesign;
+  const tk = /^touch-keep(\d+)$/.exec(key);
+  if (tk) return Number(tk[1]) >= 10 && Number(tk[1]) <= 95 ? ({ ...EXIT_LIVE, name: `first touch + keep ${tk[1]}%`, touch: true, ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(tk[1]) / 100 } } as ExitDesign) : undefined;
+  const k = /^keep(\d+)$/.exec(key);
+  if (k) return Number(k[1]) >= 10 && Number(k[1]) <= 95 ? { ...EXIT_LIVE, name: `keep ${k[1]}% of the best gain`, ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(k[1]) / 100 } } : undefined;
+  const t = /^tight(\d+(?:\.\d+)?)$/.exec(key);
+  if (t) return Number(t[1]) >= 0.5 && Number(t[1]) <= 12 ? { ...EXIT_LIVE, name: `exit ${t[1]}% behind the high`, trail: { kind: "fixed", pct: Number(t[1]) } } : undefined;
   const q = /^quick(\d+(?:\.\d+)?)$/.exec(key);
   if (q) return Number(q[1]) >= 0.5 && Number(q[1]) <= EXIT_LIVE.minNetPct ? { ...EXIT_LIVE, name: `quick: +${q[1]}% locked at once`, minNetPct: Number(q[1]), lockAtNetPct: Number(q[1]) } : undefined;
   return DESIGNS[key];

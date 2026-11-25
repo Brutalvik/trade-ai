@@ -60,7 +60,23 @@ export default function App() {
     sessionStorage.setItem(SIGNIN_PENDING, "1");
     window.dispatchEvent(new Event(SIGNIN_EVENT));
   }, []);
-  const loadMe = useCallback(() => api.me().then((r) => setMe(r.user)).catch(() => setMe(null)), []);
+  // Parts of the app the user has hidden in Settings (kept on their account). Remembered in this
+  // browser too, so a hidden part does not flash up before the account has loaded.
+  const [hiddenParts, setHiddenParts] = useState<string[]>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem("nexus-hidden") ?? "[]");
+      return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const loadMe = useCallback(() => api.me().then((r) => {
+    setMe(r.user);
+    const hide = r.user?.prefs?.hide ?? []; // signed out: everything is shown
+    setHiddenParts(hide);
+    if (hide.length) localStorage.setItem("nexus-hidden", JSON.stringify(hide));
+    else localStorage.removeItem("nexus-hidden");
+  }).catch(() => setMe(null)), []);
   useEffect(() => {
     void loadMe();
     void api.plans().then(setPlans).catch(() => {});
@@ -434,7 +450,7 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-          {demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} maCross={shownPlan?.maCross} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
+          {hiddenParts.includes("aiSignal") ? null : demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} maCross={shownPlan?.maCross} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
             <AgentsPanel state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} defaults={AGENT_DEFAULTS} request={agentReq} onRequestDone={() => setAgentReq(null)} />
           )}
