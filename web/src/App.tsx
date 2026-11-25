@@ -12,7 +12,7 @@ import { RealTradePanel, solscanTx } from "./RealTrade";
 import { paperCsv, paperPdf, realCsv, realPdf } from "./exportTrades";
 import { AccessCtx, AccountButton, SIGNIN_PENDING, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
-import { isMuted, playTradeSound, setMuted, unlockAudioOnFirstGesture } from "./sounds";
+import { isMuted, playSoundPreview, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
 import { MaCrossChips } from "./MaCross";
 
@@ -111,6 +111,40 @@ export default function App() {
   });
   // Chart height: drag the handle between the chart and Positions (remembered).
   const [chartH, setChartH] = useState(() => Math.max(CHART_MIN, Math.min(CHART_MAX, Number(localStorage.getItem("nexus-chart-h")) || 420)));
+  // ...but never taller than the window can show. On a desktop the layout fills the window, so the
+  // chart gets what is left after the pair's header, the chart's toolbars, its legend and a strip
+  // of Positions. (Before, a short window, a banner or a legend that wrapped onto a second line
+  // pushed the chart's last row out of its card, over Positions and the footer.)
+  const [chartRoom, setChartRoom] = useState<{ fit: number; around: number } | null>(null);
+  const measureChart = useCallback(() => {
+    const layout = layoutRef.current;
+    const panel = layout?.querySelector<HTMLElement>(":scope > .chart-panel");
+    const box = panel?.querySelector<HTMLElement>(".chart-wrap, .chart.empty");
+    let next: { fit: number; around: number } | null = null;
+    if (layout && panel && box && !panel.classList.contains("maximized") && window.matchMedia("(min-width: 1181px)").matches) {
+      const cs = getComputedStyle(layout);
+      const top = layout.getBoundingClientRect().top + window.scrollY;
+      const around = Math.ceil(panel.offsetHeight - box.offsetHeight); // the pair's header, the legend, the card's own padding
+      const room = window.innerHeight - top - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - (parseFloat(cs.rowGap) || 0) - BOTTOM_MIN;
+      next = { fit: Math.floor(room - around - CHART_BARS), around };
+    }
+    setChartRoom((cur) => (cur?.fit === next?.fit && cur?.around === next?.around ? cur : next));
+  }, []);
+  useLayoutEffect(() => measureChart()); // after every render: the header and the legend change height with what they show
+  useEffect(() => {
+    const layout = layoutRef.current;
+    if (!layout || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measureChart);
+    ro.observe(layout);
+    window.addEventListener("resize", measureChart);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measureChart);
+    };
+  }, [measureChart]);
+  const shownChartH = chartRoom ? Math.max(CHART_MIN, Math.min(chartH, chartRoom.fit)) : chartH;
+  // What the chart's card needs in all: if even the smallest chart does not fit, the layout grows by that much (and the page scrolls) instead of overlapping.
+  const chartNeed = chartRoom ? `${chartRoom.around + CHART_BARS + shownChartH}px` : undefined;
   // Left coin-list panel: collapsible and resizable (both remembered).
   const [listCollapsed, setListCollapsed] = useState(() => localStorage.getItem("nexus-list-collapsed") === "1");
   const [listW, setListW] = useState(() => Math.max(LIST_MIN, Math.min(LIST_MAX, Number(localStorage.getItem("nexus-list-w")) || 300)));
@@ -333,7 +367,7 @@ export default function App() {
         </div>
       )}
 
-      <main ref={layoutRef} className={`layout ${listCollapsed ? "list-collapsed" : ""}`} style={{ "--list-w": `${listW}px` } as CSSProperties}>
+      <main ref={layoutRef} className={`layout ${listCollapsed ? "list-collapsed" : ""}`} style={{ "--list-w": `${listW}px`, ...(chartNeed ? { "--chart-need": chartNeed } : {}) } as CSSProperties}>
         {listCollapsed ? (
           <aside className="coin-side collapsed" aria-label="Coin lists (collapsed)">
             <button className="panel-toggle" onClick={() => collapseList(false)} data-tip="Expand panel" aria-label="Expand coin lists">
@@ -348,8 +382,8 @@ export default function App() {
           </aside>
         )}
 
-        <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`} style={{ "--chart-h": `${chartH}px` } as CSSProperties}>
-          {!chartMax && <RowResizer height={chartH} onChange={setChartH} onDone={(h) => localStorage.setItem("nexus-chart-h", String(h))} />}
+        <section className={`panel chart-panel ${chartMax ? "maximized" : ""}`} style={{ "--chart-h": `${shownChartH}px` } as CSSProperties}>
+          {!chartMax && <RowResizer height={shownChartH} max={chartRoom?.fit} onChange={setChartH} onDone={(h) => localStorage.setItem("nexus-chart-h", String(h))} />}
           <PairHeader pair={pair} tf={tf} setTf={(t) => { if (t !== tf) { setTf(t); setCandles((pair && savedChart(pair.pool, t)?.candles) || []); } }} />
           {candles.length ? <Chart candles={candles} trades={pairTrades} lines={lines} seconds={isSeconds(tf)} viewKey={`${pair?.pool}:${tf}`} onNeedOlder={loadOlder} noOlder={histUi.key === `${pair?.pool}:${tf}` && histUi.done} loadingOlder={histUi.key === `${pair?.pool}:${tf}` && histUi.busy} olderTick={histUi.retry} drawKey={pair?.pool ?? ""} symbol={pair?.symbol ?? "chart"} mcapFactor={pair && pair.priceUsd > 0 && pair.marketCap > 0 ? pair.marketCap / pair.priceUsd : 0} /> : <div className="chart empty">{pair ? <ChartLoading symbol={pair.symbol} icon={pair.imageUrl} /> : "Search a ticker to begin"}</div>}
           <div className="legend">
@@ -436,7 +470,7 @@ function SoundToggle() {
     const next = !muted;
     setMuted(next);
     setMutedState(next);
-    if (!next) playTradeSound("buy"); // a quick preview so you know sounds are on
+    if (!next) playSoundPreview(); // a quick chime so you know sounds are on
   };
   return (
     <button className="sound-toggle" onClick={toggle} aria-pressed={muted} aria-label={muted ? "Unmute trade sounds" : "Mute trade sounds"} title={muted ? "Trade sounds off (click to turn on)" : "Trade sounds on (click to mute)"}>
@@ -1109,7 +1143,7 @@ function GoalLadder({ state }: { state: AppState | null }) {
   const eq = state?.equityNow ?? 0;
   const start = state?.startCash || 10; // signed out: the $0 view still shows the usual ladder
   const steps = [start, start * 1.5, start * 2, start * 10, start * 100];
-  const [cash, setCash] = useState("10");
+  const [cash, setCash] = useState("10000");
   return (
     <div className="panel">
       <div className="panel-title"><span>GROWTH LADDER</span><span className="muted small">peak {fmtUsd(state?.peakEquity ?? 0)}</span></div>
@@ -1326,10 +1360,13 @@ function PatternChips({ patterns }: { patterns?: FramePatterns[] }) {
 // Drag handle under the chart: drag up/down to make the chart shorter/taller (Positions moves with it).
 const CHART_MIN = 260;
 const CHART_MAX = 900;
-function RowResizer({ height, onChange, onDone }: { height: number; onChange: (h: number) => void; onDone: (h: number) => void }) {
+const CHART_BARS = 72; // the chart's own toolbars, above and below the candles (see .chart-wrap.tv in index.css)
+const BOTTOM_MIN = 90; // the strip of Positions that always stays in view under the chart (the same number is in index.css)
+function RowResizer({ height, max, onChange, onDone }: { height: number; max?: number; onChange: (h: number) => void; onDone: (h: number) => void }) {
   const drag = useRef<{ y: number; h: number; last: number } | null>(null);
-  // Never taller than the window allows: leave room for the header, the chart toolbars and some of Positions.
-  const clamp = (h: number) => Math.max(CHART_MIN, Math.min(CHART_MAX, window.innerHeight - 330, Math.round(h)));
+  // Never taller than the window allows: `max` is what was measured to fit (desktop); elsewhere
+  // leave room for the header, the chart toolbars and some of Positions.
+  const clamp = (h: number) => Math.max(CHART_MIN, Math.min(CHART_MAX, max ?? window.innerHeight - 330, Math.round(h)));
   return (
     <div
       className="row-resizer"

@@ -24,7 +24,8 @@ await engine.withAccount(KEY, async () => {
   let mark = fake.calls.length;
   await engine.sync();
   await engine.flush();
-  expect("a login's first visit: the account is looked for once, and the new account is saved", [since(mark).load, since(mark).save, engine.getState().cash, await other.rev(KEY)], [1, 1, 1000, 1]);
+  expect("a login's first visit: the account is looked for once, and the new account is saved", [since(mark).load, since(mark).save, engine.getState().cash, await other.rev(KEY)], [1, 1, 10000, 1]);
+  expect("a new paper account starts with $10,000", [engine.getState().startCash, engine.getState().peakEquity, engine.getState().equity.at(-1)?.v], [10000, 10000, 10000]);
 
   // Give the account the bulk a real one has: another copy saves 800 trades and a long equity curve.
   const big: any = await other.load(KEY);
@@ -76,6 +77,14 @@ await engine.withAccount(KEY, async () => {
   await engine.sync();
   expect("...and carries on as soon as it is back", [since(mark).rev, since(mark).load, engine.getState().cash], [1, 0, 777]);
 
+  // ---- an account opened with the earlier $1,000 ----
+  const earlier = (extra: object = {}) => ({ mode: "paper", startCash: 1000, cash: 420.5, peakEquity: 1012, positions: [{ id: "p1", pool: "P", symbol: "FOOD", qty: 100, entryPrice: 5, lastPrice: 5.5, source: "bot", botId: "1" }], trades: [{ id: "t1", side: "BUY", usd: 500 }], equity: [{ t: 1, v: 1000 }, { t: 2, v: 970.5 }], settings: { feePct: 1, slippagePct: 0.5 }, orders: [], bot: { running: true, config: { pick: "agent", symbol: "FOOD", budgetUsd: 1000 }, log: [], day: { date: "2026-11-25", startEquity: 1000 } }, bots: [], lastSignal: null, ...extra });
+  await other.save(earlier(), "opened1000");
+  await other.save(earlier({ resetAt: 5 }), "reset1000");
+  const seen = async (key: string) => engine.withAccount(key, async () => { await engine.sync(); const g: any = engine.getState(); return [g.startCash, g.cash, g.peakEquity, g.equity.map((e: any) => e.v), g.bot.day?.startEquity ?? null, g.equityNow - g.startCash, g.bot.config.budgetUsd, g.positions.length]; });
+  expect("an account opened with the earlier $1,000 and never reset is raised to $10,000: its profit and loss, its trade and its agent's budget are unchanged", await seen("opened1000"), [10000, 9420.5, 10012, [10000, 9970.5], 10000, -29.5, 1000, 1]);
+  expect("...once only (looking again changes nothing)", await seen("opened1000"), [10000, 9420.5, 10012, [10000, 9970.5], 10000, -29.5, 1000, 1]);
+  expect("an account someone reset to $1,000 on purpose is left alone", (await seen("reset1000")).slice(0, 2), [1000, 420.5]);
   const st = engine.storageStats();
   check("the server reports its own storage traffic", st && st.calls.trade_account_rev >= 28 && st.calls.trade_account_load >= 3 && st.receivedBytes > 0, st && { calls: st.calls, receivedKB: Math.round(st.receivedBytes / 1024) });
 });

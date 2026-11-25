@@ -2,6 +2,7 @@
 // include are left out entirely (a Free user sees no AI or bot instructions), with one short line
 // pointing to Plans. Opened from the footer, at #guide (#rules still works for old links).
 import { useEffect, type ReactNode } from "react";
+import { playTradeSound } from "./sounds";
 import { useAccess } from "./Account";
 import type { PlanInfo } from "./api";
 
@@ -151,6 +152,11 @@ export function GuidePage({ plans, onClose }: { plans: PlanInfo[]; onClose: () =
           <li><b>Positions</b>: each coin you hold, {bot ? "who bought it (you or an agent), " : ""}the amount invested, entry and current price, profit or loss, exit and target, and when it sells by.</li>
           <li><b>Trade history</b>: every buy and sell. Download it as <b>CSV</b> (for spreadsheets) or a formatted <b>PDF</b>.</li>
           <li><b>Growth ladder</b> (checkbox): your progress toward account goals, shown under Positions.</li>
+          <li>
+            <b>Trade sounds</b>: when something is bought, a voice says "Order fulfilled". A sale at a profit rings a cash register and the voice says "Sold"; a sale at a loss gives a short buzzer, then "Sold". The speaker button at the top switches them off.
+            Hear them: <button className="chip" onClick={() => playTradeSound("buy")}>Bought</button> <button className="chip" onClick={() => playTradeSound("profit")}>Sold at a profit</button> <button className="chip" onClick={() => playTradeSound("loss")}>Sold at a loss</button>
+            <span className="muted small"> The words are spoken by your own device, in a female English voice when it has one, so the voice differs from device to device.</span>
+          </li>
           <li><b>Profile → Activity &amp; history</b>: sign-ins, setting changes, {bot ? "agent starts and stops, " : ""}{ai ? "AI analyses, " : ""}and every "I understand" you confirmed. Entries are never edited or deleted.</li>
         </ul>
       ),

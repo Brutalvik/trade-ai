@@ -37,23 +37,26 @@ export function BotTradeNotifications({ state, onOpen }: { state: AppState | nul
 
   useEffect(() => {
     if (!state) return;
-    const botTrades = state.trades.filter((t) => t.source === "bot" || t.auto); // bot trades + protected sells
     if (state.signedOut) {
       seen.current = null; // signed out: start fresh after signing back in (no flood of old trades)
       return;
     }
     if (!seen.current) {
-      seen.current = new Set(botTrades.map((t) => t.id)); // first load: remember, don't announce
+      seen.current = new Set(state.trades.map((t) => t.id)); // first load: remember, don't announce
       return;
     }
-    const fresh = botTrades.filter((t) => !seen.current!.has(t.id)).reverse(); // oldest first
+    const fresh = state.trades.filter((t) => !seen.current!.has(t.id)).reverse(); // oldest first
     if (!fresh.length) return;
     for (const t of fresh) seen.current.add(t.id);
-    // One sound per batch (the newest trade): buy, profitable sell, or losing sell.
+    // One sound per batch (the newest trade), whoever made it, you or an agent: a buy says
+    // "Order fulfilled"; a sale rings a cash register (profit) or buzzes (loss), then says "Sold".
     const latest = fresh[fresh.length - 1];
     playTradeSound(latest.side === "BUY" ? "buy" : (latest.pnlUsd ?? 0) >= 0 ? "profit" : "loss");
-    setNotes((n) => [...fresh.map((t) => ({ id: t.id, trade: t })), ...n].slice(0, 4));
-    for (const t of fresh) setTimeout(() => dismiss(t.id), SHOW_MS);
+    // The cards are for trades you did not click yourself: the bot's, and protected sells.
+    const cards = fresh.filter((t) => t.source === "bot" || t.auto);
+    if (!cards.length) return;
+    setNotes((n) => [...cards.map((t) => ({ id: t.id, trade: t })), ...n].slice(0, 4));
+    for (const t of cards) setTimeout(() => dismiss(t.id), SHOW_MS);
   }, [state?.trades]);
 
   if (!notes.length) return null;

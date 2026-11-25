@@ -26,6 +26,7 @@ const UNIT: Job[] = [
   { name: "macross-engine", file: "unit/macross-engine.mts", what: "the crossover reaches the AI, the plan, the coin study and the endpoint" },
   { name: "scoreboard-migration", file: "unit/scoreboard-migration.mts", what: "the scoreboard's real results are rebuilt from real trades" },
   { name: "chart-source", file: "unit/chart-source.mts", what: "a chart stays on one candle source" },
+  { name: "voice", file: "unit/voice.mts", what: "which of a device's voices says the trade words: an English female one when the device has one" },
   { name: "supabase-store", file: "unit/supabase-store.mts", what: "the Supabase store on a real Postgres engine: records, locks, lists, accounts in compressed parts" },
   { name: "sync-versions", file: "unit/sync-versions.mts", what: "a check asks the database for a version number; the account is loaded only when it changed" },
   { name: "store-move", file: "unit/store-move.mts", what: "the one-time copy from Upstash: interrupted and finished, and the server waits for it" },
@@ -42,7 +43,10 @@ const ENGINE: Job[] = [
   { name: "agent-crash", file: "engine/agent.mts", env: { SC: "crash" }, what: "a crash through the stop sells at once" },
   { name: "agent-thin-pool", file: "engine/agent.mts", env: { SC: "thin" }, what: "a thin pool: the agent buys less, so the cost stays under its cap" },
   { name: "agent-quiet", file: "engine/agent.mts", env: { SC: "quiet" }, what: "a coin that isn't moving: the numbers rule a buy out and the AI is not asked" },
-  { name: "agent-no-floor", file: "engine/agent.mts", env: { SC: "quiet", MINNUM: "0" }, what: "with the floor on the numbers off, the AI is asked and the order check refuses the buy" },
+  // AIWIN 45: the forecast's random sample changes with the minute on the clock, and with the
+  // scripted AI at its usual 62% this order sat on the pass line in about 1 minute of 30 (31% chance
+  // against a need of 31 to 35%), where the panel then tipped it into a buy. At 45% it is refused in every minute.
+  { name: "agent-no-floor", file: "engine/agent.mts", env: { SC: "quiet", MINNUM: "0", AIWIN: "45" }, what: "with the floor on the numbers off, the AI is asked and the order check refuses the buy" },
   { name: "agent-scouts", file: "engine/agent.mts", env: { SC: "scouts" }, what: "the scouts refuse a coin before the AI is asked; you can trade it anyway" },
   { name: "agent-manual", file: "engine/agent.mts", env: { SC: "quiet", MANUAL: "1" }, what: "your own Analyze never replaces an agent's plan" },
   { name: "breakout-buy", file: "engine/breakout.mts", env: { SC: "buy" }, what: "a breakout is bought only once it has held" },

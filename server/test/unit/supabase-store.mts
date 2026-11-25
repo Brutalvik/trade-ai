@@ -70,6 +70,15 @@ await store.kvSet("odd-text", { note: cut, nul: "a\u0000b" });
 await store.listPush("odd-list", { note: cut });
 expect("text Postgres cannot keep (half an emoji, a NUL character) is cleaned instead of failing the write", [await store.kvGet("odd-text"), await store.listRange("odd-list", 0, 0)], [{ nul: "ab", note: "Bought \uFFFD" }, [{ note: "Bought \uFFFD" }]]);
 
+// ---- the accounts as a readable table ----
+await store.kvSet("user:ada", { username: "Ada", firstName: "Ada", lastName: "Lovelace", email: "ada@example.test", salt: "", hash: "", passVer: 1, createdAt: 1795600000000, avatarUrl: null, privyId: "did:privy:abc", solanaAddress: "So1anaAddr" });
+await store.kvSet("user:bob", { username: "bob", firstName: "Bob", lastName: "B", email: "bob@example.test", salt: "5a17", hash: "c0ffee", passVer: 2, createdAt: 1795600060000, avatarUrl: null, plan: "pro", role: "admin" });
+const users = (await fake.db.query("select * from public.trade_users order by username")).rows as any[];
+expect("the trade_users view lists every account, however it signs in, without the password fields", [users.map((u) => [u.username, u.email, u.first_name, u.last_name, u.signs_in_with, u.privy_id, u.wallet, u.plan, u.role]), Object.keys(users[0]).some((k) => /hash|salt|pass/i.test(k)), new Date(users[0].created_at).toISOString()], [[["Ada", "ada@example.test", "Ada", "Lovelace", "privy", "did:privy:abc", "So1anaAddr", "free", "user"], ["bob", "bob@example.test", "Bob", "B", "password", null, null, "pro", "admin"]], false, "2026-11-25T09:46:40.000Z"]);
+expect("...and it is as closed to the public roles as the tables are", [await asRole("anon", "select * from public.trade_users"), await asRole("authenticated", "select * from public.trade_users"), await asRole("service_role", "select count(*) from public.trade_users")], ["permission denied for view trade_users", "permission denied for view trade_users", "allowed"]);
+await store.kvDel("user:ada");
+await store.kvDel("user:bob");
+
 // ---- locks ----
 expect("a lock is taken once", [await store.lock("watch:a", 5000), await store.lock("watch:a", 5000), await store.lock("watch:b", 5000)], [true, false, true]);
 await store.unlock("watch:a");

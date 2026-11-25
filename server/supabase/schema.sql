@@ -12,6 +12,7 @@
 --   trade_kv                              small records (logins, settings, the Stop/Reset record, locks)
 --   trade_list                            append-only history (activity log, full trade ledger)
 --   trade_* functions                     the only way the server reads and writes them
+--   trade_users                           a view for people: every account as a row (Table Editor)
 -- Every function names its tables in full ("public.") and runs with an empty search path, so it
 -- cannot be made to use a look-alike table from another schema.
 --
@@ -206,6 +207,27 @@ begin
     )
   $$;
 
+  -- ---------- A readable list of the accounts ----------
+  -- Every account the app knows is a record in trade_kv under "user:<username>", whichever way
+  -- its owner signs in: with Privy (an emailed code or Google), the app keeps its own copy of
+  -- the name, the email, the Privy id and the wallet address. This view shows those records as a
+  -- table, for reading in Supabase's Table Editor. It holds no data of its own, leaves the
+  -- password fields out, and is closed to the public keys like the tables.
+  create or replace view public.trade_users with (security_invoker = true) as
+    select
+      k.value -> 'v' ->> 'username' as username,
+      k.value -> 'v' ->> 'email' as email,
+      k.value -> 'v' ->> 'firstName' as first_name,
+      k.value -> 'v' ->> 'lastName' as last_name,
+      case when coalesce(k.value -> 'v' ->> 'privyId', '') <> '' then 'privy' else 'password' end as signs_in_with,
+      k.value -> 'v' ->> 'privyId' as privy_id,
+      k.value -> 'v' ->> 'solanaAddress' as wallet,
+      coalesce(k.value -> 'v' ->> 'plan', 'free') as plan,
+      coalesce(k.value -> 'v' ->> 'role', 'user') as role,
+      to_timestamp((k.value -> 'v' ->> 'createdAt')::numeric / 1000) as created_at
+    from public.trade_kv k
+    where k.key like 'user:%';
+
   -- ---------- Who may use it ----------
   -- Closed to everyone by default; opened to the service role (the server's secret key) only.
   -- On a plain Postgres without Supabase's roles this part does nothing beyond closing it.
@@ -219,6 +241,10 @@ begin
   if v_server then
     grant all on table public.trade_accounts, public.trade_account_parts, public.trade_kv, public.trade_list to service_role;
   end if;
+  revoke all on table public.trade_users from public;
+  if v_anon then revoke all on table public.trade_users from anon; end if;
+  if v_auth then revoke all on table public.trade_users from authenticated; end if;
+  if v_server then grant select on table public.trade_users to service_role; end if;
   for v_fn in
     select p.oid::regprocedure as sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname like 'trade\_%'

@@ -52,7 +52,8 @@ export function CoinList({ onSelect, selectedMint, notify, onCollapse }: { onSel
 
   const load = useCallback((k: ListKind) => {
     setErr("");
-    api.list(k).then((r) => setLists((l) => ({ ...l, [k]: r.coins }))).catch((e) => setErr(e.message));
+    // A list can name the same coin twice (two of its pools are busy at once): show it once.
+    api.list(k).then((r) => setLists((l) => ({ ...l, [k]: r.coins.filter((c, i) => r.coins.findIndex((x) => x.mint === c.mint) === i) }))).catch((e) => setErr(e.message));
   }, []);
   useEffect(() => {
     localStorage.setItem(LS, kind);

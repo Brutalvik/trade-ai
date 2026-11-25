@@ -179,6 +179,7 @@ export type ProfitPlan = { atrPct?: number; floor: number; trailPct: number; by:
 
 type State = {
   resetAt?: number; // when this account was last reset (older copies are never saved over it)
+  raised10k?: boolean; // the one-time raise of an account opened with the earlier $1,000 has been looked at
   mode: "paper";
   startCash: number;
   cash: number;
@@ -298,6 +299,21 @@ function migrate(s: State): State {
   s.bot.noted ??= {};
   s.bot.blocked ??= null;
   s.bot.lastWatch ??= null;
+  // Paper accounts start with $10,000 since v0.64.0. An account that was opened with the earlier
+  // $1,000 and never reset is raised by the difference, once. Everything measured against the
+  // start moves with it (the starting balance, the high, the equity curve, the day's baseline),
+  // so its profit and loss, its open trades and its agents' budgets stay exactly what they were.
+  if (!s.raised10k) {
+    if (s.startCash === EARLIER_ACCOUNT_CASH && !s.resetAt) {
+      const add = NEW_ACCOUNT_CASH - EARLIER_ACCOUNT_CASH;
+      s.startCash += add;
+      s.cash += add;
+      s.peakEquity += add;
+      for (const e of s.equity ?? []) e.v += add;
+      for (const b of [s.bot, ...s.bots.map((x) => x.bot)]) if (b.day) b.day.startEquity += add;
+    }
+    s.raised10k = true;
+  }
   if (!s.bot.coinStats || !Object.keys(s.bot.coinStats).length) {
     // Rebuild today's losing streaks from the bot's trade history.
     s.bot.coinStats = {};
@@ -363,7 +379,8 @@ type Account = {
   rev?: number | null; // the saved account's version number this copy holds (stores that keep one)
   saving?: number; // saves of this copy still on their way
 };
-const NEW_ACCOUNT_CASH = 1000;
+const NEW_ACCOUNT_CASH = 10_000; // what a new paper account starts with ($1,000 until v0.63)
+const EARLIER_ACCOUNT_CASH = 1000;
 const als = new AsyncLocalStorage<Account>();
 const accounts = new Map<string, Account>();
 const newAccount = (key: string | null): Account => ({ key, state: fresh(key ? NEW_ACCOUNT_CASH : 0), loaded: false, pending: Promise.resolve(), dirty: false, busy: false, guarding: false });
