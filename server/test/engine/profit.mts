@@ -28,6 +28,11 @@ let briefSeen = false;
 let profitCalls = 0;
 let profitPrompt = "";
 let profitSystem = "";
+// The two price sources (SC=feeds): the pool snapshot reads `dexGap` under the 5-second feed, or
+// shows `dexPrice` whatever the feed says (a snapshot that lags); `feedDown` = the 5-second feed gives no answer.
+let dexGap = 0;
+let dexPrice: number | null = null;
+let feedDown = false;
 
 const jupToken = () => ({
   id: MINT, symbol: "AGT", name: "Agent Test", icon: "", usdPrice: price, mcap: 5e6, fdv: 5e6, liquidity: 400_000, holderCount: 4200,
@@ -37,7 +42,7 @@ const jupToken = () => ({
   stats1h: { priceChange: 14, holderChange: 3, buyVolume: 300_000, sellVolume: 220_000, buyOrganicVolume: 40_000, sellOrganicVolume: 30_000, numOrganicBuyers: 80, numTraders: 1500 },
   tags: ["verified"],
 });
-const dexPair = () => ({ chainId: "solana", dexId: "test", pairAddress: POOL, baseToken: { address: MINT, symbol: "AGT", name: "Agent Test" }, priceUsd: String(price), priceChange: { m5: 1.2, h1: 14, h24: 30 }, volume: { m5: 95_000, h1: 520_000, h24: 3e6 }, txns: { h1: { buys: 900, sells: 600 } }, liquidity: { usd: 400_000 }, marketCap: 5e6 });
+const dexPair = () => ({ chainId: "solana", dexId: "test", pairAddress: POOL, baseToken: { address: MINT, symbol: "AGT", name: "Agent Test" }, priceUsd: String(dexPrice ?? price * (1 - dexGap)), priceChange: { m5: 1.2, h1: 14, h24: 30 }, volume: { m5: 95_000, h1: 520_000, h24: 3e6 }, txns: { h1: { buys: 900, sells: 600 } }, liquidity: { usd: 400_000 }, marketCap: 5e6 });
 
 const json = (v: unknown) => new Response(JSON.stringify(v), { headers: { "content-type": "application/json" } });
 const realFetch = globalThis.fetch;
@@ -80,6 +85,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
   if (url.includes("api.dexscreener.com/latest/dex/pairs")) return json({ pairs: [dexPair()] });
   if (url.includes("coinmarketcap.com")) {
     const interval = new URL(url).searchParams.get("interval");
+    if (interval === "5s" && feedDown) return new Response("{}", { status: 503 });
     const step = interval === "5s" ? 5_000 : interval === "1min" ? 60_000 : interval === "15min" ? 900_000 : interval === "1h" ? 3_600_000 : interval === "1d" ? 86_400_000 : 300_000;
     const now = Date.now();
     const last = Math.floor(now / step) * step;
@@ -132,13 +138,47 @@ engine.startBot({ chain: "solana", pool: POOL, symbol: "AGT", tf: "5m", position
 await waitPlan("agent starts: the AI says buy now", () => engine.getState().positions.length > 0);
 const P = () => engine.getState().positions[0] as any;
 const show = (label: string) => { const p = P(); console.log(`   ${label}: ${p ? `open | exit ${p.stopLoss?.toFixed(4)} | floor ${p.pm?.floor?.toFixed(4) ?? "-"} | trail ${p.pm?.trailPct ?? "-"}% by ${p.pm?.by ?? "-"} | AI asked ${p.pm?.asks ?? 0}x | bought on a ${p.prediction?.pWin ?? "?"}% combined chance (needed ${p.prediction?.needPct ?? "?"}%, ${p.prediction?.parts?.length ?? 0} forecasters)` : "closed"}`); };
+if (SC === "feeds") dexGap = 0.01; // from here the pool snapshot reads 1% under the 5-second feed
+const logText = () => engine.getState().bot.log.map((l: any) => l.msg).join("\n");
+const sold = () => engine.getState().trades.some((t: any) => t.side === "SELL");
 await step(7, "1.06 then 1.03: under the minimum, nothing locked, no sale", 1.06);
 await step(7, "1.03", 1.03);
 show("before the minimum");
 await step(8, "1.092 (+5.7% after fees): minimum locked, the AI is asked", 1.092);
 show("at +5.7%");
 if (SC === "min") {
-  await step(8, "1.06: falls straight back: sells at the locked +5% exit (1.066)", 1.06);
+  await step(16, "1.06: falls straight back and stays there: sold at the locked +5% exit (1.066) about 10 seconds later", 1.06);
+} else if (SC === "dip") {
+  await step(6, "1.06: dips under the locked exit (1.066) for a few seconds", 1.06);
+  check("a dip under the exit is noted, not sold", engine.getState().positions.length === 1 && !sold() && /AGT is at its exit .* It sells if the price is still there in about 10 seconds/.test(logText()), { open: engine.getState().positions.length, since: P()?.exitSince });
+  await step(9, "1.09: bounces straight back: the trade must still be open", 1.09);
+  check("a dip that bounces straight back does not end a winning trade", engine.getState().positions.length === 1 && !sold() && logText().includes("AGT bounced back above its exit") && P()?.exitSince === undefined, { open: engine.getState().positions.length });
+  await step(18, "1.06 again, and it stays there: sold about 10 seconds later", 1.06);
+} else if (SC === "back") {
+  const before = Date.now();
+  await step(6, "0.99: falls all the way back under the buy price: sold at once, no waiting", 0.99);
+  check("a fall back to the buy price is sold on the first check, without the 10-second wait", engine.getState().positions.length === 0 && sold() && Date.now() - before < 7500, { open: engine.getState().positions.length });
+} else if (SC === "feeds") {
+  await step(8, "1.10 on the 5-second feed (the pool snapshot reads 1.089)", 1.1);
+  check("the difference between the two price sources is kept with the trade", Math.abs((P()?.feedRatio ?? 0) - 1 / 0.99) < 0.002, P()?.feedRatio);
+  show("at 1.10");
+  // One check without the 5-second feed, the snapshot still at an older, lower price.
+  feedDown = true; dexPrice = 1.04;
+  await step(9, "the 5-second feed gives no answer; the pool snapshot reads 1.04 (under the exit)", 1.1);
+  check("a winning trade is not sold on a reading from the backup price source", engine.getState().positions.length === 1 && !sold() && P()?.exitSince === undefined && logText().includes("A winning trade is not sold on the backup price alone"), { open: engine.getState().positions.length, since: P()?.exitSince });
+  check("the backup reading was brought to the feed's level (1.04 x 1.0101 = 1.0505)", Math.abs((P()?.lastPrice ?? 0) - 1.04 / 0.99) < 0.002, P()?.lastPrice);
+  feedDown = false; dexPrice = null;
+  await step(8, "the 5-second feed is back at 1.10: the trade is still open", 1.1);
+  check("with the main feed back the trade simply goes on", engine.getState().positions.length === 1 && !sold() && Math.abs((P()?.lastPrice ?? 0) - 1.1) < 0.002, P()?.lastPrice);
+  // The 5-second feed stays away: after half a minute the backup is all there is, and it counts.
+  const from = Date.now();
+  feedDown = true; dexPrice = 1.04;
+  price = 1.1;
+  console.log(`${at()} [the 5-second feed stays away; the snapshot reads 1.04]`);
+  for (let i = 0; i < 70 * 4 && !sold(); i++) { await sleep(250); showLogs(); }
+  const took = (Date.now() - from) / 1000;
+  check("when the backup has been the only source for half a minute it is believed: the exit waits its 10 seconds and sells", sold() && took >= 30 && took < 60, { soldAfterSeconds: Math.round(took) });
+  feedDown = false; dexPrice = null;
 } else if (SC === "noai") {
   await step(8, "1.12: the AI can't be reached: the exit follows the price by the bot's own rule", 1.12);
   show("at 1.12");
@@ -149,7 +189,7 @@ if (SC === "min") {
   const above = Math.round((exit + 0.004) * 1000) / 1000, below = Math.round((exit - 0.004) * 1000) / 1000;
   await step(8, `${above}: just above the exit (${exit.toFixed(4)}): holds`, above);
   check("just above the exit the trade stays open", engine.getState().positions.length === 1, "");
-  await step(8, `${below}: just below the exit: sells`, below);
+  await step(16, `${below}: just below the exit, and it stays there: sold about 10 seconds later`, below);
 } else {
   await step(8, "1.088: small dip, still above the locked exit: holds", 1.088);
   show("at 1.088");
@@ -164,7 +204,7 @@ if (SC === "min") {
   if (SC === "trail") {
     await step(8, "1.20 (+16.4%)", 1.2);
     show("at 1.20");
-    await step(8, "1.15: fell more than 3% from the 1.20 high: sells", 1.15);
+    await step(16, "1.15: fell more than 3% from the 1.20 high and stays there: sold about 10 seconds later", 1.15);
   } else {
     await step(10, "1.21 (+17.4%): the AI is asked again and says sell now", 1.21);
   }
@@ -211,6 +251,18 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
   if (SC === "min") {
     check("a fall straight back sells at the locked minimum", r.startsWith("Profit exit"), r);
     check("about +5% after costs (P&L $35 to $56)", pnl > 35 && pnl < 56, pnl.toFixed(2));
+    check("...after waiting about 10 seconds at the exit, and saying so", /AGT is at its exit .* about 10 seconds/.test(s.bot.log.map((l) => l.msg).join("\n")), "");
+  }
+  if (SC === "dip") {
+    check("after the bounce, staying under the exit sells there", r.startsWith("Profit exit"), r);
+    check("about +5% after costs (P&L $35 to $56)", pnl > 35 && pnl < 56, pnl.toFixed(2));
+  }
+  if (SC === "back") {
+    check("the sale says the price fell all the way back to the buy price", r.startsWith("Exit: the price fell all the way back to the buy price"), r);
+    check("it ends a little under what was paid (P&L -$40 to -$10), not left to fall further", pnl > -40 && pnl < -10, pnl.toFixed(2));
+  }
+  if (SC === "feeds") {
+    check("sold as a profit exit, at the backup price brought to the feed's level (about +3.4% after costs: P&L $25 to $45)", r.startsWith("Profit exit") && pnl > 25 && pnl < 45, `${r} | ${pnl.toFixed(2)}`);
   }
 }
 engine.stopBot("test over");

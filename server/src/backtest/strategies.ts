@@ -5,7 +5,7 @@
 //                     breakout, pullback, squeeze, flag, rebound, macross.
 // The exit designs the back-tester can run side by side are listed here too.
 import { fires, series, stopPctFor, STRATS, type StratKey } from "../learn.js";
-import { EXIT_LIVE, EXIT_V058, type ExitDesign } from "../rules.js";
+import { EXIT_LIVE, EXIT_V058, EXIT_V062, type ExitDesign } from "../rules.js";
 import { measuredRoundTripPct, TF_SEC, type Fixture } from "./fixtures.js";
 import type { CostModel, Entry } from "./sim.js";
 
@@ -58,8 +58,10 @@ export const DESIGNS: Record<string, ExitDesign> = {
   timed: { ...EXIT_V058, name: "v0.58.0 + time limit", timeLimit: true },
   // The same lock, but the exit follows 1.8 x the coin's usual 5-minute swing behind (2.5% to 12%).
   // This is what the bot runs now ("live" is the engine's own copy of it).
-  adaptive: { ...EXIT_V058, name: "adaptive trail", trail: ADAPTIVE },
-  live: { ...EXIT_LIVE, name: "the bot now (lock at +5%)" },
+  // (what the bot ran from v0.62.0 to v0.66: this lock and trail, the profit exit sold at once)
+  adaptive: { ...EXIT_V062, name: "adaptive trail" },
+  // What the bot runs now ("live" is the engine's own copy): the same, with the profit exit waiting about 10 seconds.
+  live: { ...EXIT_LIVE, name: "the bot now (lock at +5%, exit waits 10 s)" },
   "adaptive-timed": { ...EXIT_V058, name: "adaptive trail + time limit", trail: ADAPTIVE, timeLimit: true },
   // ...and once up 10%, at least half of the best gain is kept.
   ratchet: { ...EXIT_V058, name: "adaptive trail + keep half above 10%", trail: ADAPTIVE, ratchet: { fromNetPct: 10, keep: 0.5 } },
@@ -88,11 +90,10 @@ export function design(key: string): ExitDesign | undefined {
   if (key === "touch") return { ...EXIT_LIVE, name: "sell on the first touch of the line", touch: true } as ExitDesign;
   const tk = /^touch-keep(\d+)$/.exec(key);
   if (tk) return Number(tk[1]) >= 10 && Number(tk[1]) <= 95 ? ({ ...EXIT_LIVE, name: `first touch + keep ${tk[1]}%`, touch: true, ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(tk[1]) / 100 } } as ExitDesign) : undefined;
-  // "confirm<S>" = the bot's design, but a profit exit waits: the price must still be under the exit
-  // line S seconds after it was first seen there (confirm10, confirm15 ...). "confirm<S>-crash<P>"
-  // also sells at once when the price is P% under the line. "confirm<S>-keep<P>" adds keep<P>.
-  const cf = /^confirm(\d+)(?:-crash(\d+(?:\.\d+)?))?(?:-keep(\d+))?$/.exec(key);
-  if (cf) return ({ ...EXIT_LIVE, name: `profit exit waits ${cf[1]} s${cf[2] ? `, at once if ${cf[2]}% under` : ""}${cf[3] ? ` + keep ${cf[3]}%` : ""}`, profitConfirmMs: Math.max(1, Number(cf[1]) - 2) * 1000, ...(cf[2] ? { profitCrashPct: Number(cf[2]) } : {}), ...(cf[3] ? { ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(cf[3]) / 100 } } : {}) } as ExitDesign);
+  // "confirm<S>" = the bot's design with the profit exit waiting S seconds (confirm10 is the bot's
+  // own since v0.67.0; confirm0 sells at once, as it did before); "confirm<S>-keep<P>" adds keep<P>.
+  const cf = /^confirm(\d+)(?:-keep(\d+))?$/.exec(key);
+  if (cf) return { ...EXIT_LIVE, name: `profit exit ${Number(cf[1]) ? `waits ${cf[1]} s` : "sells at once"}${cf[2] ? ` + keep ${cf[2]}%` : ""}`, exitConfirmMs: Number(cf[1]) ? Math.max(1, Number(cf[1]) - 2) * 1000 : 0, ...(cf[2] ? { ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(cf[2]) / 100 } } : {}) };
   const k = /^keep(\d+)$/.exec(key);
   if (k) return Number(k[1]) >= 10 && Number(k[1]) <= 95 ? { ...EXIT_LIVE, name: `keep ${k[1]}% of the best gain`, ratchet: { fromNetPct: EXIT_LIVE.lockAtNetPct, keep: Number(k[1]) / 100 } } : undefined;
   const t = /^tight(\d+(?:\.\d+)?)$/.exec(key);

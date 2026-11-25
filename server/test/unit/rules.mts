@@ -2,7 +2,7 @@
 // stop-loss that waits for the price to settle, the minimum-profit lock, the exit that follows
 // the high, breakouts, and the back-tester's replay of them. The engine scenarios (test/engine)
 // check the same behaviour end to end; the numbers here are the ones those scenarios produce.
-import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, EXIT_V058, fillBuy, fillSell, levelFor, netPct, ruleTrailPct, stepAgentTrade, stopCheck, type ExitDesign, type TradeState } from "../../src/rules.ts";
+import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, EXIT_V058, EXIT_V062, exitCheck, fillBuy, fillSell, levelFor, netPct, ruleTrailPct, stepAgentTrade, stopCheck, type ExitDesign, type TradeState } from "../../src/rules.ts";
 import { simulate } from "../../src/backtest/sim.ts";
 import { metrics } from "../../src/backtest/metrics.ts";
 import { COSTS, DESIGNS, design, strategy } from "../../src/backtest/strategies.ts";
@@ -15,7 +15,8 @@ const expect = (name: string, got: unknown, want: unknown) => { const ok = JSON.
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
 
 // ---- the live design ----
-expect("the bot's exit design: the v0.58.0 lock, stop and time rules", { ...EXIT_LIVE, name: "", trail: null }, { ...EXIT_V058, name: "", trail: null });
+expect("the bot's exit design: the v0.58.0 lock, stop and time rules", { ...EXIT_LIVE, name: "", trail: null, exitConfirmMs: 0 }, { ...EXIT_V058, name: "", trail: null });
+expect("...and since v0.67.0 its profit exit waits about 10 seconds (8 s between the first check and the deciding one), which v0.58.0 and v0.62.0 did not", [EXIT_LIVE.exitConfirmMs, EXIT_V062.exitConfirmMs, EXIT_V058.exitConfirmMs, EXIT_V062.trail], [8000, 0, 0, EXIT_LIVE.trail]);
 expect("...with the exit following 1.8 x the coin's 5-minute swing behind the high (2.5% to 12%) when the AI has set no distance", [EXIT_LIVE.trail, [1, 2, 4, 10, undefined].map((a) => ruleTrailPct(EXIT_LIVE, a))], [{ kind: "atr", mult: 1.8, minPct: 2.5, maxPct: 12 }, [2.5, 3.6, 7.2, 12, 2.5]]);
 expect("its numbers", [EXIT_V058.minNetPct, EXIT_V058.lockAtNetPct, EXIT_V058.stopConfirmMs, EXIT_V058.stopCrash, ruleTrailPct(EXIT_V058), EXIT_V058.timeLimit], [5, 5, 8000, 1.5, 2.5, false]);
 
@@ -36,6 +37,17 @@ expect("10 s later, still under: sell", stopCheck({ ...P, price: 0.94, underSinc
 expect("back above the stop: cleared", stopCheck({ ...P, price: 0.96, underSince: T, now: T + 5000 }, EXIT_V058), { action: "clear", crash: false });
 expect("a fall to 1.5x the planned loss (0.9225) sells at once", stopCheck({ ...P, price: 0.92, now: T }, EXIT_V058), { action: "sell", crash: true });
 expect("just above that level it still waits", stopCheck({ ...P, price: 0.923, now: T }, EXIT_V058).action, "arm");
+
+// ---- the profit exit of a locked trade: bought at 1.005, exit line 1.0854 ----
+const X = { entry: 1.005, exit: 1.0854 };
+expect("first seen under the exit: noted, not sold", exitCheck({ ...X, price: 1.08, under: true, now: T }, EXIT_LIVE), "arm");
+expect("5 s later, still under: wait", exitCheck({ ...X, price: 1.08, under: true, since: T, now: T + 5000 }, EXIT_LIVE), "wait");
+expect("10 s later, still under: sell", exitCheck({ ...X, price: 1.08, under: true, since: T, now: T + 10_000 }, EXIT_LIVE), "sell");
+expect("back above the exit: the count starts again", exitCheck({ ...X, price: 1.09, under: false, since: T, now: T + 5000 }, EXIT_LIVE), "clear");
+expect("a dip that is already over by the check is not waited on", exitCheck({ ...X, price: 1.09, under: true, now: T }, EXIT_LIVE), "none");
+expect("above the exit: nothing", exitCheck({ ...X, price: 1.12, under: false, now: T }, EXIT_LIVE), "none");
+expect("back at the buy price: sold at once, waiting or not", [exitCheck({ ...X, price: 1.005, under: true, now: T }, EXIT_LIVE), exitCheck({ ...X, price: 1.0, under: true, since: T, now: T + 1000 }, EXIT_LIVE)], ["sell", "sell"]);
+expect("the earlier designs sold at once", [exitCheck({ ...X, price: 1.08, under: true, now: T }, EXIT_V062), exitCheck({ ...X, price: 1.09, under: false, now: T }, EXIT_V062)], ["sell", "none"]);
 
 // ---- one trade, check by check (5 s apart), as the engine scenarios play it ----
 const play = (prices: number[], d: ExitDesign, start: Partial<TradeState> = {}, atr?: number) => {
@@ -58,6 +70,14 @@ expect("+5.7% locks the +5% floor (1.0854); a fall straight back sells there", [
 const noai = play([1.092, 1.12, 1.10, 1.09], EXIT_V058);
 expect("with no AI the exit follows 2.5% behind the high: 1.12 -> 1.092, sold at 1.09", [noai.sale, r4(noai.s.stop)], ["profit_exit @ 1.09", 1.092]);
 expect("under the minimum nothing is locked and nothing is sold", [play([1.06, 1.03, 1.07, 1.02], EXIT_V058).sale, play([1.06, 1.03], EXIT_V058).s.pm], [null, undefined]);
+// The same with the live design: the exit waits.
+const dip = play([1.092, 1.08, 1.10, 1.08, 1.08, 1.08], EXIT_LIVE);
+expect("live: a dip under the exit that bounces does not sell; staying under does, about 10 s later, at the price then", [dip.sale, dip.at, dip.log.filter((e) => e.startsWith("exit"))], ["profit_exit @ 1.08", 5, ["exit_armed", "exit_cleared", "exit_armed"]]);
+expect("live: the earlier design sold on the first check under the exit", [play([1.092, 1.08], EXIT_V062).sale, play([1.092, 1.08], EXIT_V062).at], ["profit_exit @ 1.08", 1]);
+const cliff = play([1.092, 1.08, 1.0, 1.0], EXIT_LIVE);
+expect("live: a fall all the way back to the buy price during the wait sells at once", [cliff.sale, cliff.at], ["profit_exit @ 1", 2]);
+const run2 = play([1.092, 1.08, 1.12, 1.20, 1.18], EXIT_LIVE);
+expect("live: a trade that bounced goes on, and its exit follows the new high (2.5% behind 1.20)", [run2.sale, r4(run2.s.stop), run2.s.exitSince], [null, 1.17, undefined]);
 // The designs the back-tester can run next to the live one.
 const late = play([1.092, 1.08, 0.94, 0.94, 0.94], DESIGNS.late);
 expect("floor locked at +10%: touching +5% locks nothing, so the trade can still end at its stop", [late.sale, late.log.includes("locked")], ["stop @ 0.94", false]);
@@ -102,7 +122,7 @@ check("entries from a studied pattern work too", fx.flatMap((f) => simulate(f, s
 // ---- exit designs on identical buys ----
 expect("a design by its key: 'live' is the bot's own, 'lock8' is the bot's with the floor locked at +8%, a lock under the minimum is refused", [design("live")?.lockAtNetPct, design("live")?.trail, design("lock8")?.lockAtNetPct, design("lock8")?.minNetPct, design("lock8")?.trail, design("lock3"), design("late")?.lockAtNetPct, design("nope")], [5, EXIT_LIVE.trail, 8, 5, EXIT_LIVE.trail, undefined, 10, undefined]);
 // One coin, two buys: the first goes up to +6.2% after costs and falls back to its stop, the second only falls.
-const upDown = [...flat(3), 1.06, 1.092, 1.08, ...flat(6, 0.94), ...flat(40, 1), ...flat(8, 0.94), ...flat(3, 0.94)];
+const upDown = [...flat(3), 1.06, 1.092, ...flat(3, 1.08), ...flat(6, 0.94), ...flat(40, 1), ...flat(8, 0.94), ...flat(3, 0.94)];
 const two = (f: Fixture) => [{ time: 1_800_000_000, stopPct: 5, maxHoldMin: 240 }, { time: 1_800_000_000 + 20 * 5, stopPct: 5, maxHoldMin: 240 }];
 const both = { live: design("live")!, late: design("late")! };
 const pb = pairedBuys([mk(upDown)], two, both, { tf: "5s", cost: COSTS.flat, budgetUsd: 1000 });

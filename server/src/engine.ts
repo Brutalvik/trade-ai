@@ -17,7 +17,7 @@ import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin, type AgentScan, type CoinGate } from "./agents.js";
 import { learn, type Learned, type Watch } from "./learn.js";
 import { maView, type MaView } from "./macross.js";
-import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck, type SideCost } from "./rules.js";
+import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitCheck, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck, type SideCost, type StopAction } from "./rules.js";
 import { costAt, costCurve, knownCurve, sizeUnderCap, type CostCurve } from "./costs.js";
 
 import { noteCommunityBuy } from "./lists.js";
@@ -66,6 +66,8 @@ export type Position = {
   secondLook?: boolean; // the AI already kept this trade open once at its stop-loss
   firstStop?: number; // the stop-loss before the AI's second look moved it
   underSince?: number; // Agents: when the price was first seen at or below the stop-loss (it sells if it is still there ~10 s later)
+  exitSince?: number; // Agents: when the price was first seen at or under the profit exit of a locked trade (it sells if it is still there ~10 s later)
+  feedRatio?: number; // Agents: the 5-second feed's price divided by the pool snapshot's, when both were last seen (see sameFeed)
   extensions?: number; // times the AI extended the holding time
   ladderStep?: number; // (older trades) the highest whole % of profit after fees locked
   pm?: ProfitPlan; // Agents: how this trade's profit is being managed once the minimum is reached
@@ -394,6 +396,7 @@ type Account = {
   logQueue?: LogLine[]; // log lines written since the last save, on their way to the week's log (botlog.ts)
   hoursRetryAt?: number; // the hours table did not answer: not asked again before this time
   autoBusy?: Set<string>; // tokens an auto-pick agent is taking right now (so two never take the same one in one round)
+  backupSince?: Map<string, number>; // open trade -> since when only the backup price source has answered for it (see sameFeed)
 };
 const NEW_ACCOUNT_CASH = 10_000; // what a new paper account starts with ($1,000 until v0.63)
 const EARLIER_ACCOUNT_CASH = 1000;
@@ -940,6 +943,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
   p.costUsd -= costPart;
   if (f >= 0.999 || p.qty * price < 0.01) {
     state.positions = state.positions.filter((x) => x.id !== p.id);
+    acct().backupSince?.delete(p.id);
     state.orders = (state.orders ?? []).filter((o) => o.positionId !== p.id); // its limit sells go with it
   }
   else p.realizedUsd = (p.realizedUsd ?? 0) + (net - costPart);
@@ -1861,6 +1865,41 @@ async function quote(chain: string, pool: string, sinceMs: number): Promise<Quot
   return { pair: { ...pair, priceUsd: price }, price, dex: pair.priceUsd, low, high, peakHigh, closeLow, source };
 }
 
+// ---------- One price series for an open trade ----------
+// A trade is followed on the 5-second feed (CoinMarketCap). When that feed gives no current
+// answer for a check, quote() falls back to the pool's own snapshot (DexScreener). The two do not
+// agree: on eight coins on 25 Nov 2026 the feed read from 0.6% under to 0.5% over the snapshot on
+// average, single readings from 1.0% under to 1.0% over, and the snapshot lags a fast move. To an
+// open trade a change of source therefore looked like a sudden move of that size, and a profit
+// locked on one source could be sold on the other (a live mihao sale that day was priced 1.5%
+// under the lowest 5-second price of its minute).
+// So for an agent's trade: the difference between the two is remembered whenever both are seen
+// (pos.feedRatio), and a reading from the backup is brought to the feed's level with it. And a
+// profit exit is not taken on backup readings until the backup has been the only source for
+// BACKUP_EXIT_MS (see the profit exit in tickBot); a fall back to the buy price still sells at once.
+const MAIN_FEED = "CoinMarketCap 5s candles";
+export const BACKUP_EXIT_MS = 30_000;
+function sameFeed(pos: Position, q: Quote): { q: Quote; backupFor: number | null } {
+  const a = acct();
+  const since = (a.backupSince ??= new Map<string, number>());
+  if (q.source === MAIN_FEED) {
+    since.delete(pos.id);
+    const r = q.dex > 0 ? q.price / q.dex : 1;
+    // Kept on the trade (and so saved) only when it has moved by a third of a percent: it is
+    // read at every check, and a trade must not be saved every 5 seconds for it.
+    if (r > 0.9 && r < 1.1 && Math.abs(r - (pos.feedRatio ?? 1)) >= 0.003) {
+      pos.feedRatio = Math.round(r * 1e4) / 1e4;
+      a.dirty = true;
+    }
+    return { q, backupFor: null };
+  }
+  const now = Date.now();
+  if (!since.has(pos.id)) since.set(pos.id, now);
+  const k = pos.feedRatio ?? 1;
+  const adj = k === 1 ? q : { ...q, price: q.price * k, low: q.low * k, high: q.high * k, peakHigh: q.peakHigh * k, closeLow: q.closeLow * k, pair: { ...q.pair, priceUsd: q.price * k } };
+  return { q: adj, backupFor: now - since.get(pos.id)! };
+}
+
 // Was this standing order's trigger touched since the last check?
 function triggerMet(o: CheckedOrder, q: Quote) {
   if (o.kind === "buy_dip" || o.kind === "buy_now") return q.low <= o.triggerPrice;
@@ -2551,7 +2590,10 @@ async function tickBot(persist: boolean) {
     // 1. Manage an open bot position (every check, no AI cost).
     const pos = state.positions.find((p) => p.source === "bot" && (p.botId ?? "1") === currentBotId());
     if (pos) {
-      const q = await quote(pos.chain, pos.pool, Math.max(pos.openedAt, windowStart));
+      const raw = await quote(pos.chain, pos.pool, Math.max(pos.openedAt, windowStart));
+      // An agent's trade is followed on one price series (sameFeed). backupFor = how long only the backup source has answered (null = the main feed answered).
+      const feed = pos.strategy === "agents" ? sameFeed(pos, raw) : { q: raw, backupFor: null };
+      const q = feed.q;
       const price = q.price;
       pos.lastPrice = price;
       recordEquity();
@@ -2749,6 +2791,33 @@ async function tickBot(persist: boolean) {
         if (reason) sellAt = price;
         // The order's time limit: only if the exit design has it on (see EXIT_LIVE.timeLimit in rules.ts).
         else if (EXIT_LIVE.timeLimit && pos.sellBy && Date.now() > pos.sellBy) reason = "Maximum holding time reached";
+      } else if (ladder && pos.pm && pos.stopLoss) {
+        // An agent's profit exit (rules.ts, exitCheck): like its stop-loss, judged on where the
+        // price settles. First seen at or under the exit it is noted; it sells if the price is
+        // still there about 10 seconds later, and at once if the price is back at the buy price.
+        // On readings from the backup price source it waits for the main feed, unless the backup
+        // has been the only source for half a minute (sameFeed).
+        const now = Date.now();
+        const under = exitHit({ entry: pos.entryPrice, stop: pos.stopLoss, price, low: q.low, closeLow: q.closeLow, newBest: newBestThisCheck });
+        const trusted = feed.backupFor === null || feed.backupFor >= BACKUP_EXIT_MS;
+        const c: StopAction = trusted ? exitCheck({ entry: pos.entryPrice, exit: pos.stopLoss, price, under, since: pos.exitSince, now }, EXIT_LIVE) : price <= pos.entryPrice ? "sell" : "none";
+        if (c === "sell") {
+          const at = Math.min(pos.stopLoss, price);
+          reason = at <= pos.entryPrice
+            ? `Exit: the price fell all the way back to the buy price (best was +${(bestGainPct - cost).toFixed(1)}% after fees)`
+            : `Profit exit: sold at about +${(((at - pos.entryPrice) / pos.entryPrice) * 100 - cost).toFixed(1)}% after fees (best was +${(bestGainPct - cost).toFixed(1)}%)${pos.pm.by === "ai" ? ", at the exit the AI set" : ""}`;
+          sellAt = at;
+        } else if (c === "arm") {
+          pos.exitSince = now;
+          acct().dirty = true;
+          log(`${pos.symbol} is at its exit ${fmt(pos.stopLoss)} (now ${fmt(price)}). It sells if the price is still there in about 10 seconds; a dip that bounces straight back doesn't end the trade.`);
+        } else if (c === "clear") {
+          delete pos.exitSince;
+          acct().dirty = true;
+          log(`${pos.symbol} bounced back above its exit (now ${fmt(price)}): the trade stays open.`, "good");
+        } else if (!trusted && under) {
+          noteOnce(`backup:${pos.id}:${Math.floor(now / 120_000)}`, `${pos.symbol}: the 5-second price feed gave no answer for this check, and the backup price reads under the exit ${fmt(pos.stopLoss)}. A winning trade is not sold on the backup price alone: the bot waits for the main feed, for half a minute at most.`);
+        }
       } else if (pos.stopLoss && exitHit({ entry: pos.entryPrice, stop: pos.stopLoss, price, low: q.low, closeLow: q.closeLow, newBest: newBestThisCheck })) {
         reason = pos.pm ? `Profit exit: sold at about +${(((Math.min(pos.stopLoss, price) - pos.entryPrice) / pos.entryPrice) * 100 - cost).toFixed(1)}% after fees (best was +${(bestGainPct - cost).toFixed(1)}%)${pos.pm.by === "ai" ? ", at the exit the AI set" : ""}` : pos.locked ? `Profit lock: kept part of the best gain (+${bestGainPct.toFixed(1)}%)` : pos.stopLoss >= pos.entryPrice * (1 + roundTripCostPct() / 100) ? "Profit guard: kept a small profit after fees" : pos.stopLoss >= pos.entryPrice ? "Break-even stop hit" : "Stop-loss hit";
         sellAt = Math.min(pos.stopLoss, price);

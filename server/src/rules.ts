@@ -25,12 +25,25 @@ export type ExitDesign = {
   // behind the stop-loss branch and was never reached). Kept off here so a back-test of
   // "v0.58.0" replays what the bot really does; whether to turn it on is decided on numbers.
   timeLimit: boolean;
+  // The profit exit (the exit line of a trade whose minimum is locked) sells only if the price is
+  // still at or under the line this long after it was first seen there, as the stop-loss does;
+  // 0 = at once (the rule up to v0.66). A fall back to the buy price sells at once either way.
+  exitConfirmMs: number;
 };
-export const EXIT_V058: ExitDesign = { name: "v0.58.0", minNetPct: 5, lockAtNetPct: 5, softLock: null, trail: { kind: "fixed", pct: 2.5 }, ratchet: null, stopConfirmMs: 8_000, stopCrash: 1.5, timeLimit: false };
+export const EXIT_V058: ExitDesign = { name: "v0.58.0", minNetPct: 5, lockAtNetPct: 5, softLock: null, trail: { kind: "fixed", pct: 2.5 }, ratchet: null, stopConfirmMs: 8_000, stopCrash: 1.5, timeLimit: false, exitConfirmMs: 0 };
 // Live since v0.62.0: when the AI has not set a distance, the exit follows 1.8 x the coin's usual
 // 5-minute swing behind the high (never under 2.5% or over 12%) in place of a fixed 2.5%, so a
 // jumpy coin is not sold on its ordinary wiggle. The lock and the time limit are as in v0.58.0.
-export const EXIT_LIVE: ExitDesign = { ...EXIT_V058, name: "v0.62.0", trail: { kind: "atr", mult: 1.8, minPct: 2.5, maxPct: 12 } };
+export const EXIT_V062: ExitDesign = { ...EXIT_V058, name: "v0.62.0", trail: { kind: "atr", mult: 1.8, minPct: 2.5, maxPct: 12 } };
+// Live since v0.67.0: the profit exit waits about 10 seconds, as the stop-loss already did. On
+// real coins the price often dips under the exit line for a few seconds and bounces straight back
+// (both of two live mihao trades on 25 Nov 2026 did); the earlier rule sold into that dip. On
+// three sets of identical test buys the wait was worth +0.09 to +0.20 points a buy (+0.3 to +0.5
+// on winning trades), and nothing else tested (selling on the first touch, keeping 60% of the
+// best gain, a "sell at once if 2-5% under" guard) added to it. Its cost: a sale that does go
+// through lands a little further under the line, and about 1 in 70 trades that had locked the
+// minimum ends at a loss.
+export const EXIT_LIVE: ExitDesign = { ...EXIT_V062, name: "v0.67.0", exitConfirmMs: 8_000 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : lo));
 
@@ -75,6 +88,22 @@ export function stopCheck(p: { entry: number; stop: number; price: number; under
   return { action: p.underSince === undefined ? "none" : "clear", crash: false };
 }
 
+// ---------- The profit exit ----------
+// Judged like the stop-loss, on where the price settles: "arm" when the price is first seen at or
+// under the exit line (`under` = a close at or under it since the last check), "sell" if it is
+// still there `exitConfirmMs` later, "clear" if it is back above. A price back at or under the
+// buy price sells at once: the whole gain is gone, and there is nothing left to wait for.
+export function exitCheck(p: { entry: number; exit: number; price: number; under: boolean; since?: number; now: number }, d: ExitDesign): StopAction {
+  if (!d.exitConfirmMs) return p.under ? "sell" : "none"; // the earlier rule: sold at once
+  if (p.since === undefined) {
+    if (!p.under || p.price > p.exit) return "none"; // (a dip that is already over by this check is not waited on)
+    return p.price <= p.entry ? "sell" : "arm";
+  }
+  if (p.price <= p.entry) return "sell";
+  if (p.price > p.exit) return "clear";
+  return p.now - p.since >= d.exitConfirmMs ? "sell" : "wait";
+}
+
 // ---------- The minimum-profit lock and the exit that follows the high ----------
 // The distance behind the highest close when no AI has set one.
 export function ruleTrailPct(d: ExitDesign, atr5mPct?: number) {
@@ -102,11 +131,12 @@ export type TradeState = {
   stop: number; // the exit in force: the stop-loss, or the profit exit once the minimum is locked
   best: number; // the highest close so far
   underSince?: number; // when the price was first seen at or below the stop-loss
+  exitSince?: number; // when the price was first seen at or under the profit exit (once the minimum is locked)
   soft?: boolean; // the softer first lock has been applied
   pm?: { floor: number; trailPct: number; byRule: boolean }; // set once the minimum profit is locked
   sellBy?: number; // time limit (not used once the minimum is locked)
 };
-export type StepEvent = "new_best" | "soft_locked" | "locked" | "stop_armed" | "stop_cleared";
+export type StepEvent = "new_best" | "soft_locked" | "locked" | "stop_armed" | "stop_cleared" | "exit_armed" | "exit_cleared";
 export type Sale = { why: "stop" | "crash" | "profit_exit" | "time"; at: number };
 export function stepAgentTrade(s0: TradeState, q: Tick, now: number, costPct: number, d: ExitDesign, atr5mPct?: number): { state: TradeState; events: StepEvent[]; sale?: Sale } {
   const s: TradeState = { ...s0, ...(s0.pm ? { pm: { ...s0.pm } } : {}) };
@@ -145,8 +175,18 @@ export function stepAgentTrade(s0: TradeState, q: Tick, now: number, costPct: nu
       events.push("stop_cleared");
     }
     if (d.timeLimit && s.sellBy && now > s.sellBy) return { state: s, events, sale: { why: "time", at: q.price } };
-  } else if (exitHit({ entry: s.entry, stop: s.stop, price: q.price, low: q.low, closeLow: q.closeLow, newBest })) {
-    return { state: s, events, sale: { why: "profit_exit", at: Math.min(s.stop, q.price) } };
-  } else if (d.timeLimit && !s.pm && s.sellBy && now > s.sellBy) return { state: s, events, sale: { why: "time", at: q.price } };
+  } else {
+    const under = exitHit({ entry: s.entry, stop: s.stop, price: q.price, low: q.low, closeLow: q.closeLow, newBest });
+    // A locked trade's exit waits (exitCheck); a softer first lock (not in the live design) sells at once.
+    const c: StopAction = s.pm ? exitCheck({ entry: s.entry, exit: s.stop, price: q.price, under, since: s.exitSince, now }, d) : under ? "sell" : "none";
+    if (c === "sell") return { state: s, events, sale: { why: "profit_exit", at: Math.min(s.stop, q.price) } };
+    if (c === "arm") {
+      s.exitSince = now;
+      events.push("exit_armed");
+    } else if (c === "clear") {
+      delete s.exitSince;
+      events.push("exit_cleared");
+    } else if (c === "none" && d.timeLimit && !s.pm && s.sellBy && now > s.sellBy) return { state: s, events, sale: { why: "time", at: q.price } };
+  }
   return { state: s, events };
 }

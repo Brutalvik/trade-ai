@@ -40,11 +40,7 @@ export type SimTrade = {
 // A design for the back-tester only: `touch` = a profit exit is taken the moment the price touches
 // the exit line inside a 5-second candle (as a faster check would see it), not when a 5-second
 // candle closes under it. The live rule waits for the close so that one wick does not end a trade.
-// `profitConfirmMs` = a profit exit is taken only if the price is still under the exit line this
-// long after it was first seen there (as the stop-loss already waits about 10 seconds), so a dip
-// that bounces straight back does not end the trade; `profitCrashPct` = ...but at once when the
-// price is this far under the line.
-export type TestDesign = ExitDesign & { touch?: boolean; profitConfirmMs?: number; profitCrashPct?: number };
+export type TestDesign = ExitDesign & { touch?: boolean };
 
 // The coin's usual 5-minute swing (ATR% of 5-minute candles), known at a given time.
 function atr5m(c5: Candle[]) {
@@ -92,7 +88,7 @@ export function simulate(fx: Fixture, entries: Entry[], opt: SimOptions): SimTra
   const queue = entries.filter((e) => c.length && e.time >= c[0].time && e.time < c[c.length - 1].time).sort((a, b) => a.time - b.time);
   let next = 0;
   let funds = opt.budgetUsd;
-  let pos: { st: TradeState; qty: number; usd: number; side: SideCost; costPct: number; openedAt: number; tag?: string; exitSince?: number } | null = null;
+  let pos: { st: TradeState; qty: number; usd: number; side: SideCost; costPct: number; openedAt: number; tag?: string } | null = null;
 
   const close = (k: number, sale: { why: SimTrade["why"]; at: number }) => {
     const p = pos!;
@@ -138,18 +134,6 @@ export function simulate(fx: Fixture, entries: Entry[], opt: SimOptions): SimTra
       const touch = !!(opt.design as TestDesign).touch && !!p.st.pm; // only once the minimum profit is locked
       const r = stepAgentTrade(p.st, { price: x.close, low: x.low, high: x.high, peakHigh: x.close, closeLow: touch ? x.low : x.close }, (x.time + step) * 1000, p.costPct, opt.design, a);
       p.st = r.state;
-      const td = opt.design as TestDesign;
-      if (r.sale?.why === "profit_exit" && td.profitConfirmMs) {
-        const now = (x.time + step) * 1000;
-        const farUnder = td.profitCrashPct !== undefined && x.close <= p.st.stop * (1 - td.profitCrashPct / 100);
-        if (!farUnder) {
-          if (p.exitSince === undefined) { p.exitSince = now; continue; } // first seen under the line: wait
-          if (now - p.exitSince < td.profitConfirmMs) continue; // still waiting
-        }
-        close(k, r.sale); // still under the line after the wait (or far under it): sold at the price now
-        continue;
-      }
-      if (!r.sale) delete p.exitSince; // back above the line: the count starts again
       if (r.sale) close(k, r.sale);
       continue;
     }
