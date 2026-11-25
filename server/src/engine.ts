@@ -14,7 +14,7 @@ import { copyFromUpstash, createStore, oldStoreFromEnv, type HourRow } from "./s
 import { keepLogLines, type LogLine } from "./botlog.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
-import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin, type CoinGate } from "./agents.js";
+import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin, type AgentScan, type CoinGate } from "./agents.js";
 import { learn, type Learned, type Watch } from "./learn.js";
 import { maView, type MaView } from "./macross.js";
 import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck, type SideCost } from "./rules.js";
@@ -118,6 +118,11 @@ export type BotConfig = {
   maxCostPct?: number; // Agent: invest only as much as keeps the round-trip cost at or under this % (default 2.5; 0 = always all of its funds)
   minQuality?: number; // Agent: the scouts' quality score (0-100) its coin needs before the AI is asked (default 45). "qualityGate" in `disabled` switches the gate off.
   minNumbersPct?: number; // Agent: the least chance the numbers alone must give an order (default 10; 0 = no floor). Under it an order is refused, and if no plain order reaches it the AI is not asked.
+  // Auto-pick agent: it chooses its own coin from the top of the scouts' list, and chooses again
+  // after every trade (see "Auto-pick agents" below). pool and symbol are empty while it has none.
+  autoPick?: boolean;
+  autoStrict?: boolean; // Auto-pick: only coins that pass every scout check (default: those first, then the next best that are fit to trade)
+  mint?: string; // Auto-pick: the token it is on now (the scouts list coins by token)
   agentMaxPerDay?: number; // Agents mode: most buys per day (default 6)
   agentAiCheck?: boolean; // Agents mode: one AI check before each buy (default on)
   // New coins mode (fast, rule-based, no Claude): young coins that pass the rug-risk checks.
@@ -224,6 +229,12 @@ type State = {
     aiNotes?: { at: number; price: number; text: string }[]; // Agent: its AI's last decisions on this coin (given back to it next time)
     lastFiredAt?: number; // Agent: the candle its pattern last fired on (one try per signal)
     watch?: Watch | null; // Agent: the level it is watching (drawn on the chart)
+    // Auto-pick agent: what its coin choice is doing. note = why it has no coin (shown on its card);
+    // nextAt = when it looks at the list again; idleSince = since when it has had no live order on
+    // its coin; again = its trade closed, so it chooses again; picks = coins chosen since it started.
+    auto?: { note: string; at: number; nextAt?: number; idleSince?: number; again?: boolean; picks?: number; pickedAt?: number };
+    // Auto-pick (shared by the account's agents): token -> not to be picked again before this time.
+    autoSkip?: Record<string, number>;
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -382,6 +393,7 @@ type Account = {
   saving?: number; // saves of this copy still on their way
   logQueue?: LogLine[]; // log lines written since the last save, on their way to the week's log (botlog.ts)
   hoursRetryAt?: number; // the hours table did not answer: not asked again before this time
+  autoBusy?: Set<string>; // tokens an auto-pick agent is taking right now (so two never take the same one in one round)
 };
 const NEW_ACCOUNT_CASH = 10_000; // what a new paper account starts with ($1,000 until v0.63)
 const EARLIER_ACCOUNT_CASH = 1000;
@@ -411,7 +423,7 @@ export const currentAccountKey = () => acct().key;
 const botAls = new AsyncLocalStorage<string>();
 export const currentBotId = () => botAls.getStore() ?? "1";
 export const withBot = <T>(id: string, fn: () => T): T => botAls.run(id, fn);
-const SHARED_BOT_KEYS = new Set(["coinStats", "day", "dailyOverride"]);
+const SHARED_BOT_KEYS = new Set(["coinStats", "day", "dailyOverride", "autoSkip"]);
 const botViews = new WeakMap<object, BotState>();
 function slotOf(st: State, id: string): BotSlot | undefined {
   return id === "1" ? undefined : st.bots?.find((b) => b.id === id);
@@ -477,7 +489,9 @@ export function agentLocks(st: State = acct().state): AgentLock[] {
     const since = bot.startedAt ?? 0;
     const pnl = st.trades.filter((t) => t.strategy === "agents" && (t.botId ?? "1") === id && t.time >= since && t.side === "SELL").reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
     const invested = st.positions.filter((p) => p.source === "bot" && (p.botId ?? "1") === id).reduce((s, p) => s + p.costUsd, 0);
-    return [{ id, symbol: cfg.symbol, usd: Math.max(0, (cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT) + pnl - invested) }];
+    const budget = cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT;
+    // An auto-pick agent's money is never more than its budget: what it has made beyond that is yours at once.
+    return [{ id, symbol: cfg.symbol || "Auto-pick", usd: Math.max(0, (cfg.autoPick ? Math.min(budget, budget + pnl) : budget + pnl) - invested) }];
   });
 }
 // Cash that isn't locked for an agent (exceptId: leave that agent's own lock out).
@@ -1344,6 +1358,16 @@ export function startBot(cfg: BotConfig, botId = "1", maxBots = 10) {
   const others = runningIds(st).filter((x) => x !== id);
   if (others.length + 1 > maxBots) throw new Error(maxBots <= 1 ? "Your plan includes 1 agent. Stop it first, or see Plans for more." : `Your plan includes ${maxBots} agents and they're all running. Stop one first, or see Plans for more.`);
   if (!okImage(cfg.imageUrl)) delete cfg.imageUrl;
+  if (cfg.pick === "agent" && cfg.autoPick) {
+    // An auto-pick agent starts without a coin: it chooses one itself on its first check.
+    Object.assign(cfg, { chain: "solana", pool: "", symbol: "" });
+    delete cfg.mint;
+    delete cfg.imageUrl;
+  } else {
+    delete cfg.autoPick;
+    delete cfg.autoStrict;
+    delete cfg.mint;
+  }
   if (cfg.pick === "agent") {
     const budget = Number(cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT);
     if (!(budget >= 10)) throw new Error("An agent's budget must be at least $10.");
@@ -1409,7 +1433,7 @@ function startBotHere(cfg: BotConfig) {
     cfg.autoCandidates = Math.min(5, Math.max(1, cfg.autoCandidates ?? 3));
     cfg.autoMinLiquidityUsd ??= 50_000;
   }
-  rec("bot.start", `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : cfg.pick === "agents" ? "agents" : cfg.pick === "agent" ? `agent, $${cfg.budgetUsd ?? 1000} budget` : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
+  rec("bot.start", isAutoAgent(cfg) ? `Auto-pick agent started ($${cfg.budgetUsd ?? 1000} budget${cfg.autoStrict ? ", only coins that pass every scout check" : ""})` : `Bot started on ${cfg.symbol} (${cfg.pick === "auto" ? "auto-pick" : cfg.pick === "agents" ? "agents" : cfg.pick === "agent" ? `agent, $${cfg.budgetUsd ?? 1000} budget` : "this coin"})${cfg.allowRisky ? " in risky mode" : ""}`, {
     symbol: cfg.symbol, pool: cfg.pool, pick: cfg.pick ?? "this", positionPct: cfg.positionPct, riskPerTradePct: cfg.riskPerTradePct, minConfidence: cfg.minConfidence,
     dailyLossPct: cfg.dailyLossPct, maxDrawdownPct: cfg.maxDrawdownPct, allowRisky: !!cfg.allowRisky, settingsOff: cfg.disabled ?? [], rewardRule: cfg.rewardRule !== false, strongMode: cfg.strongMode !== false,
   });
@@ -1437,12 +1461,16 @@ function startBotHere(cfg: BotConfig) {
   state.bot.lastFiredAt = undefined;
   state.bot.watch = null;
   state.bot.stoppedAt = null;
+  state.bot.auto = isAutoAgent(cfg) ? { note: "", at: Date.now() } : undefined;
+  if (isAutoAgent(cfg)) state.lastSignal = null;
   cfg.trailPct = clampNum(cfg.trailPct ?? 3, 0.5, 30);
   log(
     isNew(cfg)
       ? `Bot started in NEW COINS mode (${cfg.newChain ?? "solana"}): ${cfg.newCoinPct ?? 3}% per coin, stop -${cfg.newStopPct ?? 15}%, half at +${cfg.newTakePct ?? 30}%, max ${cfg.newMaxPerDay ?? 5} buys a day. Cash $${state.cash.toFixed(2)}.`
       : isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round the AI checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
+      : isAutoAgent(cfg)
+        ? `Auto-pick agent started with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. It takes the best coin on the scouts' list that no other agent of yours is on${cfg.autoStrict ? " (only coins that pass every scout check)" : ""}, and chooses again after every trade.`
       : isCoinAgent(cfg)
         ? `Agent started on ${cfg.symbol} with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. Its AI is reading the charts and deciding now.`
       : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling (you accepted the risk). Trades are capped at 25% of the account, with a 5-minute cool-down after a loss." : ""}`,
@@ -1994,7 +2022,11 @@ const RELEARN_MS = 60 * 60_000;
 function agentFunds(cfg: BotConfig) {
   const since = state.bot.startedAt ?? 0;
   const pnl = state.trades.filter((t) => t.strategy === "agents" && (t.botId ?? "1") === currentBotId() && t.time >= since && t.side === "SELL").reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
-  return (cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT) + pnl;
+  const budget = cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT;
+  // An auto-pick agent starts every trade with its budget, never more: profit beyond the budget
+  // goes back to the account's available cash, and a loss comes out of the budget until its
+  // later trades have made it back. So the budget is still the most the agent can lose.
+  return cfg.autoPick ? Math.min(budget, budget + pnl) : budget + pnl;
 }
 
 // What this agent's next buy would cost, and how much of its funds it would invest: all of it,
@@ -2054,6 +2086,204 @@ export function setQualityGate(on: boolean, botId?: string): { ok: boolean; qual
   return { ok: true, qualityGate: on };
 }
 
+// true = the agent stopped because its budget is used up (under a tenth of it, or under $10, is left)
+function agentSpent(cfg: BotConfig): boolean {
+  const budget = cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT;
+  if (agentFunds(cfg) >= Math.max(10, budget * 0.1)) return false;
+  stopBot(`Agent stopped: its $${budget} budget is used up. Its trades are in your history.`);
+  alert(`⏹ Agent${cfg.symbol ? ` on ${cfg.symbol}` : ""} stopped: its $${budget} budget is used up.`);
+  return true;
+}
+
+// ---------- Auto-pick agents ----------
+// An agent that chooses its own coin. It takes the best coin on the scouts' list (agents.ts) that
+// none of the account's other agents is on: the coins that pass every scout check first, then
+// (unless it was started "strict") the next best by score that are fit to trade, which is the test
+// every agent applies to its coin before it asks its AI (no structural deal-breaker, quality at
+// or over its minimum). From there it is an ordinary agent on that coin: its AI plans, the order
+// check judges, the same exits apply. It chooses again
+//  - after every trade (a coin it lost on is left alone for half an hour),
+//  - when the scouts rule its coin out, and
+//  - when its coin has given it no live order for AUTO_IDLE_MS, if another coin is free
+//    (the coin it leaves is not tried again for half an hour, so agents do not swap coins in circles).
+// With no coin to take it waits, at no AI cost, and looks at the list again every half minute.
+// Choosing a coin costs nothing; the AI is asked only once the agent is on a coin, as always.
+export const AUTO_IDLE_MS = 10 * 60_000;
+const AUTO_RESCAN_MS = 30_000;
+const AUTO_SKIP_LOSS_MS = 30 * 60_000; // after a losing trade on it
+const AUTO_SKIP_IDLE_MS = 30 * 60_000; // after leaving it without a trade
+const AUTO_SKIP_UNFIT_MS = 60 * 60_000; // after the scouts ruled it out
+const AUTO_SKIP_NOPOOL_MS = 10 * 60_000; // no market found for it
+const isAutoAgent = (cfg: BotConfig) => cfg.pick === "agent" && !!cfg.autoPick;
+
+// The coins an auto-pick agent may take, best first.
+export function autoCandidates(scan: AgentScan, cfg: Pick<BotConfig, "autoStrict" | "minQuality">): AgentCoin[] {
+  const fit = (c: AgentCoin) => qualityGate(c, cfg.minQuality ?? QUALITY_MIN).ok;
+  const passing = scan.coins.filter((c) => !c.vetoes.length && c.total >= AGENT_PASS && fit(c));
+  if (cfg.autoStrict) return passing;
+  return [...passing, ...scan.coins.filter((c) => !passing.includes(c) && fit(c)).sort((a, b) => b.total - a.total)];
+}
+// Tokens the account's other agents are on or hold.
+function otherAgentMints() {
+  const st = acct().state;
+  const me = currentBotId();
+  const out = new Set<string>();
+  for (const id of botIds(st)) {
+    if (id === me) continue;
+    const b = id === "1" ? st.bot : slotOf(st, id)!.bot;
+    if (b.running && b.config?.mint) out.add(b.config.mint);
+  }
+  for (const p of st.positions) if (p.tokenMint && !(p.source === "bot" && (p.botId ?? "1") === me)) out.add(p.tokenMint);
+  return out;
+}
+// What the card shows while the agent has no coin (written to its log only when it changes).
+function autoNote(text: string) {
+  const au = (state.bot.auto ??= { note: "", at: Date.now() });
+  au.nextAt = Date.now() + AUTO_RESCAN_MS;
+  if (au.note === text) return;
+  au.note = text;
+  au.at = Date.now();
+  log(`Auto-pick: ${text}`);
+}
+// Puts the agent on a coin: from here it is an ordinary agent on it, starting from a fresh AI plan.
+function autoAssign(cfg: BotConfig, c: AgentCoin, pair: PairInfo, why: string) {
+  const same = cfg.pool === pair.pool;
+  Object.assign(cfg, { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, mint: c.mint });
+  const img = c.icon ?? pair.imageUrl;
+  if (okImage(img)) cfg.imageUrl = img;
+  else delete cfg.imageUrl;
+  state.lastSignal = null;
+  state.bot.lastAnalysisAt = 0;
+  state.bot.armedSince = [];
+  state.bot.skipNoted = [];
+  state.bot.askNow = false;
+  state.bot.freshAfter = Date.now();
+  if (!same) {
+    state.bot.learned = undefined;
+    state.bot.costCurve = undefined;
+    state.bot.quality = undefined;
+    state.bot.aiNotes = [];
+    state.bot.lastFiredAt = undefined;
+    state.bot.watch = null;
+  }
+  const au = state.bot.auto ?? { note: "", at: Date.now() };
+  state.bot.auto = { note: "", at: Date.now(), pickedAt: Date.now(), picks: (au.picks ?? 0) + 1 };
+  const passes = !c.vetoes.length && c.total >= AGENT_PASS;
+  log(`Auto-pick: ${why}${same ? `${pair.symbol} is still the best coin that is free, so it stays on it` : `chose ${pair.symbol}`} (the scouts' score ${c.total} of 100${passes ? ", passes every scout check" : c.timing.length ? `; the scouts' timing check says "${c.timing[0]}", so its AI decides when to buy` : `, under the ${AGENT_PASS} that passes; fit to trade`}). Its AI reads the charts now.`, "good");
+  acct().dirty = true;
+}
+// The best coin this agent could take right now (not `except`), or null with the reason.
+// failed = the list itself could not be read (as opposed to: read, and nothing on it is free).
+async function autoFind(except?: string): Promise<{ coin: AgentCoin; pair: PairInfo } | { none: string; failed?: boolean }> {
+  const now = Date.now();
+  const scan = await scanAgents().catch(() => null);
+  const cfg = state.bot.config;
+  if (!cfg || !state.bot.running || !isAutoAgent(cfg)) return { none: "" };
+  if (!scan?.coins.length) return { none: "the scouts' list could not be loaded just now. It tries again in half a minute", failed: true };
+  const skip = (state.bot.autoSkip ??= {});
+  for (const [m, until] of Object.entries(skip)) if (until < now) delete skip[m];
+  const list = autoCandidates(scan, cfg);
+  const busy = (acct().autoBusy ??= new Set<string>());
+  let taken = 0, rested = 0;
+  for (const c of list) {
+    if (c.mint === except) continue;
+    if (skip[c.mint]) { rested++; continue; }
+    if (otherAgentMints().has(c.mint) || busy.has(c.mint)) { taken++; continue; }
+    busy.add(c.mint);
+    try {
+      const pair = await bestPool(c.mint).catch(() => null);
+      if (!state.bot.running) return { none: "" };
+      if (!pair?.pool) { skip[c.mint] = now + AUTO_SKIP_NOPOOL_MS; rested++; continue; }
+      if (otherBotPools().has(pair.pool) || acct().state.positions.some((p) => p.pool === pair.pool && !(p.source === "bot" && (p.botId ?? "1") === currentBotId()))) { taken++; continue; }
+      return { coin: c, pair };
+    } finally {
+      busy.delete(c.mint);
+    }
+  }
+  const n = list.filter((c) => c.mint !== except).length;
+  const kind = cfg.autoStrict ? (n === 1 ? "passes every scout check" : "pass every scout check") : n === 1 ? "is fit to trade" : "are fit to trade";
+  const where = taken && rested ? `with your other agents (${taken}) or resting after a recent try (${rested})` : taken ? "with your other agents" : "resting after a recent try";
+  return { none: !n ? `no coin ${cfg.autoStrict ? "passes every scout check" : "is fit to trade"} right now (${scan.scanned} scanned). It waits, at no AI cost, and looks again every half minute` : `the ${n === 1 ? "one coin" : `${n} coins`} that ${kind} right now ${n === 1 ? "is" : "are"} ${where}. It waits, at no AI cost, and looks again every half minute` };
+}
+// One check of an auto-pick agent that holds no trade. true = it has no coin (nothing more to do now).
+async function autoStep(cfg: BotConfig): Promise<boolean> {
+  const now = Date.now();
+  const au = (state.bot.auto ??= { note: "", at: now });
+  if (cfg.pool && !au.again) {
+    // Is its coin still worth staying on?
+    const sig = state.lastSignal;
+    const liveOrder = !!sig && sig.pool === cfg.pool && now < sig.consensus.expiresAt && sig.consensus.stance !== "AVOID" && sig.consensus.orders.some((o) => !o.warning);
+    if (liveOrder) {
+      if (au.idleSince) { delete au.idleSince; acct().dirty = true; }
+      return false;
+    }
+    if (!au.idleSince) { au.idleSince = now; acct().dirty = true; }
+    const unfit = sig?.pool === cfg.pool && sig.gate?.kind === "scouts";
+    if (!unfit && now - au.idleSince < AUTO_IDLE_MS) return false;
+    if (now < (au.nextAt ?? 0)) return false;
+    // Only if another coin is free: otherwise it stays where it is and keeps looking.
+    const found = await autoFind(cfg.mint);
+    const cur = state.bot.config;
+    if (!cur || cur !== cfg || !state.bot.running) return false;
+    if ("none" in found) {
+      au.nextAt = Date.now() + 2 * AUTO_RESCAN_MS;
+      return false;
+    }
+    if (cfg.mint) (state.bot.autoSkip ??= {})[cfg.mint] = now + (unfit ? AUTO_SKIP_UNFIT_MS : AUTO_SKIP_IDLE_MS);
+    autoAssign(cfg, found.coin, found.pair, unfit ? `the scouts ruled ${cfg.symbol} out, so it moved on and ` : `${cfg.symbol} gave it no order to place for ${Math.round((now - au.idleSince) / 60_000)} minutes, so it moved on and `);
+    return false;
+  }
+  if (!au.again && now < (au.nextAt ?? 0)) return true; // no coin, and it looked a moment ago
+  // No coin yet, or its trade has closed: take the best coin that is free.
+  const after = au.again ? "after its trade, " : "";
+  const found = await autoFind();
+  const cur = state.bot.config;
+  if (!cur || cur !== cfg || !state.bot.running) return true;
+  if ("none" in found) {
+    if (cfg.pool && found.failed && !(cfg.mint && ((state.bot.autoSkip ?? {})[cfg.mint] ?? 0) > Date.now())) {
+      // Its trade closed but the list cannot be read: it carries on with the coin it has.
+      delete (state.bot.auto ??= au).again;
+      acct().dirty = true;
+      log(`Auto-pick: the scouts' list could not be loaded after its trade, so it stays on ${cfg.symbol} for now.`);
+      return false;
+    }
+    if (cfg.pool) {
+      // Its trade closed and nothing is free (its own coin is resting after a loss, or no longer qualifies): it lets the coin go and waits.
+      Object.assign(cfg, { pool: "", symbol: "" });
+      delete cfg.mint;
+      delete cfg.imageUrl;
+      state.lastSignal = null;
+      state.bot.askNow = false;
+      delete (state.bot.auto ??= au).again;
+      acct().dirty = true;
+    }
+    if (found.none) autoNote(found.none);
+    return true;
+  }
+  autoAssign(cfg, found.coin, found.pair, after);
+  return false;
+}
+// Start several auto-pick agents at once, one per free agent slot, each with its own budget.
+// base = the settings every agent starts with (as the app sends for one agent).
+export function startAutoAgents(base: BotConfig, budgets: number[], strict: boolean, maxBots = 10): { started: string[] } {
+  const st = acct().state;
+  const list = (Array.isArray(budgets) ? budgets : []).map((b) => Math.floor(Number(b) * 100) / 100);
+  if (!list.length) throw new Error("Choose at least one agent.");
+  if (list.some((b) => !(b >= 10))) throw new Error("Each agent's budget must be at least $10.");
+  const running = runningIds(st);
+  const free = Array.from({ length: 10 }, (_, i) => String(i + 1)).filter((id) => !running.includes(id) && !st.positions.some((p) => p.source === "bot" && (p.botId ?? "1") === id));
+  const room = Math.max(0, Math.min(free.length, maxBots - running.length));
+  if (list.length > room) throw new Error(room ? `Only ${room} agent${room === 1 ? " is" : "s are"} free right now (your plan includes ${maxBots}, ${running.length} ${running.length === 1 ? "is" : "are"} running).` : `All ${maxBots} of your agents are running. Stop one first.`);
+  const total = list.reduce((s, b) => s + b, 0), cash = availableCash(st);
+  if (total > cash + 0.005) throw new Error(`These budgets add up to $${total.toFixed(2)}, but only $${cash.toFixed(2)} is available${st.cash - cash > 0.005 ? ` ($${(st.cash - cash).toFixed(2)} is locked for your other agents)` : ""}.`);
+  const started: string[] = [];
+  list.forEach((budgetUsd, i) => {
+    startBot({ ...base, chain: "solana", pool: "", symbol: "", tf: "5m", pick: "agent", autoPick: true, ...(strict ? { autoStrict: true } : { autoStrict: undefined }), budgetUsd }, free[i], maxBots);
+    started.push(free[i]);
+  });
+  return { started };
+}
+
 // true = the agent stopped (its budget is gone)
 async function agentPrep(cfg: BotConfig): Promise<boolean> {
   // The coin's picture for the agent's card: kept the first time the pool's details include one
@@ -2065,12 +2295,7 @@ async function agentPrep(cfg: BotConfig): Promise<boolean> {
       acct().dirty = true;
     }
   }
-  const budget = cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT;
-  if (agentFunds(cfg) < Math.max(10, budget * 0.1)) {
-    stopBot(`Agent stopped: its $${budget} budget is used up. Its trades are in your history.`);
-    alert(`⏹ Agent on ${cfg.symbol} stopped: its $${budget} budget is used up.`);
-    return true;
-  }
+  if (agentSpent(cfg)) return true;
   const L = state.bot.learned;
   if (!L || Date.now() - L.at > RELEARN_MS) {
     try {
@@ -2563,6 +2788,14 @@ async function tickBot(persist: boolean) {
         state.bot.armedSince = [];
         state.bot.askNow = true;
         if (isAuto(cfg)) state.bot.target = null;
+        // An auto-pick agent chooses its coin again after every trade. A coin it just lost on is
+        // left alone for half an hour (by all of the account's auto-pick agents).
+        if (isAutoAgent(cfg)) {
+          const au = (state.bot.auto ??= { note: "", at: Date.now() });
+          au.again = true;
+          delete au.idleSince;
+          if (t.pnlUsd! < 0 && cfg.mint) (state.bot.autoSkip ??= {})[cfg.mint] = Date.now() + AUTO_SKIP_LOSS_MS;
+        }
         // One trade at a time (the default): stop after a profitable round trip.
         const total = t.pnlUsd! + (pos.realizedUsd ?? 0);
         if (total > 0 && !state.settings.continuous && !isCoinAgent(cfg) && !isAgents(cfg)) {
@@ -2589,6 +2822,13 @@ async function tickBot(persist: boolean) {
     }
     if (isNew(cfg)) return await newCoinsStep(cfg);
     if (isAgents(cfg)) return await agentsStep(cfg);
+    // An auto-pick agent first sees to its coin: it takes one if it has none, and moves on after
+    // a trade or when its coin has given it nothing to do for a while.
+    if (isAutoAgent(cfg)) {
+      if (agentSpent(cfg)) return;
+      if (await autoStep(cfg)) return;
+      if (!cfg.pool) return; // (the account was loaded again while it was choosing: next check)
+    }
     if (isCoinAgent(cfg) && (await agentPrep(cfg))) return;
     if (isAuto(cfg) && state.bot.target && coinBlock(cfg, state.bot.target.pool, state.bot.target.symbol)) {
       state.bot.target = null; // pick another coin
@@ -2862,7 +3102,7 @@ function watchingBot() {
   const cfg = state.bot.config;
   if (!state.bot.running || !cfg) return false;
   if (state.positions.some((p) => p.source === "bot" && (p.botId ?? "1") === currentBotId())) return true;
-  if (state.bot.askNow) return true;
+  if (state.bot.askNow || state.bot.auto?.again) return true;
   const sig = state.lastSignal;
   const tgtPool = isAuto(cfg) ? state.bot.target?.pool : cfg.pool;
   // Only orders with at least the user's minimum win chance count.

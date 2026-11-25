@@ -348,6 +348,18 @@ app.post(
     return wrap(async () => engine.startBot(cfg, String(botId ?? "1"), max))(req, res);
   }),
 );
+// Several auto-pick agents at once: each takes the best coin on the scouts' list that is free,
+// and chooses again after every trade. budgets = one budget per agent to start.
+app.post(
+  "/api/bot/start-auto",
+  needs("bot.run", async (req, res) => {
+    const a = (await auth.requestAuth(req))!;
+    if (!can(a.plan, a.role, "bot.autopick")) return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick. See Plans to upgrade.`, upgrade: true });
+    const { budgets, strict, botId: _none, ...cfg } = req.body ?? {};
+    const max = botLimit(a.plan, a.role);
+    return wrap(async () => engine.startAutoAgents(cfg, budgets, !!strict, max))(req, res);
+  }),
+);
 app.post("/api/bot/stop", signedIn(wrap(async (req) => engine.stopBot("Stopped by user", String(req.body?.botId ?? "1")))));
 app.post("/api/bot/remove", signedIn(wrap(async (req) => engine.removeBot(String(req.body?.botId ?? "")))));
 // "Continue anyway" past today's daily loss limit (the user confirmed the risk).

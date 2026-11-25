@@ -54,9 +54,9 @@ export type Trade = { id: string; botId?: string; time: number; side: "BUY" | "S
 // Why an agent stood aside without asking its AI: the scouts ruled the coin out, or the numbers left no order that could pass.
 export type PlanGate = { kind: "scouts" | "numbers"; reasons: string[]; quality?: number; min?: number };
 export type AgentCost = { pct: number; usd: number; funds: number; fullPct: number; capPct: number; source: "jupiter" | "depth" };
-export type BotConfig = { maxCostPct?: number; chain: string; pool: string; symbol: string; imageUrl?: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins" | "agents" | "agent"; budgetUsd?: number; agentAiCheck?: boolean; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
+export type BotConfig = { autoPick?: boolean; autoStrict?: boolean; mint?: string; maxCostPct?: number; chain: string; pool: string; symbol: string; imageUrl?: string; tf: Timeframe; positionPct: number; minConfidence: number; analyzeEverySec: number; checkEverySec: number; maxDrawdownPct: number; breakEvenAtPct: number; lockPct?: number; partialAtPct?: number; goalUsd: number; pick?: "this" | "auto" | "newcoins" | "agents" | "agent"; budgetUsd?: number; agentAiCheck?: boolean; autoChain?: ScanChain; newChain?: "solana" | "base"; newCoinPct?: number; newStopPct?: number; newTakePct?: number; newTrailPct?: number; newMaxMin?: number; newMaxPerDay?: number; autoCandidates?: number; autoMinLiquidityUsd?: number; trailPct?: number; waitForHold?: boolean; rewardRule?: boolean; strongMode?: boolean; takeProfitUsd?: number; startEquity?: number; disabled?: string[]; cooldownMin?: number; dailyLossPct?: number; maxDrop1hPct?: number; riskPerTradePct?: number; allowRisky?: boolean; riskReasons?: string[]; riskyMinWin?: number };
 // Agents: the eight scouts' reading of a coin, and what an agent learned from its coin's history.
-export type AgentCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; liquidity: number; ageMin: number | null; change5m: number; change1h: number; agents: Record<string, { score: number; note: string }>; total: number; vetoes: string[] };
+export type AgentCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; liquidity: number; ageMin: number | null; change5m: number; change1h: number; agents: Record<string, { score: number; note: string }>; total: number; vetoes: string[]; structural?: string[]; timing?: string[]; quality?: number };
 export type StratResult = { key: string; label: string; tf: string; trades: number; wins: number; avgNetPct: number; winChancePct: number; runMedPct?: number; ran10?: number };
 export type Learned = { at: number; netTargetPct: number; table: StratResult[]; best: StratResult | null; summary: string };
 // storageError: the database is set up but not answering (what it said); the bot is paused until it does.
@@ -78,6 +78,8 @@ export type AppState = {
   settings: { feePct: number; slippagePct: number; continuous?: boolean };
   bot: {
     learned?: Learned; // Agent: what it learned from its coin's history
+    // Auto-pick agent: why it has no coin right now (note), and how many coins it has chosen since it started.
+    auto?: { note: string; at: number; nextAt?: number; idleSince?: number; again?: boolean; picks?: number; pickedAt?: number };
     watch?: { key: string; label: string; tf: string; side: "above" | "below"; price: number; stop: number; target: number; live: boolean; at: number } | null; // Agent: the level it's watching
     running: boolean;
     config: BotConfig | null;
@@ -232,6 +234,8 @@ export const api = {
   setUserAccess: (b: { username: string; plan?: PlanId; role?: "user" | "admin" }) => req<User>("/admin/users", b),
   reset: (startCash: number) => req("/reset", { startCash }),
   startBot: (cfg: BotConfig, botId = "1") => req("/bot/start", { ...cfg, botId }),
+  // Several auto-pick agents at once (one budget each); strict = only coins that pass every scout check.
+  startAuto: (cfg: Omit<BotConfig, "chain" | "pool" | "symbol">, budgets: number[], strict: boolean) => req<{ started: string[] }>("/bot/start-auto", { ...cfg, budgets, strict }),
   // The agents' log between two times (newest first, in pages; the last week is kept).
   botLog: (from: number, to: number, limit = 500) => req<{ lines: LogLine[]; more: boolean }>(`/bot/log?from=${Math.floor(from)}&to=${Math.floor(to)}&limit=${limit}`),
   stopBot: (botId = "1") => req("/bot/stop", { botId }),

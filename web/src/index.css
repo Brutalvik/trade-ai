@@ -1269,3 +1269,34 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .log-range .chip { cursor: pointer; }
 .log .log-day { position: sticky; top: 0; z-index: 1; padding: 5px 0 4px; margin-top: 4px; background: var(--panel-solid, #0b1120); color: var(--cyan); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
 .log .log-older { align-self: flex-start; margin: 6px 0 2px; cursor: pointer; }
+
+/* New agent window: "a coin you pick" or "auto trade with auto-pick" (the wrench), and the auto-pick setup. */
+.agent-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0, 0, 0, 0.25); }
+.agent-mode button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 9px 10px; border: 0; border-radius: 9px; background: none; color: var(--muted); font-weight: 600; cursor: pointer; }
+.agent-mode button.on { background: rgba(0, 229, 255, 0.12); color: var(--cyan); }
+.agent-mode button:hover:not(.on) { color: var(--text); }
+.agent-form.auto { align-items: start; }
+.auto-count, .auto-split { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.auto-count b { min-width: 30px; text-align: center; font: 700 18px "JetBrains Mono", monospace; }
+.auto-count .chip, .auto-split .chip { cursor: pointer; }
+.auto-count .chip:disabled { opacity: 0.4; cursor: default; }
+.auto-each { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.auto-each label > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+.auto-each .agent-form-note { grid-column: 1 / -1; }
+.auto-strict { align-items: flex-start; gap: 8px; line-height: 1.45; }
+.auto-strict input { margin-top: 3px; flex: none; }
+.opp-row.auto { cursor: default; }
+.opp-auto { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font: 600 10px/1.6 Inter, sans-serif; font-style: normal; letter-spacing: 0.02em; text-transform: uppercase; border: 1px solid var(--border); color: var(--muted); vertical-align: middle; }
+.opp-auto.yes { border-color: rgba(0, 245, 160, 0.5); color: var(--up); background: rgba(0, 245, 160, 0.08); }
+.opp-auto.no { border-color: rgba(255, 61, 113, 0.35); color: #ff8fa8; }
+.agents-auto-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -2px 0 8px; }
+.agents-auto-bar .chip { cursor: pointer; margin-left: 0; }
+@media (max-width: 640px) { .agent-mode { grid-template-columns: 1fr; } }
+
+/* New agent window on a phone: the note gets its own line above the two buttons. */
+@media (max-width: 640px) {
+  .modal-foot:has(.agent-foot-note) { flex-wrap: wrap; align-items: stretch; }
+  .modal-foot .agent-foot-note { flex: 1 1 100%; margin: 0 0 4px; }
+  .modal-foot:has(.agent-foot-note) .btn { flex: 1 1 0; min-width: 0; white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+  .modal-foot:has(.agent-foot-note) .btn.buy { flex: 2.2 1 0; }
+}

@@ -60,6 +60,10 @@ const ENGINE: Job[] = [
   { name: "relook-move", file: "engine/breakout.mts", env: { SC: "move" }, what: "a real price move makes the agent ask its AI again" },
   { name: "relook-touch", file: "engine/breakout.mts", env: { SC: "touch", MINNUM: "0" }, what: "reaching a refused level makes the agent ask again" },
   { name: "ten-agents", file: "engine/ten-agents.mts", env: { SC: "win" }, what: "ten agents at once, an eleventh refused" },
+  { name: "auto-pick-rotate", file: "engine/auto-pick.mts", env: { SC: "rotate" }, what: "auto-pick agents take different coins from the scouts' list; after a win an agent chooses again and starts with its budget, never more; after a loss it leaves that coin and trades on with what is left" },
+  { name: "auto-pick-wait", file: "engine/auto-pick.mts", env: { SC: "wait" }, what: "auto-pick, only coins that pass every scout check: with too few, agents wait at no AI cost and take the next one that passes" },
+  { name: "auto-pick-nolist", file: "engine/auto-pick.mts", env: { SC: "nolist" }, what: "the scouts' list stops answering: an auto-pick agent whose trade just closed carries on with its coin, and one with no coin waits" },
+  { name: "auto-pick-idle", file: "engine/auto-pick.mts", env: { SC: "idle" }, what: "an auto-pick agent whose coin gives it no order for ten minutes moves to a free coin, and stays if there is none" },
   { name: "locked-budgets", file: "engine/locked-budgets.mts", env: { SC: "win" }, what: "an agent's budget can't be spent by you or another agent" },
   { name: "stop-sticks", file: "engine/stop-sticks.mts", env: { SC: "win" }, what: "a Stop wins over an AI answer that arrives after it" },
   { name: "stale-copy", file: "engine/stale-copy.mts", env: { SC: "win" }, what: "a stale server copy can't undo a Stop or a Reset" },
@@ -70,6 +74,7 @@ const ENGINE: Job[] = [
   { name: "agent-lose@supabase", file: "engine/agent.mts", env: { SC: "lose", STORE: "supabase" }, what: "...on Supabase: a stop-out, then the agent trades on" },
   { name: "profit-ride@supabase", file: "engine/profit.mts", env: { SC: "ride", STORE: "supabase" }, what: "...on Supabase: past +5% the AI holds, then sells near the top" },
   { name: "ten-agents@supabase", file: "engine/ten-agents.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: ten agents at once" },
+  { name: "auto-pick-rotate@supabase", file: "engine/auto-pick.mts", env: { SC: "rotate", STORE: "supabase" }, what: "...on Supabase: auto-pick agents choose, trade and choose again" },
   { name: "locked-budgets@supabase", file: "engine/locked-budgets.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: an agent's budget can't be spent by you or another agent" },
 ];
 
