@@ -1,9 +1,10 @@
 // The one-time move from Upstash to Supabase, and the server's start-up check around it:
 // nothing is served from the new database before the old one's data is in it (or the owner has
 // said to start empty), and a half-finished copy is finished, not doubled, on the next try.
-// MODE=skip runs the "start empty" path instead of the copy.
+// The copy happens only when asked for (COPY_FROM_UPSTASH=1). MODE=skip runs the default
+// instead: the server starts on Supabase with empty accounts and never asks the old database.
 import { check, expect, finish } from "../check.mts";
-for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE|SKIP_UPSTASH/.test(k)) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE|_UPSTASH/.test(k)) delete process.env[k];
 const SKIP = process.env.MODE === "skip";
 process.env.STORE_RETRY_MS = "0"; // these tests fix the database and look again at once
 const { fakeSupabase } = await import(new URL("../pg-fake.mts", import.meta.url).href);
@@ -66,21 +67,25 @@ process.env.KV_REST_API_URL = "https://old.upstash.test";
 process.env.KV_REST_API_TOKEN = "old-token";
 const upstash = fakeUpstash("https://old.upstash.test", { strings, lists }, { blocked: true });
 
+if (!SKIP) process.env.COPY_FROM_UPSTASH = "1"; // the owner asked for the old data to be brought over
 const engine = await import(new URL("../../src/engine.ts", import.meta.url).href); // a server that has just started
 expect("the server is on the new database", engine.storeKind(), "supabase");
 expect("before the script has been run, the server says what is missing", await engine.ensureStore().catch((e: Error) => e.message), "The Supabase database is not set up yet: run server/supabase/schema.sql once in the Supabase SQL editor. (Already done? Then check that the Data API is switched on in the Supabase dashboard, under Integrations > Data API.)");
 await fresh.runSchema();
-const msg = await engine.ensureStore().catch((e: Error) => e.message);
-check("with the old database still blocked, the server does not start on empty accounts: it says why and what to do", /^Moving to the new database: your accounts and history could not be copied from the old one yet \(.*Fixed plan limits.*\)\. Unblock it in the Upstash console, or set SKIP_UPSTASH_COPY=1 in Vercel to start with empty accounts\.$/.test(msg) && !msg.includes("command was") && upstash.calls > 0, msg);
-expect("...nothing was marked as done, and the lock was given back", Number((await fresh.db.query("select count(*) as n from public.trade_kv")).rows[0].n), 0);
 const flagOf = async () => (await fresh.db.query("select value -> 'v' as v from public.trade_kv where key = 'copied-from-upstash'")).rows[0]?.v;
 if (SKIP) {
-  process.env.SKIP_UPSTASH_COPY = "1";
   await engine.ensureStore();
   const flag = await flagOf();
-  expect("told to start empty, it does, and remembers that it was told", [flag.skipped, flag.why, Number((await fresh.db.query("select count(*) as n from public.trade_accounts")).rows[0].n)], [true, "SKIP_UPSTASH_COPY is set", 0]);
-  delete process.env.SKIP_UPSTASH_COPY;
+  expect("with no copy asked for, the server starts on empty accounts at once, never asks the old database (still blocked here), and notes that it started empty", [flag.skipped, flag.why, Number((await fresh.db.query("select count(*) as n from public.trade_accounts where key <> '~selftest'")).rows[0].n), upstash.calls], [true, "COPY_FROM_UPSTASH is not set", 0, 0]);
+  process.env.COPY_FROM_UPSTASH = "1";
+  upstash.block(false);
+  await engine.ensureStore();
+  expect("...and asking for the copy later does not overwrite the new accounts: the old database stays unread", [upstash.calls, (await flagOf()).skipped], [0, true]);
+  delete process.env.COPY_FROM_UPSTASH;
 } else {
+  const msg = await engine.ensureStore().catch((e: Error) => e.message);
+  check("asked to copy, with the old database still blocked, the server does not start on empty accounts: it says why and what to do", /^Moving to the new database: your accounts and history could not be copied from the old one yet \(.*Fixed plan limits.*\)\. Unblock it in the Upstash console, or remove COPY_FROM_UPSTASH in Vercel to start with empty accounts\.$/.test(msg) && !msg.includes("command was") && upstash.calls > 0, msg);
+  expect("...nothing was marked as done, and the lock was given back", Number((await fresh.db.query("select count(*) as n from public.trade_kv where key <> 'selftest'")).rows[0].n), 0);
   upstash.block(false); // the owner unblocked the old database
   await engine.ensureStore();
   const flag = await flagOf();

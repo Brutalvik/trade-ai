@@ -12,7 +12,8 @@ import zlib from "node:zlib";
 
 export type StoreKind = "supabase" | "redis" | "file" | "temp";
 // Calls and bytes since this server copy started (to see what the storage traffic really is).
-export type StoreStats = { since: number; calls: Record<string, number>; sentBytes: number; receivedBytes: number };
+// auth: which kind of key the database accepted and how it was sent (never the key itself).
+export type StoreStats = { since: number; calls: Record<string, number>; sentBytes: number; receivedBytes: number; auth?: { key: "secret" | "service_role"; header: "apikey" | "apikey+bearer" } };
 
 export interface Store {
   kind: StoreKind;
@@ -42,6 +43,9 @@ export interface Store {
   listReplace?<T>(key: string, items: T[], reset: boolean): Promise<void>;
   // Is the store set up, and closed to the public? Throws a message a person can act on if not.
   check?(): Promise<{ accounts: number }>;
+  // Saves a small account and a list entry and reads them back from the database itself (not
+  // from what this copy remembers). Throws if what comes back is not what went in.
+  selfTest?(): Promise<void>;
   stats?(): StoreStats;
 }
 
@@ -84,9 +88,11 @@ export function storageEnvNames() {
 }
 
 // Supabase's settings under any prefix Vercel's integration was given (SUPABASE_URL,
-// STORAGE_SUPABASE_URL, ...). The key must be the project's SECRET one (service role): the
-// publishable / anon key cannot reach the tables, by design (see supabase/schema.sql).
-function supabaseFromEnv(): { url: string; key: string } | null {
+// STORAGE_SUPABASE_URL, ...). The key must be a SECRET one: the publishable / anon key cannot
+// reach the tables, by design (see supabase/schema.sql). There are two kinds and a project can
+// have both: the new SUPABASE_SECRET_KEY (sb_secret_...) and the older SUPABASE_SERVICE_ROLE_KEY
+// (a JWT), which Supabase is retiring. The new one is used first; the other is kept as a fallback.
+function supabaseFromEnv(): { url: string; keys: string[] } | null {
   const env = process.env;
   const names = Object.keys(env)
     .filter((n) => /(^|_)SUPABASE_URL$/.test(n))
@@ -95,10 +101,8 @@ function supabaseFromEnv(): { url: string; key: string } | null {
     const url = env[n]?.trim().replace(/\/+$/, "");
     if (!url || !/^https?:\/\//.test(url)) continue;
     const prefix = n.replace(/^NEXT_PUBLIC_/, "").replace(/SUPABASE_URL$/, "");
-    for (const k of [`${prefix}SUPABASE_SERVICE_ROLE_KEY`, `${prefix}SUPABASE_SECRET_KEY`, "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY"]) {
-      const key = env[k]?.trim();
-      if (key) return { url, key };
-    }
+    const keys = [`${prefix}SUPABASE_SECRET_KEY`, `${prefix}SUPABASE_SERVICE_ROLE_KEY`, "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY"].map((k) => env[k]?.trim() ?? "").filter(Boolean);
+    if (keys.length) return { url, keys: [...new Set(keys)] };
   }
   return null;
 }
@@ -241,25 +245,30 @@ function explain(status: number, text: string, fn: string) {
 }
 
 type Cached = { rev: number; parts: Record<string, { h: string; json: string }> };
-export function supabaseStore(url: string, key: string): Store {
+export function supabaseStore(url: string, key: string | string[]): Store {
   const stats: StoreStats = { since: Date.now(), calls: {}, sentBytes: 0, receivedBytes: 0 };
   // How the key is sent. A new-style key (sb_secret_...) goes in the "apikey" header alone, as
   // Supabase's page on API keys says; an older JWT key (service_role) is also sent as a bearer
-  // token. If the database refuses the first way with "401", the other way is tried once and kept
-  // (Supabase's own examples show both), so a difference there cannot keep the bot down.
-  let bearer = !key.startsWith("sb_");
+  // token. If the database refuses the first way with "401", the other way is tried once, and
+  // then the other key if there is one; what worked is kept (Supabase's own examples show both
+  // ways, and it is retiring the older keys), so a difference there cannot keep the bot down.
+  const keys = (Array.isArray(key) ? key : [key]).filter(Boolean);
+  const bearerFirst = (k: string) => !k.startsWith("sb_");
+  let keyAt = 0;
+  let bearer = bearerFirst(keys[0] ?? "");
   async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
     const body = JSON.stringify(args, jsonSafe);
     stats.calls[fn] = (stats.calls[fn] ?? 0) + 1;
-    let again = false, otherWay = false;
-    let asBearer = bearer; // the way this call sends the key (calls running side by side each decide for themselves)
+    let again = false, otherWay = false, otherKeys = keys.length - 1;
+    // The key and the way this call uses (calls running side by side each decide for themselves).
+    let at = keyAt, asBearer = bearer;
     for (;;) {
       let res: Response, text: string;
       try {
         stats.sentBytes += Buffer.byteLength(body);
         res = await fetch(`${url}/rest/v1/rpc/${fn}`, {
           method: "POST",
-          headers: { apikey: key, ...(asBearer ? { Authorization: `Bearer ${key}` } : {}), "Content-Type": "application/json", "User-Agent": "trade-server (node)" },
+          headers: { apikey: keys[at], ...(asBearer ? { Authorization: `Bearer ${keys[at]}` } : {}), "Content-Type": "application/json", "User-Agent": "trade-server (node)" },
           body,
           signal: AbortSignal.timeout(15_000),
         });
@@ -276,14 +285,26 @@ export function supabaseStore(url: string, key: string): Store {
         throw new Error(`The database (Supabase) did not answer: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
       }
       if (res.ok) {
-        bearer = asBearer; // the way that worked is the way from now on
+        // What worked is what is used from now on.
+        keyAt = at;
+        bearer = asBearer;
+        stats.auth = { key: keys[at].startsWith("sb_") ? "secret" : "service_role", header: asBearer ? "apikey+bearer" : "apikey" };
         return (text ? JSON.parse(text) : null) as T;
       }
-      if (res.status === 401 && !otherWay) {
-        // Refused before anything ran: safe to send once more, the other way.
-        otherWay = true;
-        asBearer = !asBearer;
-        continue;
+      if (res.status === 401) {
+        // Refused before anything ran: safe to send once more, the other way, then with the other key.
+        if (!otherWay) {
+          otherWay = true;
+          asBearer = !asBearer;
+          continue;
+        }
+        if (otherKeys > 0) {
+          otherKeys--;
+          at = (at + 1) % keys.length;
+          asBearer = bearerFirst(keys[at]);
+          otherWay = false;
+          continue;
+        }
       }
       if (res.status >= 500 && !again && READS.has(fn)) {
         again = true;
@@ -390,7 +411,19 @@ export function supabaseStore(url: string, key: string): Store {
       if (!c.rls || c.open) throw new Error("The Supabase tables are open to the public keys: run server/supabase/schema.sql again in the Supabase SQL editor (it closes them).");
       return { accounts: Number(c.accounts) };
     },
-    stats: () => ({ ...stats, calls: { ...stats.calls } }),
+    async selfTest() {
+      const key = "~selftest", nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const doc = { note: "written by the server to prove that saving and loading work", nonce, trades: [{ n: 1, text: "caf\u00e9 \u{1F680}" }], equity: [{ t: 1, v: 1.5 }] };
+      const rev = await this.save(doc, key);
+      const back = await loadRev<typeof doc>(key, true); // everything from the database, nothing from memory
+      const list = `${key}:list`;
+      await this.listPush(list, { nonce });
+      const n = await this.listLen(list);
+      const last = (await this.listRange<{ nonce?: string }>(list, n - 1, n - 1))[0];
+      const same = back.rev === rev && back.value?.nonce === nonce && JSON.stringify(back.value.trades) === JSON.stringify(doc.trades) && JSON.stringify(back.value.equity) === JSON.stringify(doc.equity) && (await this.rev!(key)) === rev && last?.nonce === nonce;
+      if (!same) throw new Error("Supabase self-test failed: what was saved did not come back the same. Nothing was served from it.");
+    },
+    stats: () => ({ ...stats, calls: { ...stats.calls }, ...(stats.auth ? { auth: { ...stats.auth } } : {}) }),
   };
 }
 
@@ -402,7 +435,7 @@ export function createStore(): Store {
 // A separate store on the same storage, with nothing remembered: "another server copy" in tests.
 export function newStore(): Store {
   const supa = supabaseFromEnv();
-  if (supa) return supabaseStore(supa.url, supa.key);
+  if (supa) return supabaseStore(supa.url, supa.keys);
   const redis = redisFromEnv();
   if (!redis) return fileStore();
   return {

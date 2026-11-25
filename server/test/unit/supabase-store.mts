@@ -164,6 +164,14 @@ await fake.db.exec("alter table public.trade_kv disable row level security");
 expect("tables left open are refused, with what to do", await store.check().catch((e: Error) => e.message), "The Supabase tables are open to the public keys: run server/supabase/schema.sql again in the Supabase SQL editor (it closes them).");
 await fake.runSchema();
 expect("...and running the script again closes them, without touching the data", [await store.check(), await store.rev("ada"), await store.listLen("ledger:u")], [{ accounts: 4 }, 5, 7]);
+// ---- the self-test the server runs once on a new database ----
+const before = fake.calls.length;
+await store.selfTest();
+const loadCall = fake.calls.slice(before).find((c: any) => c.fn === "trade_account_load");
+check("the self-test saves an account and a list entry and reads them back from the database itself", fake.count("trade_account_save", before) === 1 && JSON.stringify(loadCall?.args.p_have) === "{}" && fake.count("trade_list_push", before) === 1 && (await newStore().load<any>("~selftest")).trades[0].text === "caf\u00e9 \u{1F680}", { calls: fake.calls.slice(before).map((c: any) => c.fn) });
+await fake.db.exec("create or replace function public.trade_list_range(p_key text, p_start bigint, p_stop bigint) returns jsonb language sql stable as $$ select '[{\"nonce\":\"something else\"}]'::jsonb $$");
+expect("...and it fails loudly if what comes back is not what went in", await store.selfTest().then(() => "passed", (e: Error) => e.message), "Supabase self-test failed: what was saved did not come back the same. Nothing was served from it.");
+await fake.runSchema(); // the real function back
 const s = store.stats();
 check("the store counts its own traffic", s.calls.trade_account_save >= 5 && s.calls.trade_kv_get > 10 && s.sentBytes > 1000 && s.receivedBytes > 1000, { calls: Object.keys(s.calls).length, sentKB: Math.round(s.sentBytes / 1024), receivedKB: Math.round(s.receivedBytes / 1024) });
 
@@ -182,6 +190,19 @@ expect("an older JWT key (service_role) is sent as a bearer token as well, first
 const lenient = await fakeSupabase({ url: "https://other.supabase.test", key: "sb_secret_other", bearer: "required", setEnv: false });
 const adapt = supabaseStore(lenient.url, lenient.key);
 expect("if the database wants the key the other way round, the store finds out once and remembers", [await adapt.kvSet("a", 2), await adapt.kvGet("a"), await adapt.listLen("x"), lenient.calls.map((c: any) => c.status)], [true, 2, 0, [401, 200, 200, 200]]);
+// Two secret keys in the settings, as Vercel's integration gives them: the new one is used first.
+const both = await fakeSupabase({ url: "https://both.supabase.test", key: "sb_secret_new", setEnv: false });
+const newFirst = supabaseStore(both.url, ["sb_secret_new", "eyJ.old.jwt"]);
+expect("with both kinds of key, the new one is used and accepted first time", [await newFirst.kvSet("a", 3), both.calls.map((c: any) => c.status), newFirst.stats().auth], [true, [200], { key: "secret", header: "apikey" }]);
+const retired = await fakeSupabase({ url: "https://retired.supabase.test", key: "eyJ.old.jwt", setEnv: false }); // a project that accepts only the older key
+const fallBack = supabaseStore(retired.url, ["sb_secret_refused", "eyJ.old.jwt"]);
+expect("if the database refuses the new key both ways, the older one is tried, works, and is kept", [await fallBack.kvSet("a", 4), await fallBack.kvGet("a"), retired.calls.map((c: any) => c.status), fallBack.stats().auth], [true, 4, [401, 401, 200, 200], { key: "service_role", header: "apikey+bearer" }]);
+process.env.SUPABASE_URL = "https://both.supabase.test";
+process.env.SUPABASE_SERVICE_ROLE_KEY = "eyJ.old.jwt";
+process.env.SUPABASE_SECRET_KEY = "sb_secret_new";
+const fromSettings = newStore();
+expect("...and that order is what the settings give: SUPABASE_SECRET_KEY before SUPABASE_SERVICE_ROLE_KEY", [await fromSettings.kvGet("a"), fromSettings.stats().auth], [3, { key: "secret", header: "apikey" }]);
+for (const k of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY"]) delete process.env[k];
 const racing = supabaseStore(lenient.url, lenient.key); // a server copy that has not found out yet, hit by three requests at once
 expect("...also when several requests find out at the same moment: every one of them gets through", await Promise.all([racing.kvGet("a"), racing.kvGet("a"), racing.listLen("x")]), [2, 2, 0]);
 finish();

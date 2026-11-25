@@ -129,7 +129,7 @@ Vercel runs the API as short-lived copies that don't share memory or disk, so tw
 2. In the Supabase dashboard open **SQL Editor → New query**, paste all of `server/supabase/schema.sql` and press **Run**. It creates the tables and closes them to the public keys. It is safe to run again.
 3. Redeploy. `/api/status` shows `"storage":"supabase"`; if something is missing it says what in `storageError`, and the app shows the same in a yellow banner.
 
-Until November 2026 the app ran on Upstash Redis (`KV_REST_API_URL` / `KV_REST_API_TOKEN`). If those settings are still present when Supabase is added, the server copies everything across once on its first start (accounts, logins, history) and serves nothing until that is done; set `SKIP_UPSTASH_COPY=1` to start with empty accounts instead. With no Supabase settings the server still runs on Upstash.
+Until November 2026 the app ran on Upstash Redis (`KV_REST_API_URL` / `KV_REST_API_TOKEN`). On Supabase it starts with empty accounts. To bring the old data over instead, set `COPY_FROM_UPSTASH=1` before the first start on a new Supabase database: the server then copies everything across once (accounts, logins, history) and serves nothing until that is done. With no Supabase settings the server still runs on Upstash.
 
 **2. Something to wake the bot.**
 - While the dashboard is open, it does this itself every 20 s, and the bot checks prices every 5 seconds.

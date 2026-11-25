@@ -7,7 +7,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), "trading-rust-test-")));
-for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE|SKIP_UPSTASH|CRON_SECRET|ANTHROPIC|OPENAI|PRIVY/.test(k)) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE|_UPSTASH|CRON_SECRET|ANTHROPIC|OPENAI|PRIVY/.test(k)) delete process.env[k];
+process.env.COPY_FROM_UPSTASH = "1"; // this run is the one where the old data is brought over
 process.env.VERCEL = "1"; // as deployed: no local timer, and the app does not open its own port
 process.env.STORE_RETRY_MS = "0"; // these tests fix the database and look again at once
 const { fakeSupabase } = await import(new URL("../pg-fake.mts", import.meta.url).href);
@@ -29,7 +30,7 @@ const NOT_SET_UP = "The Supabase database is not set up yet: run server/supabase
 
 // ---- 1. the database's tables are not there yet ----
 let st = await call("GET", "/api/status");
-expect("the status page answers, and says what is missing", [st.status, st.body.storage, st.body.storageError, st.body.activeAccounts, st.body.storageEnvNames], [200, "supabase", NOT_SET_UP, null, ["KV_REST_API_TOKEN", "KV_REST_API_URL", "SUPABASE_SECRET_KEY", "SUPABASE_URL"]]);
+expect("the status page answers, and says what is missing", [st.status, st.body.storage, st.body.storageError, st.body.activeAccounts, st.body.storageEnvNames], [200, "supabase", NOT_SET_UP, null, ["COPY_FROM_UPSTASH", "KV_REST_API_TOKEN", "KV_REST_API_URL", "SUPABASE_SECRET_KEY", "SUPABASE_URL"]]);
 check("...without giving away any setting's value", !JSON.stringify(st.body).includes("sb_secret") && !JSON.stringify(st.body).includes("old-token"), "");
 expect("sign-in routes wait: asking who is signed in gets a plain 'not ready', not a stranger's empty account", [(await call("GET", "/api/auth/me")).status, (await call("GET", "/api/auth/me")).body], [503, { error: NOT_SET_UP }]);
 expect("...and so do sign-up, the account view and the admin pages", [(await call("POST", "/api/auth/signup", { username: "eve", email: "eve@example.test", password: "correct horse battery", firstName: "E", lastName: "V" })).status, (await call("GET", "/api/state")).status, (await call("GET", "/api/admin/users")).status], [503, 503, 503]);
@@ -40,7 +41,7 @@ expect("what needs no database still works (the plans)", (await call("GET", "/ap
 // ---- 2. the script has been run, but the old database still refuses to be read ----
 await supa.runSchema();
 st = await call("GET", "/api/status");
-check("now the status page says the old data cannot be copied yet, and what to do", st.status === 200 && /^Moving to the new database: .*Unblock it in the Upstash console, or set SKIP_UPSTASH_COPY=1 in Vercel to start with empty accounts\.$/.test(st.body.storageError) && !st.body.storageError.includes("command was"), st.body.storageError);
+check("now the status page says the old data cannot be copied yet, and what to do", st.status === 200 && /^Moving to the new database: .*Unblock it in the Upstash console, or remove COPY_FROM_UPSTASH in Vercel to start with empty accounts\.$/.test(st.body.storageError) && !st.body.storageError.includes("command was"), st.body.storageError);
 tick = await call("GET", "/api/bot/tick");
 expect("the scheduler's call still gets a normal reply", [tick.status, tick.body.ok, typeof tick.body.error], [200, false, "string"]);
 // As deployed, a not-ready answer is remembered for a short while: a dashboard left open while
@@ -52,13 +53,14 @@ for (let i = 0; i < 6; i++) await call(i % 2 ? "GET" : "POST", i % 2 ? "/api/sta
 await Promise.all([call("GET", "/api/status"), call("GET", "/api/bot/tick"), call("GET", "/api/auth/me")]);
 expect("while waiting, repeated requests get the same answer without either database being asked again", [[supa.calls.length, upstash.calls], (await call("GET", "/api/status")).body.storageError?.startsWith("Moving to the new database")], [quiet, true]);
 process.env.STORE_RETRY_MS = "0";
-expect("nobody can sign up into the empty database meanwhile", [(await call("POST", "/api/auth/signup", { username: "eve", email: "eve@example.test", password: "correct horse battery", firstName: "E", lastName: "V" })).status, Number((await supa.db.query("select count(*) as n from public.trade_kv")).rows[0].n)], [503, 0]);
+expect("nobody can sign up into the empty database meanwhile", [(await call("POST", "/api/auth/signup", { username: "eve", email: "eve@example.test", password: "correct horse battery", firstName: "E", lastName: "V" })).status, Number((await supa.db.query("select count(*) as n from public.trade_kv where key like 'user:%' or key like 'email:%'")).rows[0].n)], [503, 0]);
 
 // ---- 3. the old database is unblocked ----
 upstash.block(false);
 st = await call("GET", "/api/status");
 expect("the next request copies the data, and the status page is clean: one account with a running agent", [st.status, st.body.storageError, st.body.activeAccounts, st.body.storageEnvNames], [200, undefined, 1, undefined]);
-check("...and reports the storage traffic", st.body.storageStats?.calls?.trade_selfcheck >= 1 && st.body.storageStats.receivedBytes > 0, st.body.storageStats?.calls);
+check("...and reports the storage traffic, and which kind of key the database accepted (never the key)", st.body.storageStats?.calls?.trade_selfcheck >= 1 && st.body.storageStats.receivedBytes > 0 && st.body.storageStats.auth?.key === "secret" && st.body.storageStats.auth?.header === "apikey" && !JSON.stringify(st.body).includes("sb_secret"), { ...st.body.storageStats?.calls, auth: st.body.storageStats?.auth });
+expect("the server proved once, on this database, that saving and loading work", [Number((await supa.db.query("select count(*) as n from public.trade_accounts where key = '~selftest'")).rows[0].n), Number((await supa.db.query("select count(*) as n from public.trade_kv where key = 'selftest'")).rows[0].n), st.body.storageStats.calls.trade_account_save >= 1], [1, 1, true]);
 const me = await call("GET", "/api/auth/me");
 expect("sign-in routes answer again (nobody is signed in here)", [me.status, me.body?.user ?? null], [200, null]);
 const taken = await call("POST", "/api/auth/signup", { username: "ada", email: "ada2@example.test", password: "correct horse battery", firstName: "A", lastName: "D" });

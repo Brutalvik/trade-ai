@@ -479,9 +479,12 @@ async function markActive(a: Account) {
 }
 export const activeAccounts = async () => (await store.kvGet<string[]>(ACTIVE_KEY)) ?? [];
 
-// Supabase must be set up (its tables there, and closed to the public keys), and what the app kept
-// in Upstash is copied over once before anything is served from it. Otherwise people would sign in
-// to empty accounts, and the copy could no longer be made without overwriting what they did since.
+// Supabase must be set up: its tables there, and closed to the public keys. The app then starts on
+// it with empty accounts (the owner's choice on 25 Nov 2026: start from scratch).
+// What the app kept in Upstash can still be brought over instead: with COPY_FROM_UPSTASH=1 set
+// before the first start, everything is copied once and nothing is served until that is done
+// (otherwise people would sign in to empty accounts, and the copy could no longer be made
+// without overwriting what they did since).
 // While it is not ready, the reason is remembered for a short while and given again without
 // asking either database: the app can sit in this state for days (waiting for the old database to
 // be unblocked) with a dashboard open, and every refresh would otherwise ask both. Requests that
@@ -512,12 +515,18 @@ export async function ensureStore() {
 }
 async function setUpStore() {
   await store.check!();
+  // Once per database: an account and a list entry are saved and read back, so a problem with
+  // saving shows on the status page before anybody's account depends on it.
+  if (!(await store.kvGet<unknown>("selftest"))) {
+    await store.selfTest!();
+    await store.kvSet("selftest", { at: Date.now() });
+  }
   if (!(await store.kvGet<unknown>("copied-from-upstash"))) {
     const old = oldStoreFromEnv();
-    if (!old || process.env.SKIP_UPSTASH_COPY) {
-      const why = old ? "SKIP_UPSTASH_COPY is set" : "no Upstash settings";
+    if (!old || !process.env.COPY_FROM_UPSTASH) {
+      const why = old ? "COPY_FROM_UPSTASH is not set" : "no Upstash settings";
       await store.kvSet("copied-from-upstash", { skipped: true, at: Date.now(), why });
-      console.log(`[store] starting on Supabase without a copy from Upstash (${why})`);
+      console.log(`[store] starting on Supabase with empty accounts, without a copy from Upstash (${why})`);
     } else {
       if (!(await store.lock("copy-from-upstash", 10 * 60_000))) throw new Error("Your data is being moved to the new database right now. Try again in a minute.");
       try {
@@ -525,7 +534,7 @@ async function setUpStore() {
         await store.kvSet("copied-from-upstash", { at: Date.now(), ...r });
         console.log(`[store] copied from Upstash: ${r.accounts} accounts, ${r.records} records, ${r.lists} lists (${r.items} entries)`);
       } catch (e) {
-        throw new Error(`Moving to the new database: your accounts and history could not be copied from the old one yet (${shortError(e).slice(0, 160)}). Unblock it in the Upstash console, or set SKIP_UPSTASH_COPY=1 in Vercel to start with empty accounts.`);
+        throw new Error(`Moving to the new database: your accounts and history could not be copied from the old one yet (${shortError(e).slice(0, 160)}). Unblock it in the Upstash console, or remove COPY_FROM_UPSTASH in Vercel to start with empty accounts.`);
       } finally {
         await store.unlock("copy-from-upstash").catch(() => {});
       }
