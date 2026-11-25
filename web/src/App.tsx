@@ -15,6 +15,7 @@ import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playSoundPreview, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
 import { MaCrossChips } from "./MaCross";
+import { showTab } from "./tabTitle";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -504,6 +505,11 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
   }, [real, me?.username]);
   const eq = state?.equityNow ?? 0;
   const pnl = state ? eq - state.startCash : 0;
+  // The browser tab shows "T//R" and this profit or loss (paper mode, signed in); its icon is
+  // green or red with it. Leaving the app puts the plain name back.
+  const tabPnl = me && !real && state ? Math.round(pnl * 100) / 100 : null;
+  useEffect(() => showTab(tabPnl), [tabPnl]);
+  useEffect(() => () => showTab(null), []);
   return (
     <header className="topbar">
       <div className="brand">
