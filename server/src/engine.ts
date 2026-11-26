@@ -2184,7 +2184,11 @@ const AUTO_PRICE_WAIT_MS = 20_000; // the longest one measurement is waited for 
 // ...and only one coin is being measured for choosing at any moment, for all agents of all
 // accounts on this server copy: an agent that finds another measurement under way goes on at its
 // next look. So pricing takes at most every other turn in Jupiter's queue, however many agents wait.
+// That next look comes soon (AUTO_PRICE_RETRY_MS, not the usual half minute), so that agents
+// started together price the list one coin after another without idle gaps: ten agents settle in
+// about two minutes instead of five.
 let pricingNow = 0;
+const AUTO_PRICE_RETRY_MS = 10_000;
 const autoCostMax = (cfg: BotConfig) => (isOff(cfg, "autoMaxCostPct") ? 0 : Math.max(0, cfg.autoMaxCostPct ?? AUTO_MAX_COST_PCT));
 // The most the coin an agent is on may cost: the line plus the slack. 0 = the rule is off.
 const costLimit = (cfg: BotConfig) => { const max = autoCostMax(cfg); return max > 0 ? max + AUTO_COST_SLACK_PCT : 0; };
@@ -2333,7 +2337,8 @@ function autoAssign(cfg: BotConfig, found: { coin: AgentCoin; pair: PairInfo; co
 // or let it be: the caller must pass the result to autoUnclaim(). A coin is claimed before
 // anything is awaited about it, so two agents looking at the same moment never get the same coin,
 // and never measure the same coin twice.
-type AutoFound = { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] } | { none: string; key?: string; failed?: boolean; more?: boolean };
+// soon = it stopped only because another agent's measurement was under way: it looks again in a few seconds.
+type AutoFound = { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] } | { none: string; key?: string; failed?: boolean; more?: boolean; soon?: boolean };
 const autoUnclaim = (found: AutoFound) => { if ("coin" in found) acct().autoBusy?.delete(found.coin.mint); };
 async function autoFind(except?: string): Promise<AutoFound> {
   const now = Date.now();
@@ -2351,7 +2356,7 @@ async function autoFind(except?: string): Promise<AutoFound> {
   const rule = max > 0 && funds > 0;
   const lookFrom = Date.now(); // (the list is read by now: the time a look may spend measuring counts from here)
   const dear: Dear[] = [];
-  let taken = 0, rested = 0, measured = 0, more = false;
+  let taken = 0, rested = 0, measured = 0, more = false, soon = false;
   for (const c of list) {
     if (c.mint === except) continue;
     if (skip[c.mint]) { rested++; continue; }
@@ -2362,7 +2367,8 @@ async function autoFind(except?: string): Promise<AutoFound> {
       // Too expensive for this agent's money? Then its trade would start too far behind (AUTO_MAX_COST_PCT).
       let pct: number | null = rule ? knownCost(c.mint, funds, max) : null;
       if (rule && pct === null) {
-        if (measured >= AUTO_PRICE_PER_LOOK || pricingNow > 0 || Date.now() - lookFrom > AUTO_PRICE_LOOK_MS) { more = true; break; }
+        if (measured >= AUTO_PRICE_PER_LOOK || Date.now() - lookFrom > AUTO_PRICE_LOOK_MS) { more = true; break; }
+        if (pricingNow > 0) { more = true; soon = !measured; break; }
         measured++;
         const got = await priceCoin(c.mint, c.liquidity, funds);
         if (!state.bot.running) return { none: "" };
@@ -2381,7 +2387,7 @@ async function autoFind(except?: string): Promise<AutoFound> {
     }
   }
   const tooDear = dear.length ? ` Too expensive means that buying and selling there would cost more than ${max}% of the trade (${dear.slice(0, 4).map((d) => d.symbol).join(", ")}${dear.length > 4 ? ` and ${dear.length - 4} more` : ""}).` : "";
-  if (more) return { none: `it is finding out what the free coins on the list cost to trade with its ${usd0(funds)}${dear.length ? `: ${dear.length} so far ${dear.length === 1 ? "is" : "are"} too expensive.${tooDear}` : "."} It goes on in half a minute, at no AI cost`, key: "pricing", more: true };
+  if (more) return { none: `it is finding out what the free coins on the list cost to trade with its ${usd0(funds)}${dear.length ? `: ${dear.length} so far ${dear.length === 1 ? "is" : "are"} too expensive.${tooDear}` : "."} It goes on ${soon ? "in a few seconds" : "in half a minute"}, at no AI cost`, key: "pricing", more: true, soon };
   const n = list.filter((c) => c.mint !== except).length;
   const wait = "It waits, at no AI cost, and looks again every half minute";
   if (!n) return { none: `no coin ${cfg.autoStrict ? "passes every scout check" : "is fit to trade"} right now (${scan.scanned} scanned). ${wait}`, key: "none" };
@@ -2430,7 +2436,7 @@ async function autoStep(cfg: BotConfig): Promise<boolean> {
           return true;
         }
         // Otherwise only if another coin is free: it stays where it is and keeps looking.
-        (state.bot.auto ??= au).nextAt = Date.now() + (found.more ? 1 : 2) * AUTO_RESCAN_MS;
+        (state.bot.auto ??= au).nextAt = Date.now() + (found.soon ? AUTO_PRICE_RETRY_MS : (found.more ? 1 : 2) * AUTO_RESCAN_MS);
         return false;
       }
       // (A coin left for its cost is not rested for the account's other agents: one with less money may well afford it.)
@@ -2460,6 +2466,7 @@ async function autoStep(cfg: BotConfig): Promise<boolean> {
       // qualifies, or is too expensive for what is left of its money): it lets the coin go and waits.
       if (cfg.pool) autoRelease(cfg);
       if (found.none) autoNote(found.none, found.key);
+      if (found.soon) (state.bot.auto ??= au).nextAt = Date.now() + AUTO_PRICE_RETRY_MS;
       return true;
     }
     autoAssign(cfg, found, after);

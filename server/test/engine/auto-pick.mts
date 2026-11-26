@@ -418,6 +418,19 @@ if (SC === "cost") {
   check("its log says why it moved, what the new coin costs, and what it passed over",
     /Auto-pick: buying and selling its \$1,000 on QNEWW costs about 4\.4%, more than the 1\.5% it accepts, so it moved on and chose QFREE \(the scouts' score \d+ of 100[^)]*\)\. Buying and selling its \$1,000 there costs about 0\.8%\. It passed over QDEAR \(3\.8%\), higher on the list: more than the 1\.5% it accepts\. Its AI reads the charts now\./.test(logOf(z)), autoLine(z, /moved on and chose/));
   check("the coin it left for its cost is not put to rest either", !((engine.getState() as any).bot.autoSkip ?? {})[bySymbol("QNEWW").mint], (engine.getState() as any).bot.autoSkip);
+
+  // Two agents started together, two coins nobody has measured: one coin is measured at a time,
+  // and the agent that has to wait for its turn looks again in a few seconds, not in half a minute.
+  coins.push(coin("QTWOA", { organic: 45, side: 1_000_000 }), coin("QTWOB", { organic: 40, side: 1_000_000 }));
+  for (const sym of ["QTWOA", "QTWOB"]) staysOut.add(sym);
+  refreshLists();
+  const q0 = quotes;
+  let sawTurn = "";
+  const [p1, p2] = engine.startAutoAgents(base, [1000, 1000], false, 10).started;
+  await until("two agents started together each measure a coin, one after the other, and take it", () => { for (const id of [p1, p2]) if (/in a few seconds/.test(noteOf(id))) sawTurn = noteOf(id); return !!on(p1) && !!on(p2); }, 90);
+  expect("each took one of the two coins", [on(p1), on(p2)].sort(), ["QTWOA", "QTWOB"]);
+  check("the one that found the other's measurement under way waited for its turn, and said it would go on in a few seconds", /^it is finding out what the free coins on the list cost to trade with its \$1,000.* It goes on in a few seconds, at no AI cost$/.test(sawTurn), sawTurn);
+  expect("two coins were measured, once each", quotes - q0, 8);
 }
 
 {
