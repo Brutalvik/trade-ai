@@ -319,6 +319,11 @@ if (SC === "cost") {
   check("it bought with its whole budget, and the trade is charged the cost that was measured", Math.abs(holding(a1).costUsd - 1000) < 0.01 && Math.abs(holding(a1).costPct - 0.8) < 0.06, [holding(a1)?.costUsd, holding(a1)?.costPct]);
   expect("its AI was asked about the coin it took, never about the two it passed over", Object.keys(plansFor), ["QCHEP"]);
   expect("three coins measured in all, once each", quotes, 12);
+  // What each line decided is kept with it (for the app's one-line log).
+  const decided = (id: string, act: string, coin?: string) => agent(id).bot.log.map((l: any) => l.d).filter((d: any) => d && d.act === act && (coin === undefined || d.coin === coin));
+  check("choosing the coin is kept as a decision: its score, its cost, and what was passed over", decided(a1, "pick", "QCHEP").some((d: any) => /^the scouts' score \d+ of 100, costs 0\.8% to trade with its \$1,000; passed over QDEAR \(3\.8%\) and QMIDD \(1\.7%\)$/.test(d.why)), decided(a1, "pick"));
+  check("while it was measuring, having no coin yet was kept as a decision too", decided(a1, "wait").some((d: any) => /^finding out what the free coins cost to trade with its \$1,000 \(2 too expensive so far\)$/.test(d.why)), decided(a1, "wait"));
+  check("the buy is kept as a decision with its size", decided(a1, "enter", "QCHEP").some((d: any) => Math.abs(d.usd - 1000) < 0.01 && d.of === 1000 && /costs 0\.8% to trade$/.test(d.why)), decided(a1, "enter"));
 
   // A second agent, with $300: a small trade moves the price less.
   const [a2] = engine.startAutoAgents(base, [300], false, 10).started;
@@ -336,6 +341,7 @@ if (SC === "cost") {
   check("a waiting agent's card says why: the coins are with your other agents or too expensive for its money, and waiting costs no AI tokens",
     /^the 3 coins that are fit to trade right now are with your other agents \(2\) or too expensive for its \$1,000 \(1\)\. Too expensive means that buying and selling there would cost more than 1\.5% of the trade \(QDEAR\)\. It waits, at no AI cost, and looks again every half minute$/.test(noteOf(w1)), noteOf(w1));
   expect("the AI was still never asked about the expensive coin", Object.keys(plansFor).sort(), ["QCHEP", "QMIDD"]);
+  check("waiting with no coin it can afford is kept as a decision, in a few words", decided(w1, "wait").some((d: any) => d.why === "no coin free: 2 with your other agents, 1 too expensive for its $1,000 (QDEAR)"), decided(w1, "wait"));
   check("their budgets stay set aside for them", Math.abs((engine.getState() as any).locked - 2000) < 0.01, (engine.getState() as any).locked);
   expect("...and they measured nothing again", quotes, 12);
 
@@ -381,11 +387,13 @@ if (SC === "cost") {
   await until("at its next look the cost is measured, and its AI is not asked", () => /The AI was not asked after all/.test(logOf(mover)), 120);
   check("its log says why the AI was not asked, and that no AI tokens were spent", /The AI was not asked after all \(no AI tokens spent\): buying and selling its \$1,000 on QNEWW costs about 4\.4% now, more than the 1\.5% it accepts\. It looks for another coin\./.test(logOf(mover)), autoLine(mover, /not asked after all/));
   expect("its AI was not asked about the coin once it was clearly too expensive", (plansFor.QNEWW ?? 0) - asked, 0);
+  check("its AI staying out, and the coin being ruled out for its cost, are kept as decisions", decided(mover, "skip", "QNEWW").length >= 1 && decided(mover, "filtered", "QNEWW").some((d: any) => d.why === "the cost: trading its $1,000 there costs 4.4% now, it accepts 1.5%"), [decided(mover, "skip"), decided(mover, "filtered")]);
   refreshLists();
   await until("it leaves the coin", () => on(mover) === "", 90);
   expect("an agent whose coin becomes clearly too expensive for its money leaves it, and waits for one it can afford", [on(mover), agent(mover).bot.running, holding(mover) ?? null], ["", true, null]);
   check("its log says why", /Auto-pick: left QNEWW: buying and selling its \$1,000 on QNEWW costs about 4\.4%, more than the 1\.5% it accepts\. No other coin is free for it right now\./.test(logOf(mover)), autoLine(mover, /^Auto-pick: left/));
   check("the coin is not put to rest for the account's other agents: one with less money may afford it", !((engine.getState() as any).bot.autoSkip ?? {})[bySymbol("QNEWW").mint], (engine.getState() as any).bot.autoSkip);
+  check("leaving the coin is kept as a decision", decided(mover, "left", "QNEWW").some((d: any) => d.why === "the cost: trading its $1,000 there costs 4.4%, it accepts 1.5%; no other coin is free"), decided(mover, "left"));
   check("what was measured is kept with the account for all its agents", ["QDEAR", "QNEWW"].every((sym) => (engine.getState() as any).bot.autoCost?.[bySymbol(sym).mint]?.source === "jupiter"), Object.keys((engine.getState() as any).bot.autoCost ?? {}));
 
   // Agents that were started before this rule existed sit on whatever was best, whatever it cost.
@@ -418,6 +426,7 @@ if (SC === "cost") {
   check("its log says why it moved, what the new coin costs, and what it passed over",
     /Auto-pick: buying and selling its \$1,000 on QNEWW costs about 4\.4%, more than the 1\.5% it accepts, so it moved on and chose QFREE \(the scouts' score \d+ of 100[^)]*\)\. Buying and selling its \$1,000 there costs about 0\.8%\. It passed over QDEAR \(3\.8%\), higher on the list: more than the 1\.5% it accepts\. Its AI reads the charts now\./.test(logOf(z)), autoLine(z, /moved on and chose/));
   check("the coin it left for its cost is not put to rest either", !((engine.getState() as any).bot.autoSkip ?? {})[bySymbol("QNEWW").mint], (engine.getState() as any).bot.autoSkip);
+  check("moving to another coin is kept as one decision that says what it left and why", decided(z, "pick", "QFREE").some((d: any) => /^left QNEWW: it costs 4\.4% to trade; the scouts' score \d+ of 100, costs 0\.8% to trade with its \$1,000; passed over QDEAR \(3\.8%\)$/.test(d.why)), decided(z, "pick"));
 
   // Two agents started together, two coins nobody has measured: one coin is measured at a time,
   // and the agent that has to wait for its turn looks again in a few seconds, not in half a minute.

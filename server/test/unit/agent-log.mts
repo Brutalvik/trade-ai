@@ -118,4 +118,50 @@ for (let d = 1; d <= 9; d++) {
   const r = await botlog.logHistory("retry", 0, Date.now());
   expect("lines whose write failed go out with the next save", r.lines.map((l: any) => l.msg.slice(0, 13)), ["Agent stopped", "Agent started"]);
 }
+// ---------- Decisions: what a line decided is kept with it ----------
+{
+  now = BASE + 30 * DAY;
+  const user = "decider";
+  await engine.withAccount(user, async () => {
+    await engine.sync();
+    engine.startBot(cfg("DDD"), "1", 10);
+    await engine.flush();
+    now += 60_000;
+    engine.stopBot("Stopped by user", "1");
+    await engine.flush();
+  });
+  // Lines as the log held them before decisions were kept (no record with them), a line that
+  // decides nothing, and one written with its decision.
+  const t = Date.now();
+  const oldBuy = "BUY QFREE $297.18 @ $1.000 (buy-now order (up to $1.002)). Exit below $0.9500 (risking about $17.41, 0.2% of the account); at $1.150 it starts trailing. A round trip of this size in this pool costs about 0.7%.";
+  const oldLoss = "SELL QMIDD @ $1.000: Exit: the price fell all the way back to the buy price (best was +14.1% after fees). P&L $-2.81";
+  const oldWin = "SELL QAAA @ $1.100: The AI sold: support broke. P&L +$89.12";
+  await botlog.keepLogLines(user, [
+    { t: t + 1000, bot: "2", sym: "QFREE", msg: oldBuy, level: "good" },
+    { t: t + 2000, bot: "2", sym: "QMIDD", msg: oldLoss, level: "bad" },
+    { t: t + 3000, bot: "2", sym: "QAAA", msg: oldWin, level: "good" },
+    { t: t + 4000, bot: "2", sym: "QAAA", msg: "Asking the AI for a new plan (starting up)...", level: "info" },
+    { t: t + 5000, bot: "2", sym: "QZZZ", msg: "Plan: AVOID (30% sure). The AI advises staying out.", level: "info", d: { act: "skip", coin: "QZZZ", why: "fading volume" } },
+  ]);
+  now += 60_000;
+  const all = await botlog.logHistory(user, 0, Date.now());
+  const dec = await botlog.logHistory(user, 0, Date.now(), 500, Date.now(), true);
+  expect("the full log is as before: every line, and a line written before decisions were kept has none", [all.lines.length, all.lines.filter((l: any) => l.d).map((l: any) => l.d.act)], [7, ["skip", "stop", "start"]]);
+  expect("asked for decisions only, the log leaves out the lines that decided nothing", dec.lines.map((l: any) => l.d?.act), ["skip", "exit", "exit", "enter", "stop", "start"]);
+  const by = (act: string, coin: string) => dec.lines.find((l: any) => l.d.act === act && l.d.coin === coin)?.d;
+  // (The database keeps a record's fields in its own order, so they are compared one by one.)
+  expect("starting and stopping an agent are kept as decisions, with the coin and a short reason", [by("start", "DDD"), by("stop", "DDD")].map((d: any) => [d?.act, d?.coin, d?.why]), [["start", "DDD", "agent with a $100 budget"], ["stop", "DDD", "Stopped by user"]]);
+  expect("an old buy is read from its sentence: the coin, the money put in, the order and its cost", by("enter", "QFREE"), { act: "enter", coin: "QFREE", usd: 297.18, why: "buy-now order (up to $1.002) \u00b7 costs 0.7%" });
+  expect("an old sale at a loss: the coin, the loss, the reason", by("exit", "QMIDD"), { act: "exit", coin: "QMIDD", pnl: -2.81, why: "Exit: the price fell all the way back to the buy price (best was +14.1% after fees)" });
+  expect("an old sale at a profit", by("exit", "QAAA"), { act: "exit", coin: "QAAA", pnl: 89.12, why: "The AI sold: support broke" });
+  const two = await botlog.logHistory(user, 0, Date.now(), 2, Date.now(), true);
+  expect("decisions come in pages too: the newest two, and word that there are more", [two.lines.map((l: any) => l.d.act), two.more], [["skip", "exit"], true]);
+  // The reading of old sentences, on its own.
+  const of = (msg: string) => botlog.decisionOf({ msg });
+  expect("your own limit buy and a protected sale are read too", [of("LIMIT BUY ABC $50.00 @ $0.9900 (your limit $1.000).")?.act, of("PROTECTED SELL ABC @ $1.200: fell 5% from its high of $1.300 (+20.0% from your buy). P&L +$9.50")],
+    ["enter", { act: "exit", coin: "ABC", pnl: 9.5, why: "fell 5% from its high of $1.300 (+20.0% from your buy)" }]);
+  expect("nothing else is guessed from a sentence", [of("Plan: BUY NOW (70% sure). Standing orders: buy now up to $1.002."), of("Auto-pick: chose QAAA (the scouts' score 81 of 100)."), of("QAAA is at its stop-loss $0.95 (now $0.94)."), of("")], [null, null, null, null]);
+  expect("a decision kept with the line is used as it is, whatever the sentence says", botlog.decisionOf({ msg: oldBuy, d: { act: "pick", coin: "X", why: "y" } }), { act: "pick", coin: "X", why: "y" });
+  expect("a reason is made to fit one line: single spaces, no full stop, cut with a mark", [botlog.shortWhy("  Fading   volume under\nresistance; no edge.  "), botlog.shortWhy("x".repeat(200), 20).length, botlog.shortWhy("x".repeat(200), 20).endsWith("\u2026")], ["Fading volume under resistance; no edge", 20, true]);
+}
 finish();

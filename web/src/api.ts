@@ -96,7 +96,7 @@ export type AppState = {
     lastWatch: { at: number; by: "scheduler" | "dashboard" | "local" } | null;
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
-    log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
+    log: { t: number; msg: string; level: "info" | "good" | "bad"; d?: Decision }[];
   };
   storage: Status["storage"];
   orders?: LimitOrder[]; // open limit buys / sells
@@ -105,7 +105,10 @@ export type AppState = {
   bots?: BotSlot[]; // extra bots (2 and 3); bot 1 is bot / lastSignal
 };
 // One line of the agents' log: which agent wrote it (and on which coin), when, and how it should look.
-export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad" };
+// What a log line decided (server/src/botlog.ts): bought, sold, stayed out and why, chose a coin...
+export type DecisionAct = "enter" | "exit" | "skip" | "filtered" | "order" | "pick" | "left" | "wait" | "lock" | "start" | "stop";
+export type Decision = { act: DecisionAct; coin?: string; why: string; usd?: number; of?: number; pnl?: number; pct?: number };
+export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad"; d?: Decision };
 export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };
 // Every bot of the account, bot 1 first.
 export const allBots = (s: AppState | null): BotSlot[] => (s ? [{ id: "1", bot: s.bot, lastSignal: s.lastSignal }, ...(s.bots ?? [])] : []);
@@ -239,7 +242,7 @@ export const api = {
   // Several auto-pick agents at once (one budget each); strict = only coins that pass every scout check.
   startAuto: (cfg: Omit<BotConfig, "chain" | "pool" | "symbol">, budgets: number[], strict: boolean) => req<{ started: string[] }>("/bot/start-auto", { ...cfg, budgets, strict }),
   // The agents' log between two times (newest first, in pages; the last week is kept).
-  botLog: (from: number, to: number, limit = 500) => req<{ lines: LogLine[]; more: boolean }>(`/bot/log?from=${Math.floor(from)}&to=${Math.floor(to)}&limit=${limit}`),
+  botLog: (from: number, to: number, limit = 500, decisions = false) => req<{ lines: LogLine[]; more: boolean }>(`/bot/log?from=${Math.floor(from)}&to=${Math.floor(to)}&limit=${limit}${decisions ? "&only=decisions" : ""}`),
   stopBot: (botId = "1") => req("/bot/stop", { botId }),
   removeBot: (botId: string) => req("/bot/remove", { botId }),
   heartbeat: () => req<{ ticked: boolean; running: boolean }>("/bot/heartbeat", {}),

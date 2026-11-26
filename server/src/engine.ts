@@ -11,7 +11,7 @@ import { scanOpportunities } from "./scan.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
 import { copyFromUpstash, createStore, oldStoreFromEnv, type HourRow } from "./store.js";
-import { keepLogLines, type LogLine } from "./botlog.js";
+import { keepLogLines, shortWhy, type Decision, type LogLine } from "./botlog.js";
 import { alertChannel, sendAlert } from "./alerts.js";
 import { scanNewCoins } from "./newcoins.js";
 import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate, recentScan, scanAgents, scoreCoin, tokenInfo, type AgentCoin, type AgentScan, type CoinGate } from "./agents.js";
@@ -246,7 +246,7 @@ type State = {
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
-    log: { t: number; msg: string; level: "info" | "good" | "bad" }[];
+    log: { t: number; msg: string; level: "info" | "good" | "bad"; d?: Decision }[]; // d = what the line decided, if anything (botlog.ts)
   };
   // maCross: the moving-average crossover signal on each chart from 1 minute up, as the AI was given it.
   lastSignal: { at: number; pool: string; symbol: string; tf: string; results: ModelResult[]; consensus: Consensus; trendDown?: boolean; atrPct?: number; patterns?: FramePatterns[]; maCross?: MaView[]; priceAt?: number; desk?: DeskView; cost?: AgentCost; gate?: PlanGate } | null;
@@ -847,16 +847,18 @@ const MAX_TRADES = 1000;
 const uid = () => Math.random().toString(36).slice(2, 10);
 export const roundTripCostPct = () => 2 * (state.settings.feePct + state.settings.slippagePct);
 
-function log(msg: string, level: "info" | "good" | "bad" = "info") {
+// d = what this line decided (bought, sold, stayed out and why...): the app's one-line view of
+// the log shows only such lines, from this record, never by reading the sentence (botlog.ts).
+function log(msg: string, level: "info" | "good" | "bad" = "info", d?: Decision) {
   const a = acct();
   a.dirty = true;
   const t = Date.now();
-  state.bot.log.unshift({ t, msg, level });
+  state.bot.log.unshift({ t, msg, level, ...(d ? { d } : {}) });
   state.bot.log = state.bot.log.slice(0, 200);
   // The account keeps each agent's newest 200 lines; the week's log keeps them all (botlog.ts).
   if (a.key) {
     const sym = state.bot.config?.symbol;
-    (a.logQueue ??= []).push({ t, bot: currentBotId(), ...(sym ? { sym } : {}), msg, level });
+    (a.logQueue ??= []).push({ t, bot: currentBotId(), ...(sym ? { sym } : {}), msg, level, ...(d ? { d } : {}) });
   }
   console.log(`[bot] ${msg}`);
 }
@@ -1485,6 +1487,7 @@ function startBotHere(cfg: BotConfig) {
         ? `Agent started on ${cfg.symbol} with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. Its AI is reading the charts and deciding now.`
       : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling (you accepted the risk). Trades are capped at 25% of the account, with a 5-minute cool-down after a loss." : ""}`,
     "good",
+    { act: "start", ...(cfg.symbol ? { coin: cfg.symbol } : {}), why: isCoinAgent(cfg) ? `${isAutoAgent(cfg) ? "auto-pick agent" : "agent"} with a ${usd0(cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT)} budget` : "bot started" },
   );
   save();
   schedule();
@@ -1499,7 +1502,7 @@ export function stopBot(reason = "Stopped by user", botId?: string): void {
   state.bot.stoppedAt = at;
   state.bot.target = null;
   queueCtl((c) => { c.stops = { ...(c.stops ?? {}), [id]: at }; }); // so no other copy can save it back as running
-  log(`${isCoinAgent(state.bot.config ?? ({} as BotConfig)) ? "Agent" : "Bot"} stopped: ${reason}`, "bad");
+  log(`${isCoinAgent(state.bot.config ?? ({} as BotConfig)) ? "Agent" : "Bot"} stopped: ${reason}`, "bad", { act: "stop", ...(state.bot.config?.symbol ? { coin: state.bot.config.symbol } : {}), why: shortWhy(reason) });
   save();
 }
 
@@ -1532,11 +1535,11 @@ const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);
 const clock = (ms: number) => new Date(ms).toISOString().slice(11, 16) + " UTC";
 
 // Write a log line only once per key (keys include a day / plan / loss time so they reset naturally).
-function noteOnce(key: string, msg: string, level: "info" | "good" | "bad" = "info"): boolean {
+function noteOnce(key: string, msg: string, level: "info" | "good" | "bad" = "info", d?: Decision): boolean {
   if (state.bot.noted[key]) return false;
   state.bot.noted[key] = Date.now();
   for (const [k, at] of Object.entries(state.bot.noted)) if (Date.now() - at > 2 * 86_400_000) delete state.bot.noted[k];
-  log(msg, level);
+  log(msg, level, d);
   return true;
 }
 
@@ -2113,7 +2116,7 @@ function standAside(cfg: BotConfig, gate: PlanGate, note: string, extra: Partial
   };
   state.bot.armedSince = [];
   state.bot.skipNoted = [];
-  if (gate.kind === "scouts") noteOnce(`gate:scouts:${Math.floor(now / 3_600_000)}:${gate.reasons.join("|").slice(0, 160)}`, `${note} It looks again every 5 minutes.`, "bad");
+  if (gate.kind === "scouts") noteOnce(`gate:scouts:${Math.floor(now / 3_600_000)}:${gate.reasons.join("|").slice(0, 160)}`, `${note} It looks again every 5 minutes.`, "bad", { act: "filtered", coin: cfg.symbol, why: shortWhy(`the scouts: ${gate.reasons.join("; ")}`) });
   acct().dirty = true;
 }
 // Turn an agent's quality gate off ("trade it anyway", recorded) or back on.
@@ -2277,7 +2280,7 @@ function ownCost(cfg: BotConfig): { pct: number; funds: number; max: number } | 
 }
 // What the card shows while the agent has no coin. Its log is written when the kind of reason
 // changes (`key`), not each time a count in the text moves.
-function autoNote(text: string, key = text) {
+function autoNote(text: string, key = text, why = "") {
   const au = (state.bot.auto ??= { note: "", at: Date.now() });
   au.nextAt = Date.now() + AUTO_RESCAN_MS;
   if (au.note === text) return;
@@ -2287,7 +2290,7 @@ function autoNote(text: string, key = text) {
   acct().dirty = true;
   if (sameKind) return;
   au.at = Date.now();
-  log(`Auto-pick: ${text}`);
+  log(`Auto-pick: ${text}`, "info", { act: "wait", why: shortWhy(why || text) });
 }
 // The agent lets its coin go and waits for one it can take (it holds no trade).
 function autoRelease(cfg: BotConfig) {
@@ -2302,7 +2305,8 @@ function autoRelease(cfg: BotConfig) {
   acct().dirty = true;
 }
 // Puts the agent on a coin: from here it is an ordinary agent on it, starting from a fresh AI plan.
-function autoAssign(cfg: BotConfig, found: { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] }, why: string) {
+// moved = the same reason in a few words, for the one-line log.
+function autoAssign(cfg: BotConfig, found: { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] }, why: string, moved = "") {
   const { coin: c, pair, cost, dear } = found;
   const same = cfg.pool === pair.pool;
   Object.assign(cfg, { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, mint: c.mint });
@@ -2327,7 +2331,10 @@ function autoAssign(cfg: BotConfig, found: { coin: AgentCoin; pair: PairInfo; co
   state.bot.auto = { note: "", at: Date.now(), pickedAt: Date.now(), picks: (au.picks ?? 0) + 1 };
   const passes = !c.vetoes.length && c.total >= AGENT_PASS;
   const costNote = `${cost && cost.pct !== null ? ` Buying and selling its ${usd0(cost.funds)} there costs about ${pct1(cost.pct)}.` : ""}${cost && dear.length ? ` It passed over ${nameList(dear.slice(0, 4).map((d) => `${d.symbol} (${pct1(d.pct)})`))}${dear.length > 4 ? ` and ${dear.length - 4} more` : ""}, higher on the list: more than the ${cost.max}% it accepts.` : ""}`;
-  log(`Auto-pick: ${why}${same ? `${pair.symbol} is still the best coin that is free, so it stays on it` : `chose ${pair.symbol}`} (the scouts' score ${c.total} of 100${passes ? ", passes every scout check" : c.timing.length ? `; the scouts' timing check says "${c.timing[0]}", so its AI decides when to buy` : `, under the ${AGENT_PASS} that passes; fit to trade`}).${costNote} Its AI reads the charts now.`, "good");
+  log(`Auto-pick: ${why}${same ? `${pair.symbol} is still the best coin that is free, so it stays on it` : `chose ${pair.symbol}`} (the scouts' score ${c.total} of 100${passes ? ", passes every scout check" : c.timing.length ? `; the scouts' timing check says "${c.timing[0]}", so its AI decides when to buy` : `, under the ${AGENT_PASS} that passes; fit to trade`}).${costNote} Its AI reads the charts now.`, "good", {
+    act: "pick", coin: pair.symbol,
+    why: shortWhy(`${moved ? `${moved}; ` : ""}${same ? "still the best coin that is free; " : ""}the scouts' score ${c.total} of 100${cost && cost.pct !== null ? `, costs ${pct1(cost.pct)} to trade with its ${usd0(cost.funds)}` : ""}${cost && dear.length ? `; passed over ${nameList(dear.slice(0, 4).map((d) => `${d.symbol} (${pct1(d.pct)})`))}` : ""}`, 220),
+  });
   acct().dirty = true;
 }
 // The best coin this agent could take right now (not `except`), or null with the reason.
@@ -2338,7 +2345,8 @@ function autoAssign(cfg: BotConfig, found: { coin: AgentCoin; pair: PairInfo; co
 // anything is awaited about it, so two agents looking at the same moment never get the same coin,
 // and never measure the same coin twice.
 // soon = it stopped only because another agent's measurement was under way: it looks again in a few seconds.
-type AutoFound = { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] } | { none: string; key?: string; failed?: boolean; more?: boolean; soon?: boolean };
+// why = the reason it has no coin, in a few words (for the one-line log).
+type AutoFound = { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] } | { none: string; key?: string; why?: string; failed?: boolean; more?: boolean; soon?: boolean };
 const autoUnclaim = (found: AutoFound) => { if ("coin" in found) acct().autoBusy?.delete(found.coin.mint); };
 async function autoFind(except?: string): Promise<AutoFound> {
   const now = Date.now();
@@ -2387,10 +2395,10 @@ async function autoFind(except?: string): Promise<AutoFound> {
     }
   }
   const tooDear = dear.length ? ` Too expensive means that buying and selling there would cost more than ${max}% of the trade (${dear.slice(0, 4).map((d) => d.symbol).join(", ")}${dear.length > 4 ? ` and ${dear.length - 4} more` : ""}).` : "";
-  if (more) return { none: `it is finding out what the free coins on the list cost to trade with its ${usd0(funds)}${dear.length ? `: ${dear.length} so far ${dear.length === 1 ? "is" : "are"} too expensive.${tooDear}` : "."} It goes on ${soon ? "in a few seconds" : "in half a minute"}, at no AI cost`, key: "pricing", more: true, soon };
+  if (more) return { none: `it is finding out what the free coins on the list cost to trade with its ${usd0(funds)}${dear.length ? `: ${dear.length} so far ${dear.length === 1 ? "is" : "are"} too expensive.${tooDear}` : "."} It goes on ${soon ? "in a few seconds" : "in half a minute"}, at no AI cost`, key: "pricing", why: `finding out what the free coins cost to trade with its ${usd0(funds)}${dear.length ? ` (${dear.length} too expensive so far)` : ""}`, more: true, soon };
   const n = list.filter((c) => c.mint !== except).length;
   const wait = "It waits, at no AI cost, and looks again every half minute";
-  if (!n) return { none: `no coin ${cfg.autoStrict ? "passes every scout check" : "is fit to trade"} right now (${scan.scanned} scanned). ${wait}`, key: "none" };
+  if (!n) return { none: `no coin ${cfg.autoStrict ? "passes every scout check" : "is fit to trade"} right now (${scan.scanned} scanned). ${wait}`, key: "none", why: `no coin ${cfg.autoStrict ? "passes every scout check" : "is fit to trade"} right now (${scan.scanned} scanned)` };
   const kind = cfg.autoStrict ? (n === 1 ? "passes every scout check" : "pass every scout check") : n === 1 ? "is fit to trade" : "are fit to trade";
   const several = [taken, rested, dear.length].filter((k) => k > 0).length > 1;
   const count = (k: number) => (several ? ` (${k})` : "");
@@ -2399,6 +2407,7 @@ async function autoFind(except?: string): Promise<AutoFound> {
   return {
     none: `the ${n === 1 ? "one coin" : `${n} coins`} that ${kind} right now ${n === 1 ? "is" : "are"} ${where}.${tooDear} ${wait}`,
     key: `some|${taken ? "t" : ""}${rested ? "r" : ""}|${dear.map((d) => d.symbol).sort().join(",")}`,
+    why: `no coin free: ${[taken ? `${taken} with your other agents` : "", rested ? `${rested} resting after a recent try` : "", dear.length ? `${dear.length} too expensive for its ${usd0(funds)} (${dear.slice(0, 4).map((d) => d.symbol).join(", ")}${dear.length > 4 ? ", ..." : ""})` : ""].filter(Boolean).join(", ")}`,
   };
 }
 // One check of an auto-pick agent that holds no trade. true = it has no coin (nothing more to do now).
@@ -2430,9 +2439,9 @@ async function autoStep(cfg: BotConfig): Promise<boolean> {
         if (tooDear && found.none && !found.failed && !found.more) {
           // Too expensive, and no coin it can take instead: it lets the coin go and waits, at no AI
           // cost, rather than keep asking its AI about a coin whose trades start too far behind.
-          log(`Auto-pick: left ${cfg.symbol}: ${tooDear}. No other coin is free for it right now.`);
+          log(`Auto-pick: left ${cfg.symbol}: ${tooDear}. No other coin is free for it right now.`, "info", { act: "left", coin: cfg.symbol, why: `the cost: trading its ${usd0(own!.funds)} there costs ${pct1(own!.pct)}, it accepts ${own!.max}%; no other coin is free` });
           autoRelease(cfg);
-          autoNote(found.none, found.key);
+          autoNote(found.none, found.key, found.why);
           return true;
         }
         // Otherwise only if another coin is free: it stays where it is and keeps looking.
@@ -2441,7 +2450,8 @@ async function autoStep(cfg: BotConfig): Promise<boolean> {
       }
       // (A coin left for its cost is not rested for the account's other agents: one with less money may well afford it.)
       if (cfg.mint && !tooDear) (state.bot.autoSkip ??= {})[cfg.mint] = now + (unfit ? AUTO_SKIP_UNFIT_MS : AUTO_SKIP_IDLE_MS);
-      autoAssign(cfg, found, tooDear ? `${tooDear}, so it moved on and ` : unfit ? `the scouts ruled ${cfg.symbol} out, so it moved on and ` : `${cfg.symbol} gave it no order to place for ${Math.round((now - au.idleSince) / 60_000)} minutes, so it moved on and `);
+      autoAssign(cfg, found, tooDear ? `${tooDear}, so it moved on and ` : unfit ? `the scouts ruled ${cfg.symbol} out, so it moved on and ` : `${cfg.symbol} gave it no order to place for ${Math.round((now - au.idleSince) / 60_000)} minutes, so it moved on and `,
+        tooDear ? `left ${cfg.symbol}: it costs ${pct1(own!.pct)} to trade` : unfit ? `left ${cfg.symbol}: the scouts ruled it out` : `left ${cfg.symbol}: no order to place for ${Math.round((now - au.idleSince) / 60_000)} minutes`);
       return false;
     } finally {
       autoUnclaim(found);
@@ -2465,11 +2475,11 @@ async function autoStep(cfg: BotConfig): Promise<boolean> {
       // Its trade closed and nothing is free (its own coin is resting after a loss, no longer
       // qualifies, or is too expensive for what is left of its money): it lets the coin go and waits.
       if (cfg.pool) autoRelease(cfg);
-      if (found.none) autoNote(found.none, found.key);
+      if (found.none) autoNote(found.none, found.key, found.why);
       if (found.soon) (state.bot.auto ??= au).nextAt = Date.now() + AUTO_PRICE_RETRY_MS;
       return true;
     }
-    autoAssign(cfg, found, after);
+    autoAssign(cfg, found, after, au.again ? "after its trade" : "");
     return false;
   } finally {
     autoUnclaim(found);
@@ -2494,6 +2504,26 @@ export function startAutoAgents(base: BotConfig, budgets: number[], strict: bool
     started.push(free[i]);
   });
   return { started };
+}
+
+// What an agent's plan decided, for the one-line log. A plan with a buy-now order decides nothing
+// yet: the buy that follows is the decision. Otherwise it has an order waiting at a price, or it
+// stays out (its AI's choice, or its orders did not have the odds).
+function planDecision(cfg: BotConfig, c: Consensus, results: ModelResult[]): Decision | undefined {
+  if (!isCoinAgent(cfg)) return undefined;
+  const ok = results.find((x) => x.ok);
+  if (!ok) return { act: "skip", coin: cfg.symbol, why: "its AI could not be asked for a plan" };
+  const said = ok.ok ? ok.signal.reasoning : "";
+  const odds = (o: CheckedOrder) => (o.prediction ? `${Math.round(o.prediction.pWin)}% chance, needs ${Math.ceil(o.prediction.needPct)}%` : `${o.winChancePct}% chance`);
+  const at = (o: CheckedOrder) => (o.kind === "buy_now" ? "buying now" : `${o.kind === "buy_breakout" ? "a breakout above" : "a dip to"} ${fmt(o.triggerPrice)}`);
+  const used = c.orders.filter((o) => !o.warning);
+  if (c.stance !== "AVOID" && used.length) {
+    if (used.some((o) => o.kind === "buy_now")) return undefined;
+    return { act: "order", coin: cfg.symbol, why: shortWhy(`waits for ${used.map((o) => `${at(o)} (${odds(o)})`).join(" or ")}${said ? ` \u00b7 ${said}` : ""}`, 220) };
+  }
+  const gap = (o: CheckedOrder) => (o.prediction ? o.prediction.needPct - o.prediction.pWin : 0);
+  const best = [...c.orders].sort((x, y) => gap(x) - gap(y))[0];
+  return { act: "skip", coin: cfg.symbol, why: shortWhy(`${said || "its AI sees no bet worth taking"}${best ? ` \u00b7 closest: ${at(best)}, ${odds(best)}` : ""}`, 220) };
 }
 
 // true = the agent stopped (its budget is gone)
@@ -2714,6 +2744,12 @@ async function newCoinsStep(cfg: BotConfig) {
   alert(`🚀 ${msg}`);
 }
 
+// A sale, for the one-line log: the result in dollars and in % of the money that was put in (after costs).
+function soldDecision(t: Trade, why: string): Decision {
+  const pnl = Math.round((t.pnlUsd ?? 0) * 100) / 100, put = t.usd - (t.pnlUsd ?? 0);
+  return { act: "exit", coin: t.symbol, pnl, ...(put > 0 ? { pct: Math.round(((t.pnlUsd ?? 0) / put) * 1000) / 10 } : {}), why: shortWhy(why, 220) };
+}
+
 const lockNoted = new Map<string, number>();
 function noteKey(pos: Position, gainPct: number) {
   const step = Math.floor(gainPct / 5);
@@ -2833,7 +2869,7 @@ async function tickBot(persist: boolean) {
           pos.pm = { floor: lockedFloor(pos.entryPrice, cost, pos.stopLoss, EXIT_LIVE), trailPct: ruleTrailPct(EXIT_LIVE, atr), by: "rule", asks: 0, fails: 0, step: 0, ...(atr ? { atrPct: atr } : {}) };
           pos.locked = true;
           acct().dirty = true;
-          log(`${pos.symbol} is up +${bestNet.toFixed(1)}% after fees: the +${AGENT_NET_TARGET}% minimum is locked (exit ${fmt(pos.pm.floor)}). The AI now decides how long to hold.`, "good");
+          log(`${pos.symbol} is up +${bestNet.toFixed(1)}% after fees: the +${AGENT_NET_TARGET}% minimum is locked (exit ${fmt(pos.pm.floor)}). The AI now decides how long to hold.`, "good", { act: "lock", coin: pos.symbol, why: `up +${bestNet.toFixed(1)}% after fees: the +${AGENT_NET_TARGET}% minimum is locked, its AI manages the exit from here` });
         }
         const pm = pos.pm;
         // An answer from the AI that arrived since the last check.
@@ -3022,7 +3058,7 @@ async function tickBot(persist: boolean) {
           cs.lastLossAt = Date.now();
           cs.lossDay = utcDay();
         } else cs.losses = 0;
-        log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+        log(`SELL ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad", soldDecision(t, reason));
         alert(`${t.pnlUsd! >= 0 ? "✅" : "🔻"} Sold ${pos.symbol} @ ${fmt(t.price)}: ${reason}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}. Account $${equity().toFixed(2)}.`);
         // Ask for a fresh plan right away; no new trade until it arrives.
         state.lastSignal = null;
@@ -3118,7 +3154,7 @@ async function tickBot(persist: boolean) {
       if (isAutoAgent(cfg)) {
         const own = ownCost(cfg), limit = costLimit(cfg);
         if (own && limit > 0 && own.pct > limit) {
-          if (hasLiveOrder(cfg)) log(`Its order on ${cfg.symbol} is dropped: buying and selling its ${usd0(own.funds)} there costs about ${pct1(own.pct)}, more than the ${own.max}% it accepts. It looks for another coin.`);
+          if (hasLiveOrder(cfg)) log(`Its order on ${cfg.symbol} is dropped: buying and selling its ${usd0(own.funds)} there costs about ${pct1(own.pct)}, more than the ${own.max}% it accepts. It looks for another coin.`, "info", { act: "filtered", coin: cfg.symbol, why: `its order is dropped: trading its ${usd0(own.funds)} there costs ${pct1(own.pct)}, it accepts ${own.max}%` });
           if (state.lastSignal) { state.lastSignal = null; acct().dirty = true; }
           return;
         }
@@ -3138,7 +3174,7 @@ async function tickBot(persist: boolean) {
           rememberCost(cfg.mint, state.bot.costCurve);
           const limit = costLimit(cfg);
           if (limit > 0 && ac.fullPct > limit) {
-            log(`The AI was not asked after all (no AI tokens spent): buying and selling its ${usd0(ac.funds)} on ${cfg.symbol} costs about ${pct1(ac.fullPct)} now, more than the ${autoCostMax(cfg)}% it accepts. It looks for another coin.`);
+            log(`The AI was not asked after all (no AI tokens spent): buying and selling its ${usd0(ac.funds)} on ${cfg.symbol} costs about ${pct1(ac.fullPct)} now, more than the ${autoCostMax(cfg)}% it accepts. It looks for another coin.`, "info", { act: "filtered", coin: cfg.symbol, why: `the cost: trading its ${usd0(ac.funds)} there costs ${pct1(ac.fullPct)} now, it accepts ${autoCostMax(cfg)}%` });
             state.lastSignal = null;
             acct().dirty = true;
             return;
@@ -3146,8 +3182,9 @@ async function tickBot(persist: boolean) {
         }
         const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg, why, ac), ...(ac ? { cost: ac } : {}) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
-        if (state.lastSignal?.gate) noteOnce(`gate:numbers:${Math.floor(Date.now() / 3_600_000)}`, `${cfg.symbol}: ${consensus.note} It looks again every 5 minutes, or at once on a real move.`, "bad");
-        else log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`);
+        // (once an hour for each coin: an auto-pick agent may be on several quiet coins in an hour)
+        if (state.lastSignal?.gate) noteOnce(`gate:numbers:${cfg.pool}:${Math.floor(Date.now() / 3_600_000)}`, `${cfg.symbol}: ${consensus.note} It looks again every 5 minutes, or at once on a real move.`, "bad", { act: "filtered", coin: cfg.symbol, why: shortWhy(`the numbers: ${state.lastSignal.gate.reasons.join("; ").replace(/^the numbers give /, "")}`) });
+        else log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`, "info", planDecision(cfg, consensus, results));
         if (isCoinAgent(cfg) && !state.lastSignal?.gate) {
           const ok = results.find((x) => x.ok);
           const used = consensus.orders.filter((o) => !o.warning);
@@ -3341,7 +3378,10 @@ async function tickBot(persist: boolean) {
       }, 0, ac ? { feePct: ac.pct / 2, slipPct: 0 } : undefined);
       if (sig.patterns) t.patterns = patternTags(sig.patterns);
       if (isCoinAgent(cfg)) t.strategy = "agents";
-      log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.${ac ? ` A round trip of this size in this pool costs about ${ac.pct.toFixed(1)}%${ac.usd < ac.funds - 0.5 ? `: it invests $${ac.usd.toFixed(0)} of its $${ac.funds.toFixed(0)}, because all of it would cost ${ac.fullPct.toFixed(1)}%` : ""}.` : ""}`, "good");
+      log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.${ac ? ` A round trip of this size in this pool costs about ${ac.pct.toFixed(1)}%${ac.usd < ac.funds - 0.5 ? `: it invests $${ac.usd.toFixed(0)} of its $${ac.funds.toFixed(0)}, because all of it would cost ${ac.fullPct.toFixed(1)}%` : ""}.` : ""}`, "good", {
+        act: "enter", coin: pair.symbol, usd, ...(ac ? { of: ac.funds } : {}),
+        why: shortWhy(`${(() => { const r = sig.results.find((x) => x.ok); return r && r.ok && r.signal.reasoning ? `${shortWhy(r.signal.reasoning, 130)} \u00b7 ` : ""; })()}${label}${o.prediction ? ` \u00b7 ${Math.round(o.prediction.pWin)}% chance, needs ${Math.ceil(o.prediction.needPct)}%` : ""}${ac ? ` \u00b7 costs ${ac.pct.toFixed(1)}% to trade` : ""}`, 260),
+      });
       alert(`🤖 Bought ${pair.symbol}: $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}, target ${fmt(o.target)}. Risking ~$${riskUsd.toFixed(2)}.`);
       // The plan is used up; Claude plans again after this trade closes.
       state.lastSignal = { ...sig, consensus: { ...c, orders: [], note: "Plan used for an entry." } };
@@ -3479,7 +3519,7 @@ export async function guardProtected() {
         const gain = ((Math.min(stop, q.price) - p.entryPrice) / p.entryPrice) * 100;
         const t = sell(p.id, Math.min(stop, q.price), 1, `Protection: fell ${p.protectPct}% from its high of ${fmt(p.peak!)}`);
         t.auto = true;
-        log(`PROTECTED SELL ${p.symbol} @ ${fmt(t.price)}: fell ${p.protectPct}% from its high of ${fmt(p.peak!)} (${gain >= 0 ? "+" : ""}${gain.toFixed(1)}% from your buy). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+        log(`PROTECTED SELL ${p.symbol} @ ${fmt(t.price)}: fell ${p.protectPct}% from its high of ${fmt(p.peak!)} (${gain >= 0 ? "+" : ""}${gain.toFixed(1)}% from your buy). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad", soldDecision(t, `your protection: fell ${p.protectPct}% from its high`));
         alert(`🛡 Protection sold ${p.symbol} @ ${fmt(t.price)} (fell ${p.protectPct}% from its high). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}.`);
         changed = true;
       }
@@ -3562,7 +3602,7 @@ async function checkLimitOrders() {
         const slip = state.settings.slippagePct / 100;
         const t = buy({ ...q.pair, priceUsd: Math.min(o.price / (1 + slip), q.price) }, usd, "manual", `Limit buy at ${fmt(o.price)}`);
         t.auto = true;
-        log(`LIMIT BUY ${o.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (your limit ${fmt(o.price)}).`, "good");
+        log(`LIMIT BUY ${o.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (your limit ${fmt(o.price)}).`, "good", { act: "enter", coin: o.symbol, usd, why: `your limit order at ${fmt(o.price)}` });
         alert(`🟢 Limit buy filled: ${o.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)}. Account $${equity().toFixed(2)}.`);
       } else if (o.side === "SELL") {
         const p = state.positions.find((x) => x.id === o.positionId);
@@ -3577,7 +3617,7 @@ async function checkLimitOrders() {
           const slip = (state.settings.slippagePct + (p.extraSlipPct ?? 0)) / 100;
           const t = sell(p.id, Math.max(o.price / (1 - slip), q.price), o.fraction ?? 1, `Limit sell at ${fmt(o.price)}`);
           t.auto = true;
-          log(`LIMIT SELL ${o.symbol} ${Math.round((o.fraction ?? 1) * 100)}% @ ${fmt(t.price)} (your limit ${fmt(o.price)}). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad");
+          log(`LIMIT SELL ${o.symbol} ${Math.round((o.fraction ?? 1) * 100)}% @ ${fmt(t.price)} (your limit ${fmt(o.price)}). P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}`, t.pnlUsd! >= 0 ? "good" : "bad", soldDecision(t, `your limit order at ${fmt(o.price)}${(o.fraction ?? 1) < 0.999 ? ` (${Math.round((o.fraction ?? 1) * 100)}% of the position)` : ""}`));
           alert(`${t.pnlUsd! >= 0 ? "✅" : "🔻"} Limit sell filled: ${o.symbol} @ ${fmt(t.price)}. P&L ${t.pnlUsd! >= 0 ? "+" : ""}$${t.pnlUsd!.toFixed(2)}. Account $${equity().toFixed(2)}.`);
           // Other sell orders on the same position may no longer fit what's left: they stay, and
           // sell their share of whatever remains.

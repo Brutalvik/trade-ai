@@ -13,7 +13,7 @@ export type SavedAnalysis = { at: number; results: Analysis["results"]; consensu
 
 const KEY = "nexus-v1";
 type Saved = {
-  ui: { pair?: PairInfo; tf?: Timeframe; tab?: string; scanChain?: string; newChain?: string; bot?: SavedBotSettings };
+  ui: { pair?: PairInfo; tf?: Timeframe; tab?: string; logView?: string; scanChain?: string; newChain?: string; bot?: SavedBotSettings };
   state?: AppState;
   charts: { key: string; candles: Candle[]; source: string }[]; // most recent first, max 3
   scans: Record<string, ScanResult>;

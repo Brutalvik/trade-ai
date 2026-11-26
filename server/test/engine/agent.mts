@@ -122,6 +122,7 @@ if (SC === "scouts") {
   const g: any = engine.getState();
   expect("the scouts refuse the coin before the AI is asked: no AI call, nothing bought", [aiCalls, g.positions.length, g.lastSignal?.consensus.stance, g.lastSignal?.gate?.kind], [0, 0, "AVOID", "scouts"]);
   check("the plan and the agent's log give the scouts' exact reason", g.lastSignal?.gate?.reasons.join() === "the top 10 wallets own 60%" && g.bot.log.some((l: any) => l.msg.includes("The scouts ruled AGT out") && l.msg.includes("the top 10 wallets own 60%") && l.msg.includes("no AI tokens spent")), g.lastSignal?.gate);
+  check("ruled out by the scouts is kept as a decision, with their reason", g.bot.log.some((l: any) => l.d?.act === "filtered" && l.d.coin === "AGT" && l.d.why === "the scouts: the top 10 wallets own 60%"), g.bot.log.map((l: any) => l.d).filter(Boolean));
   await step(8, "still 1.00: the agent stays out and still does not ask its AI", 1.0);
   expect("it keeps standing aside at no cost", [aiCalls, engine.getState().positions.length], [0, 0]);
   // You choose to trade it anyway: the gate is switched off for this agent, and the AI is asked at once.
@@ -184,6 +185,12 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
     check("stopped out once, at a loss, after the AI's second look", sells.length === 1 && /^Stop-loss hit/.test(sells[0].reason) && (sells[0].pnlUsd ?? 0) < -100, sells.map((t) => `${t.reason} ${t.pnlUsd?.toFixed(2)}`));
     check("no daily limit and no cool-down: still running, and it bought again", s.bot.running && !s.bot.blocked && buys.length === 2 && s.positions.length === 1, { running: s.bot.running, blocked: s.bot.blocked, buys: buys.length, open: s.positions.length });
     expect("the losing trade is on the scoreboard as a real miss", (s as any).fc?.stats.taken, { n: 1, hits: 0 });
+    // What each line decided is kept with it (for the app's one-line log).
+    const ds: any[] = s.bot.log.map((l: any) => l.d).filter(Boolean);
+    const ins = ds.filter((d) => d.act === "enter"), outs = ds.filter((d) => d.act === "exit");
+    check("each buy is kept as a decision: the coin, the money put in, what it had, and the reason with its odds and cost", ins.length === 2 && ins.every((d) => d.coin === "AGT" && d.usd > 0 && d.of >= d.usd && /\u00b7 \d+% chance, needs \d+% \u00b7 costs \d+\.\d% to trade$/.test(d.why)), ins);
+    check("the sale is kept as a decision: the loss in dollars and in % of the money put in, and why", outs.length === 1 && outs[0].coin === "AGT" && Math.abs(outs[0].pnl - Math.round(sells[0].pnlUsd! * 100) / 100) < 0.005 && outs[0].pct < -5 && /^Stop-loss hit/.test(outs[0].why), outs);
+    check("starting the agent is a decision too, and lines that decide nothing carry none", ds.some((d) => d.act === "start" && d.coin === "AGT") && s.bot.log.some((l: any) => !l.d && /^Asking the AI/.test(l.msg)), ds.map((d) => d.act));
   }
   if (SC === "wick") {
     check("the log says it bounced", logs.includes("bounced back above its stop-loss"), "");
@@ -206,9 +213,11 @@ console.log("agent log:", JSON.stringify(s.bot.agentLog?.map((d: any) => `${d.sy
       expect("the numbers rule a buy out before the AI is asked: no AI call by the agent, no panel", [mine, panelCalls, (s.lastSignal as any)?.gate?.kind], [0, 0, "numbers"]);
       check("the plan says why, with the best the numbers gave", /The numbers rule out a buy right now, so the AI was not asked .*no plain order has even a 10% chance.*\(the best is (under 1|\d+)%\)/.test(s.lastSignal?.consensus.note ?? ""), s.lastSignal?.consensus.note);
       check("the forecast desk is still shown, and the agent's log says it once", !!(s.lastSignal as any)?.desk && s.bot.log.filter((l) => l.msg.includes("The numbers rule out a buy")).length === 1, "");
+      check("ruled out by the numbers is kept as a decision, with the reason in a few words", s.bot.log.filter((l: any) => l.d?.act === "filtered" && l.d.coin === "AGT" && /^the numbers: at most \d+%, under the 10% floor$/.test(l.d.why)).length === 1, s.bot.log.map((l: any) => l.d).filter(Boolean));
     } else {
       check("the forecaster panel is not asked about an order that cannot pass", panelCalls === 0, panelCalls);
       check("the refused order carries its prediction", !!(s.lastSignal as any)?.consensus.orders[0]?.prediction && !!(s.lastSignal as any)?.consensus.orders[0]?.warning, "");
+      check("staying out because the order did not have the odds is kept as a decision", s.bot.log.some((l: any) => l.d?.act === "skip" && l.d.coin === "AGT" && /closest: buying now, \d+% chance, needs \d+%$/.test(l.d.why)), s.bot.log.map((l: any) => l.d).filter(Boolean));
     }
   }
 }

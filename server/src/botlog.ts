@@ -12,7 +12,44 @@ import { createStore } from "./store.js";
 
 const store = createStore();
 
-export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad" };
+// What a line decided, for the one-line view of the log ("Decisions" in the app): bought, sold,
+// did not trade and why, chose a coin, waits. It is written with the line, where the decision is
+// made (engine.ts log(msg, level, d)), so the view never has to read it back out of a sentence.
+//   enter     bought            usd = the money put in, of = what the agent had to trade with
+//   exit      sold              pnl = profit or loss in dollars, pct = the same in % of the money put in
+//   skip      its AI was asked and stayed out, or its order did not have the odds
+//   filtered  ruled out before the AI was asked (the scouts, the numbers, the cost of trading)
+//   order     it has an order waiting at a price
+//   pick      an auto-pick agent took a coin        left = it let its coin go
+//   wait      an auto-pick agent has no coin it can take
+//   lock      a trade reached its minimum profit    start / stop = the agent itself
+export type DecisionAct = "enter" | "exit" | "skip" | "filtered" | "order" | "pick" | "left" | "wait" | "lock" | "start" | "stop";
+export type Decision = { act: DecisionAct; coin?: string; why: string; usd?: number; of?: number; pnl?: number; pct?: number };
+export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad"; d?: Decision };
+
+// A reason short enough for one line: single spaces, no full stop at the end, cut at `max`.
+export function shortWhy(text: string, max = 150): string {
+  const x = String(text ?? "").replace(/\s+/g, " ").trim().replace(/[\s.;:,]+$/, "");
+  return x.length > max ? `${x.slice(0, max - 1).trimEnd()}\u2026` : x;
+}
+
+// Lines written before decisions were kept with them (v0.69) carry none. A buy and a sale can
+// still be told from their sentence, which has had one fixed shape since the log began; nothing
+// else is guessed. Those lines leave the log within a week.
+const OLD_BUY = /^(?:LIMIT )?BUY (\S+) \$([\d,]*\.?\d+) @ \S+ \((.+?)\)\.(?: Exit below .*)?$/;
+const OLD_SELL = /^(?:PROTECTED |LIMIT )?SELL (\S+)(.*)\. P&L \+?\$(-?[\d,]*\.?\d+)$/;
+export function decisionOf(line: Pick<LogLine, "msg" | "d">): Decision | null {
+  if (line.d && typeof line.d.act === "string") return line.d;
+  const msg = String(line.msg ?? "");
+  const b = OLD_BUY.exec(msg);
+  if (b) {
+    const cost = /costs about ([\d.]+)%/.exec(msg);
+    return { act: "enter", coin: b[1], usd: Number(b[2].replace(/,/g, "")), why: shortWhy(`${b[3]}${cost ? ` \u00b7 costs ${cost[1]}%` : ""}`) };
+  }
+  const x = OLD_SELL.exec(msg);
+  if (x) return { act: "exit", coin: x[1], pnl: Number(x[3].replace(/,/g, "")), why: shortWhy(x[2].replace(/^ (?:\d+% )?@ \S+:? ?/, "")) };
+  return null;
+}
 export const LOG_KEEP_DAYS = 7;
 const DAY = 86_400_000;
 export const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -50,7 +87,8 @@ export async function keepLogLines(user: string, lines: LogLine[], now = Date.no
 // The lines from `from` to `to` (both included), newest first, at most `limit` of them.
 // more = there are older lines in that stretch that did not fit (ask again with `to` = the
 // oldest line's time). Nothing older than the week that is kept is ever returned.
-export async function logHistory(user: string, from: number, to: number, limit = 500, now = Date.now()): Promise<{ lines: LogLine[]; more: boolean }> {
+// decisionsOnly = only the lines that decided something, each with its decision (decisionOf).
+export async function logHistory(user: string, from: number, to: number, limit = 500, now = Date.now(), decisionsOnly = false): Promise<{ lines: LogLine[]; more: boolean }> {
   const max = Math.min(2000, Math.max(1, Math.floor(limit) || 500));
   const lo = Math.max(Number.isFinite(from) ? from : 0, oldestKept(now));
   const hi = Math.min(Number.isFinite(to) ? to : now, now + DAY);
@@ -63,7 +101,10 @@ export async function logHistory(user: string, from: number, to: number, limit =
       if (out.length > max) { more = true; break scan; } // enough: at least one more line exists in what was read
       const start = Math.max(0, end - 199);
       const batches = await store.listRange<LogLine[]>(key, start, end);
-      for (const b of batches) if (Array.isArray(b)) for (const l of b) if (l && typeof l.t === "number" && l.t >= lo && l.t <= hi) out.push(l);
+      for (const b of batches) if (Array.isArray(b)) for (const l of b) if (l && typeof l.t === "number" && l.t >= lo && l.t <= hi) {
+        if (!decisionsOnly) out.push(l);
+        else { const d = decisionOf(l); if (d) out.push(l.d ? l : { ...l, d }); }
+      }
       end = start - 1;
     }
   }

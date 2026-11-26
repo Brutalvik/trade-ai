@@ -14,6 +14,7 @@ import { AccessCtx, AccountButton, SIGNIN_PENDING, AdminModal, LockChip, PlansMo
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playSoundPreview, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
+import { ACT_HINT, ACT_LABEL, decisionRows, figureOf, summaryText, toneOf } from "./decisions";
 import { MaCrossChips } from "./MaCross";
 import { pnlText, showTab, tabTone } from "./tabTitle";
 
@@ -1611,11 +1612,16 @@ function Trades({ state, notify }: { state: AppState | null; notify: (m: string,
 // The agents' log. Today's lines by default; "Last 7 days" reaches back a week (older lines are
 // not kept). The newest lines come with the account every few seconds; the rest of the stretch is
 // read from the week's log on the server when this tab is opened, once a minute, and on "older".
+// It opens on "Decisions": one short line for each thing an agent decided (decisions.ts), made to
+// be read in the morning. "Everything" is every line, as the log always was.
 const LOG_DAY = 86_400_000;
 const logId = (l: LogLine) => `${l.t}|${l.bot}|${l.msg}`;
 function BotLog({ state }: { state: AppState | null }) {
   const { me } = useAccess();
   const [range, setRange] = useState<"today" | "week">("today");
+  const [view, setView] = useState<"decisions" | "all">(() => (savedUi().logView === "all" ? "all" : "decisions"));
+  const decisions = view === "decisions";
+  useEffect(() => saveUi({ logView: view }), [view]);
   const [kept, setKept] = useState<LogLine[]>([]);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1635,7 +1641,7 @@ function BotLog({ state }: { state: AppState | null }) {
     setMore(false);
     const load = (first: boolean) => {
       if (first) setBusy(true);
-      api.botLog(from, Date.now())
+      api.botLog(from, Date.now(), 500, decisions)
         .then((r) => {
           if (off) return;
           merge(r.lines);
@@ -1651,14 +1657,20 @@ function BotLog({ state }: { state: AppState | null }) {
       off = true;
       window.clearInterval(id);
     };
-  }, [me?.username, from]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [me?.username, from, decisions]); // eslint-disable-line react-hooks/exhaustive-deps
   const live: LogLine[] = bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id })));
-  const ids = new Set(live.map(logId));
-  const lines = [...live, ...kept.filter((l) => !ids.has(logId(l)))].filter((l) => l.t >= from).sort((a, b) => b.t - a.t);
+  // One copy of each line. Where the server sent a line's decision and the account's own copy
+  // has none (a buy or sale from before decisions were kept with the lines), the server's is used.
+  const byId = new Map<string, LogLine>();
+  for (const l of live) byId.set(logId(l), l);
+  for (const l of kept) { const mine = byId.get(logId(l)); if (!mine || (!mine.d && l.d)) byId.set(logId(l), l); }
+  const lines = [...byId.values()].filter((l) => l.t >= from && (!decisions || l.d)).sort((a, b) => b.t - a.t);
+  const rows = decisions ? decisionRows(lines) : [];
+  const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const older = () => {
     const oldest = kept.reduce((m, l) => Math.min(m, l.t), Date.now());
     setBusy(true);
-    api.botLog(from, oldest)
+    api.botLog(from, oldest, 500, decisions)
       .then((r) => {
         merge(r.lines);
         setMore(r.more);
@@ -1672,14 +1684,42 @@ function BotLog({ state }: { state: AppState | null }) {
   return (
     <>
       <div className="log-bar">
+        <div className="log-range" role="group" aria-label="What to show of the log">
+          <button className={`chip ${decisions ? "on" : ""}`} aria-pressed={decisions} onClick={() => setView("decisions")} title="One short line for each thing an agent decided: bought, sold, stayed out and why.">Decisions</button>
+          <button className={`chip ${!decisions ? "on" : ""}`} aria-pressed={!decisions} onClick={() => setView("all")} title="Every line the agents wrote.">Everything</button>
+        </div>
         <div className="log-range" role="group" aria-label="Which days of the log to show">
           <button className={`chip ${range === "today" ? "on" : ""}`} aria-pressed={range === "today"} onClick={() => setRange("today")}>Today</button>
           <button className={`chip ${range === "week" ? "on" : ""}`} aria-pressed={range === "week"} onClick={() => setRange("week")}>Last 7 days</button>
         </div>
-        <span className="muted tiny">{lines.length.toLocaleString()} line{lines.length === 1 ? "" : "s"}{busy ? " · loading…" : ""}{err ? ` · the earlier lines could not be loaded (${err})` : ""} · the log is kept for 7 days</span>
+        <span className="muted tiny">{decisions ? `${summaryText(rows)}${more ? " (in what is loaded so far)" : ""}` : `${lines.length.toLocaleString()} line${lines.length === 1 ? "" : "s"}`}{busy ? " · loading…" : ""}{err ? ` · the earlier lines could not be loaded (${err})` : ""} · the log is kept for 7 days</span>
       </div>
       {!lines.length ? (
-        <p className="muted small pad">{busy ? "Loading the log…" : !bots.some((b) => b.bot.log.length) && range === "week" ? "No agent has run in the last 7 days." : range === "today" ? "Nothing in the log today yet. Last 7 days shows the earlier lines." : "Nothing in the log for the last 7 days."}</p>
+        <p className="muted small pad">{busy ? "Loading the log…" : decisions ? (range === "today" ? "Nothing decided today yet. Last 7 days reaches further back, and Everything shows every line." : "Nothing decided in the last 7 days. Everything shows every line.") : !bots.some((b) => b.bot.log.length) && range === "week" ? "No agent has run in the last 7 days." : range === "today" ? "Nothing in the log today yet. Last 7 days shows the earlier lines." : "Nothing in the log for the last 7 days."}</p>
+      ) : decisions ? (
+        <div className="log decisions">
+          {rows.map((r) => {
+            const day = range === "week" ? dayName(r.t) : "";
+            const head = day && day !== lastDay ? <div key={`d${r.key}`} className="log-day">{day}</div> : null;
+            if (day) lastDay = day;
+            const tone = toneOf(r.d);
+            return [
+              head,
+              <div key={r.key} className={`dec ${tone}`}>
+                <span className="dec-time mono muted">{hhmm(r.t)}</span>
+                <span className={`dec-tag ${tone}`} title={ACT_HINT[r.d.act]}>{ACT_LABEL[r.d.act]}</span>
+                <span className="dec-coin">
+                  <b>{r.coin || "–"}</b>
+                  {many ? <small> agent {r.bot}</small> : null}
+                  {r.n > 1 ? <small title={`It decided the same ${r.n} times in a row, from ${hhmm(r.from)} to ${hhmm(r.t)}. The reason shown is the latest.`}> ×{r.n} since {hhmm(r.from)}</small> : null}
+                </span>
+                <span className={`dec-fig ${tone}`}>{figureOf(r.d)}</span>
+                <span className="dec-why">{aiText(r.d.why)}</span>
+              </div>,
+            ];
+          })}
+          {more ? <button className="chip log-older" onClick={older} disabled={busy}>{busy ? "Loading…" : "Show older decisions"}</button> : null}
+        </div>
       ) : (
         <div className="log">
           {lines.map((l) => {

@@ -242,12 +242,13 @@ app.get("/api/bot/hours", signedIn(wrap(async (req) => {
   return engine.agentHours(num(req.query.from, now - 31 * 86_400_000), num(req.query.to, now));
 })));
 // The agents' log for a stretch of time, newest first, in pages (the last week is kept: botlog.ts).
+// only=decisions: just the lines that decided something (bought, sold, stayed out and why...).
 app.get("/api/bot/log", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;
   try {
     const now = Date.now();
     res.setHeader("Cache-Control", "no-store");
-    res.json(await logHistory(a.key, num(req.query.from, now - 86_400_000), num(req.query.to, now), num(req.query.limit, 500)));
+    res.json(await logHistory(a.key, num(req.query.from, now - 86_400_000), num(req.query.to, now), num(req.query.limit, 500), now, req.query.only === "decisions"));
   } catch (e) {
     res.status(502).json({ error: engine.shortError(e) });
   }
