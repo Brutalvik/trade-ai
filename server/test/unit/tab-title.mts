@@ -16,7 +16,9 @@ expect("a profit: a green dot, a plus sign and the amount to the cent, with thou
 expect("a loss: a red dot, and a minus sign before the dollar sign", [tabText(-23.4), tabText(-9000)], [down("23.40"), down("9,000.00")]);
 expect("zero, and anything under half a cent either way, reads $0.00 with no sign and no dot", [tabText(0), tabText(0.004), tabText(-0.004)], [zero, zero, zero]);
 expect("the colour: green in profit, red at a loss, neither at zero", [tabTone(0.01), tabTone(-0.01), tabTone(0), tabTone(-0.004)], ["up", "down", "flat", "flat"]);
-check("the icon is the app's green in profit and its red at a loss", decodeURIComponent(tabIcon("up")).includes('fill="#00f5a0"') && decodeURIComponent(tabIcon("down")).includes('fill="#ff3d71"') && tabIcon("up").startsWith("data:image/svg+xml,"), tabIcon("up").slice(0, 60));
+const upIcon = decodeURIComponent(tabIcon("up")), downIcon = decodeURIComponent(tabIcon("down"));
+check("the icon is the logo in the app's green in profit and its red at a loss", upIcon.includes('stop-color="#00f5a0"') && !upIcon.includes("#ff3d71") && downIcon.includes('stop-color="#ff3d71"') && !downIcon.includes("#00f5a0") && tabIcon("up").startsWith("data:image/svg+xml,"), upIcon.slice(0, 80));
+expect("...its two shapes, the same as the logo's", [upIcon.includes('d="M24 490 506 30V490Z"'), upIcon.includes('d="M530 30H1056L530 490Z"'), downIcon.includes('d="M24 490 506 30V490Z"')], [true, true, true]);
 expect("at zero the usual icon is used", tabIcon("flat"), "/favicon.svg");
 
 // In a page: the title and the icon follow the figure, and go back to the plain name.

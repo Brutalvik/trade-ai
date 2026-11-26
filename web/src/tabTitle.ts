@@ -1,17 +1,26 @@
 // The browser tab: "T//R" and the account's profit or loss in dollars (the figure under EQUITY in
 // the header), so it can be read with the app in the background. A page cannot set the colour or
 // the weight of the text of its own tab (the browser draws it), so:
-//  - the colour is carried by the tab's icon (the bolt turns green in profit, red at a loss, and
-//    is its usual purple at exactly zero, signed out, or in real mode) and by a green or red dot
-//    right before the amount;
+//  - the colour is carried by the tab's icon (the logo turns green in profit, red at a loss, and
+//    is its usual cyan and blue at exactly zero, signed out, or in real mode) and by a green or red
+//    dot right before the amount;
 //  - the digits are Unicode's bold digits, which browsers show in bold; the sign, the dollar sign
 //    and the decimal point have no bold form and stay as they are;
 //  - the gap after "T//R" is an em space, which browsers do not collapse.
 const NAME = "TRADING//RUST";
 const ICON = "/favicon.svg";
 const UP = "#00f5a0", DOWN = "#ff3d71"; // the app's own green and red (--up, --down)
-// The bolt's outline, from public/favicon.svg.
-const BOLT = "M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z";
+// The logo's two shapes (public/favicon.svg, public/logo.svg), drawn in a light-to-deep gradient of
+// one colour, as the logo is in cyan and blue: [light, middle, deep] for each of its two shapes.
+const SHADES = {
+  up: { left: ["#8dffd6", UP, "#00a866"], right: ["#3dfcc0", "#00dc92", "#00995f"] },
+  down: { left: ["#ffa3b9", DOWN, "#c20f3d"], right: ["#ff7a9b", "#f5285f", "#b30c39"] },
+};
+const logoIcon = (tone: "up" | "down") => {
+  const g = (id: string, x2: string, [a, b, c]: string[]) => `<linearGradient id="${id}" x1="0" y1="0" x2="${x2}" y2="1"><stop offset="0" stop-color="${a}"/><stop offset=".48" stop-color="${b}"/><stop offset="1" stop-color="${c}"/></linearGradient>`;
+  const s = SHADES[tone];
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 22 1048 476"><defs>${g("l", "1", s.left)}${g("r", ".7", s.right)}</defs><path d="M24 490 506 30V490Z" fill="url(#l)"/><path d="M530 30H1056L530 490Z" fill="url(#r)"/></svg>`;
+};
 
 export type TabTone = "up" | "down" | "flat";
 // Under half a cent either way reads $0.00, so it is neither a profit nor a loss.
@@ -34,7 +43,7 @@ export function pnlText(pnl: number): string {
   return `${tone === "up" ? "+" : tone === "down" ? "-" : ""}$${amount}`;
 }
 export const tabIcon = (tone: TabTone): string =>
-  tone === "flat" ? ICON : `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 46"><path fill="${tone === "up" ? UP : DOWN}" d="${BOLT}"/></svg>`)}`;
+  tone === "flat" ? ICON : `data:image/svg+xml,${encodeURIComponent(logoIcon(tone))}`;
 
 // pnl = the account's profit or loss in dollars; null = show the plain name and the usual icon.
 export function showTab(pnl: number | null) {
