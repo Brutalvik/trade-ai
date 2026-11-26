@@ -73,6 +73,11 @@ export function signedBy(address: string, message: string, signature: string): b
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 // ---------- MoonPay's sign-in tokens ----------
+// MoonPay's wallet service answers on two hosts: x-api.moonpay.com (/v0/...) and api.moonx-dev.com
+// (MoonPay's browser kit talks to that one, and the wallet dashboard shows its key address). On
+// 26 Nov 2026 both served the same signing key for the app, so a token naming either host counts;
+// what proves it is the signature with the app's own key and the audience (this app).
+const MOONPAY_ISSUERS = ["https://x-api.moonpay.com", "https://api.moonx-dev.com"];
 // ES256 JWTs signed with the wallet app's key, published at <issuer>/v0/sdk/.well-known/jwks/<app id>
 // (fetched at most every 5 minutes, and again at once for a key id it does not know: MoonPay
 // rotating its key). Checked: the signature, the issuer, the audience (this app), the expiry,
@@ -119,7 +124,8 @@ export async function verifyToken(token: string, kind: "access" | "identity"): P
   const ok = crypto.verify("sha256", Buffer.from(`${parts[0]}.${parts[1]}`, "ascii"), { key, dsaEncoding: "ieee-p1363" }, b64url(parts[2]));
   if (!ok) throw new Error("signature does not match");
   const now = Date.now() / 1000;
-  if (String(claims.iss ?? "").replace(/\/+$/, "") !== c.issuer) throw new Error("not issued by MoonPay's wallet service");
+  const iss = String(claims.iss ?? "").replace(/\/+$/, "");
+  if (iss !== c.issuer && !MOONPAY_ISSUERS.includes(iss)) throw new Error("not issued by MoonPay's wallet service");
   const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!aud.includes(c.appId)) throw new Error("issued for another app");
   if (!(typeof claims.exp === "number" && claims.exp > now - 30)) throw new Error("expired");

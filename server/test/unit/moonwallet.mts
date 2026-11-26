@@ -57,6 +57,7 @@ expect("MoonPay's tokens for this app check out, and say who it is", await mw.ve
 expect("refused: signed with another key", await why(mw.verifyToken(access({}, { key: other.privateKey }), "access")), "signature does not match");
 expect("refused: a changed token", await why(mw.verifyToken(access().replace(/\.([^.]+)\./, (_m, p) => `.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(p, "base64url").toString()), sub: "someone_else" })).toString("base64url")}.`), "access")), "signature does not match");
 expect("refused: issued for another app", await why(mw.verifyToken(access({ aud: "app_someone_else" }), "access")), "issued for another app");
+expect("a token naming MoonPay's other wallet host (the one its browser kit uses) counts too", (await mw.verifyToken(access({ iss: "https://api.moonx-dev.com" }), "access")).sub, "mx_user_1");
 expect("refused: issued by someone else than MoonPay's wallet service", await why(mw.verifyToken(access({ iss: "https://evil.example" }), "access")), "not issued by MoonPay's wallet service");
 expect("refused: expired", await why(mw.verifyToken(access({ exp: now() - 120 }), "access")), "expired");
 expect("refused: an identity token passed as an access token, and the other way round", [await why(mw.verifyToken(identity(), "access")), await why(mw.verifyToken(access(), "identity"))], ["not an access token", "not an identity token"]);
