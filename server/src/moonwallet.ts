@@ -128,11 +128,49 @@ export async function verifyToken(token: string, kind: "access" | "identity"): P
   if (kind === "identity" ? claims.tt !== "identity" : claims.tt !== undefined && claims.tt !== "access") throw new Error(`not an ${kind} token`);
   return claims;
 }
-export async function verifySession(accessToken: string, identityToken: string): Promise<{ sub: string; email: string | null }> {
+export async function verifySession(accessToken: string, identityToken: string): Promise<{ sub: string; email: string | null; name: string | null; givenName: string | null; familyName: string | null }> {
   const a = await verifyToken(accessToken, "access");
   const i = await verifyToken(identityToken, "identity");
   if (a.sub !== i.sub) throw new Error("the two tokens are different people's");
-  return { sub: String(a.sub), email: typeof i.email === "string" ? i.email : null };
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  return { sub: String(a.sub), email: str(i.email), name: str(i.name), givenName: str(i.given_name), familyName: str(i.family_name) };
+}
+
+// Who MoonPay says the signed-in person is, and their wallets: MoonPay's own record, asked with the
+// person's access token (GET <issuer>/v0/sdk/auth/users/public/me). The wallet the app keeps on file
+// comes from here, never from the browser.
+export async function moonxMe(accessToken: string): Promise<{ userId: string; status: string | null; solana: string | null }> {
+  const c = moonxConfig();
+  if (!c.on) throw new Error(c.reason ?? "MoonPay wallets are off.");
+  const r = await fetch(`${c.issuer}/v0/sdk/auth/users/public/me`, { headers: { Authorization: `PublicToken ${c.publishableKey}`, "X-MoonX-Access-Token": accessToken, Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) throw new Error(`MoonPay could not confirm the sign-in (HTTP ${r.status}).`);
+  const j: any = await r.json();
+  const sol = (Array.isArray(j?.wallets) ? j.wallets : []).filter((w: any) => w?.wallet_type === "solana" && SOLANA_ADDRESS.test(String(w?.public_address ?? "")));
+  sol.sort((x: any, y: any) => Date.parse(x?.created_at ?? "") - Date.parse(y?.created_at ?? "")); // (the first one made)
+  return { userId: String(j?.user_id ?? ""), status: j?.status ? String(j.status) : null, solana: sol[0]?.public_address ?? null };
+}
+// A sign-in with MoonPay, fully checked: MoonPay's tokens (checked here against its published keys),
+// then MoonPay's own record of the same person, who must be active. Returns who it is and their
+// Solana wallet (null when they have none yet).
+export async function moonxSignIn(accessToken: string, identityToken: string) {
+  let s;
+  try {
+    s = await verifySession(String(accessToken ?? ""), String(identityToken ?? ""));
+  } catch (e: any) {
+    throw new Error(`MoonPay's sign-in could not be confirmed (${e?.message ?? e}). Sign in again.`);
+  }
+  const me = await moonxMe(String(accessToken));
+  if (me.userId !== s.sub) throw new Error("MoonPay's sign-in could not be confirmed (it names another person). Sign in again.");
+  if (me.status && me.status !== "active") throw new Error("This MoonPay account cannot be used. Contact support.");
+  return { ...s, email: s.email?.toLowerCase() ?? null, wallet: me.solana };
+}
+// Puts the person's MoonPay wallet on file for the account (from MoonPay's own record), unless one
+// is there already: the first one stays, another is never put in its place.
+export async function keepMoonWallet(key: string, address: string, moonxUserId: string): Promise<MoonWallet> {
+  if (!SOLANA_ADDRESS.test(address)) throw new Error("That is not a Solana wallet address.");
+  const w: MoonWallet = { address, chain: "solana", via: "proven", moonxUserId, at: Date.now() };
+  if (await store().kvSet(walletKey(key), w, { nx: true })) return w;
+  return (await myWallet(key))!;
 }
 
 // ---------- The wallet on file ----------

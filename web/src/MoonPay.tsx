@@ -4,7 +4,7 @@
 // price, fee or "paid" is ever made up here.
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, type MoonWalletView, type TxStatus, type WalletTx, type WalletTxEvent } from "./api";
+import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, type MoonWalletView, type TxStatus, type WalletTx, type WalletTxEvent } from "./api";
 
 type Tab = "wallet" | "buy" | "history" | "previous";
 type Notify = (m: string, bad?: boolean) => void;
@@ -14,7 +14,12 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
   const [view, setView] = useState<MoonWalletView | null>(null);
   const [err, setErr] = useState("");
   const load = () => api.moonWallet().then((v) => { setView(v); setErr(""); }).catch((e) => setErr(e.message));
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const again = () => void load();
+    window.addEventListener(MOONPAY_WALLET_EVENT, again);
+    return () => window.removeEventListener(MOONPAY_WALLET_EVENT, again);
+  }, []);
   const tabs: [Tab, string][] = [["wallet", "MoonPay wallet"], ["buy", "Buy"], ["history", "Transactions"], ["previous", "Previous wallet"]];
   return (
     <div className="mp">
@@ -43,7 +48,10 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
         <h3>Your MoonPay wallet</h3>
         <p className="small">A wallet of your own, kept safe by MoonPay with your email sign-in. Crypto you buy here goes into it. This app can see it but can never move money out of it.</p>
         {view.wallets.on ? (
-          <p className="muted small">Connecting it takes a code MoonPay emails you. That step arrives in the next update.</p>
+          <>
+            <p className="muted small">Sign in with MoonPay using your account's email (a code MoonPay emails you, or Google or Apple). Your wallet is made and connected in the same step.</p>
+            <button className="btn buy" onClick={() => window.dispatchEvent(new Event(SIGNIN_EVENT))}>Connect with MoonPay</button>
+          </>
         ) : (
           <p className="muted small">MoonPay wallets are not switched on in this app yet.</p>
         )}

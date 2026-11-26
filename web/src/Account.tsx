@@ -134,7 +134,7 @@ export function SettingsButton({ alerts, fee, slip, onSaved, notify }: { alerts:
 
 const initials = (u: User) => `${u.firstName[0] ?? ""}${u.lastName[0] ?? ""}`.toUpperCase();
 
-function Avatar({ user, size }: { user: User; size: number }) {
+export function Avatar({ user, size }: { user: User; size: number }) {
   return (
     <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.4 }}>
       {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials(user)}
@@ -148,10 +148,21 @@ export const SIGNIN_PENDING = "nexus-signin-pending";
 
 // True when the page runs inside Privy's provider (sign-in and wallets through Privy).
 export const PrivyEnabled = createContext(false);
+// When MoonPay's wallets are switched on (keys set on the server), sign-in runs on MoonPay: its
+// account button is given here (MoonPaySignIn.tsx, loaded only then: MoonPay's kit is large).
+export const MoonPayUI = createContext<null | { AccountButton: (p: AccountButtonProps) => ReactNode }>(null);
+// A wallet this browser can sign real trades with (MoonPay's, from MoonPaySignIn.tsx; or the previous
+// one, Privy's). The server names the wallet each trade must be signed by; only that one is used.
+export type TxSigner = { via: "moonpay" | "previous"; addresses: string[]; sign: (address: string, tx: Uint8Array) => Promise<Uint8Array> };
+export const MoonPaySigner = createContext<TxSigner | null>(null);
 
 type Props = { notify: (m: string, bad?: boolean) => void; onChange: () => void; state: AppState | null };
+export type AccountButtonProps = Props;
 export function AccountButton(props: Props) {
-  return useContext(PrivyEnabled) ? <PrivyAccountButton {...props} /> : <PasswordAccountButton {...props} />;
+  const moonpay = useContext(MoonPayUI);
+  const privy = useContext(PrivyEnabled);
+  if (moonpay) return <>{moonpay.AccountButton(props)}</>;
+  return privy ? <PrivyAccountButton {...props} /> : <PasswordAccountButton {...props} />;
 }
 
 // Sign in with Privy (email code or Google). The server verifies it and keeps its own copy of
@@ -231,7 +242,11 @@ function PrivyAccountButton({ notify, onChange, state }: Props) {
           initial={setup}
           onClose={() => { setSetup(null); void logout(); }}
           onDone={(u) => { setSetup(null); setUser(u); onChange(); notify(`Welcome, ${u.firstName}! Your paper account and wallet are ready.`); }}
-          getToken={getAccessToken}
+          complete={async (f) => {
+            const token = await getAccessToken();
+            if (!token) throw new Error("Your sign-in expired. Please sign in again.");
+            return api.privyComplete({ accessToken: token, ...f });
+          }}
         />
       )}
       {open && user && (
@@ -248,8 +263,9 @@ function PrivyAccountButton({ notify, onChange, state }: Props) {
   );
 }
 
-// First Privy sign-in: pick a username (and confirm the name) for the app's own account.
-function SetupProfileModal({ initial, onClose, onDone, getToken }: { initial: { email: string | null; firstName: string; lastName: string }; onClose: () => void; onDone: (u: User) => void; getToken: () => Promise<string | null> }) {
+// First sign-in (MoonPay or Privy): pick a username (and confirm the name) for the app's own account.
+export type ProfileFields = { username: string; firstName: string; lastName: string };
+export function SetupProfileModal({ initial, onClose, onDone, complete, walletNote = "Your Solana wallet is created automatically." }: { initial: { email: string | null; firstName: string; lastName: string }; onClose: () => void; onDone: (u: User) => void; complete: (f: ProfileFields) => Promise<{ user: User }>; walletNote?: string }) {
   const [f, setF] = useState({ username: "", firstName: initial.firstName, lastName: initial.lastName });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -258,9 +274,7 @@ function SetupProfileModal({ initial, onClose, onDone, getToken }: { initial: { 
     setErr("");
     setBusy(true);
     try {
-      const token = await getToken();
-      if (!token) throw new Error("Your sign-in expired. Please sign in again.");
-      const r = await api.privyComplete({ accessToken: token, ...f });
+      const r = await complete(f);
       onDone(r.user);
     } catch (e: any) {
       setErr(e.message);
@@ -272,7 +286,7 @@ function SetupProfileModal({ initial, onClose, onDone, getToken }: { initial: { 
   return (
     <Modal title="Set up your account" onClose={onClose} narrow>
       <form className="auth-form" onSubmit={submit}>
-        <p className="muted small">Welcome! {initial.email ? <>Signed in as <b>{initial.email}</b>. </> : ""}Pick a username for your account. Your Solana wallet is created automatically.</p>
+        <p className="muted small">Welcome! {initial.email ? <>Signed in as <b>{initial.email}</b>. </> : ""}Pick a username for your account. {walletNote}</p>
         <div className="grid2">
           <label>First name<input autoComplete="given-name" required maxLength={40} {...field("firstName")} /></label>
           <label>Last name<input autoComplete="family-name" required maxLength={40} {...field("lastName")} /></label>
@@ -374,7 +388,7 @@ function AuthModal({ onClose, onDone }: { onClose: () => void; onDone: (u: User)
   );
 }
 
-function ProfileModal({ user, state, onClose, onSignedOut, notify, signOutOverride }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void; signOutOverride?: () => Promise<void> }) {
+export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOutOverride }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void; signOutOverride?: () => Promise<void> }) {
   const access = useAccess();
   const [activityOpen, setActivityOpen] = useState(false);
   // This login's own paper account at a glance.

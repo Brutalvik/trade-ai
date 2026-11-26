@@ -138,7 +138,7 @@ export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: n
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[] }; // freeTrades -1 = unlimited
 export type User = { prefs?: { hide: string[] }; username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
 export type AdminUser = User & { usage: Usage };
-export type RealQuote = { requestId: string; transaction: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
+export type RealQuote = { requestId: string; transaction: string; wallet: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
 export type RealTrade = { t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: "SOL" | "USDC"; status: "Success" | "Failed"; signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; feeBps: number; error?: string };
 export type ListKind = "crypto" | "top" | "trending" | "held" | "graduated" | "bonding" | "community";
 export type ListCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; change24h: number; holders?: number; volume24h?: number; liquidity?: number; verified?: boolean; buys?: number; buyers?: number; pair?: PairInfo; score?: number | null; verdict?: "BUY ZONE" | "WAIT" | "AVOID"; why?: string; rank?: number; query?: string };
@@ -157,6 +157,8 @@ export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResul
 // Signed out and pressed something that needs an account (buy, start bot, analyze...):
 // open the sign-in / register window instead of showing an error.
 export const SIGNIN_EVENT = "nexus:signin-needed";
+// The MoonPay wallet was just put on file (MoonPaySignIn.tsx): the wallet window loads it again.
+export const MOONPAY_WALLET_EVENT = "moonpay-wallet-changed";
 export class SignInNeeded extends Error {
   constructor() {
     super(""); // empty: no error toast, the sign-in window opens instead
@@ -219,6 +221,8 @@ export const api = {
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
   realQuote: (b: { side: "BUY" | "SELL"; pay: "SOL" | "USDC"; mint: string; symbol: string; usd?: number; pct?: number }) => req<RealQuote>("/real/quote", b),
   realExecute: (b: { requestId: string; signedTransaction: string }) => req<RealTrade>("/real/execute", b),
+  // The wallet real trades come from (the MoonPay wallet once on file, else the previous one) and its balances.
+  realWallet: (fresh = false) => req<WalletView & { via: "moonpay" | "previous" | null }>(`/real/wallet${fresh ? "?fresh=1" : ""}`),
   realTrades: (limit = 50) => req<RealTrade[]>(`/real/trades?limit=${limit}`),
   list: (kind: ListKind) => req<{ kind: ListKind; coins: ListCoin[] }>(`/lists/${kind}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
@@ -252,6 +256,10 @@ export const api = {
   signOut: () => req("/auth/signout", {}),
   privyLogin: (accessToken: string) => req<{ user?: User; needsProfile?: boolean; email?: string | null; firstName?: string; lastName?: string }>("/auth/privy-login", { accessToken }),
   privyComplete: (b: { accessToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/privy-complete", b),
+  // Sign up and sign in with MoonPay (its wallet sign-in): MoonPay's two tokens; the server checks them itself.
+  moonpayLogin: (t: { accessToken: string; identityToken: string }) => req<{ user?: User; needsProfile?: boolean; email?: string | null; firstName?: string; lastName?: string }>("/auth/moonpay-login", t),
+  moonpayComplete: (b: { accessToken: string; identityToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/moonpay-complete", b),
+  moonpayWalletSync: (t: { accessToken: string; identityToken: string }) => req<{ wallet: MoonWallet }>("/moonpay/wallet/sync", t),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   setTradeMode: (mode: "paper" | "real") => req<{ user: User }>("/auth/trade-mode", { mode }),
   // The parts of the app this user has hidden (saved on their account).

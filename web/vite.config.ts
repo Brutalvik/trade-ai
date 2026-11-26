@@ -21,6 +21,9 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(version),
     __APP_COMMIT__: JSON.stringify(commit.slice(0, 7)),
+    // As the production build already does: MoonPay's kit reads Next.js settings from process.env,
+    // which doesn't exist in a browser. Without this the local dev page is blank when MoonPay is on.
+    'process.env': '{}',
   },
   server: { port: 5173, proxy: { '/api': 'http://localhost:8787' } },
   // Two pages: the landing page (/) and the trading app (/app); both boot src/main.tsx.

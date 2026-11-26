@@ -4,6 +4,7 @@
 // signs out every other session. The signing key is made once and kept in the store,
 // so no extra setting is needed.
 import crypto from "node:crypto";
+import * as moonwallet from "./moonwallet.js";
 import { promisify } from "node:util";
 import type { Request, Response } from "express";
 import { createStore } from "./store.js";
@@ -26,6 +27,7 @@ type User = {
   avatarUrl?: string | null; // profile picture (coming later)
   plan?: PlanId; // what they pay for (default free)
   privyId?: string; // Privy user (DID) when they sign in with Privy
+  moonxId?: string; // MoonPay wallet user when they sign in with MoonPay (its wallet is kept under moonpay-wallet:<username>)
   solanaAddress?: string; // their Privy embedded Solana wallet
   role?: Role; // user | admin
   tradeMode?: TradeMode; // paper (default) or real (their own wallet)
@@ -249,6 +251,66 @@ export async function signIn(req: Request, res: Response) {
 
 // ---------- Sign in with Privy (email code or Google); our copy of every user stays here ----------
 const privyKey = (did: string) => `privy:${did}`;
+const moonxKey = (sub: string) => `moonx:${sub}`;
+
+// ---------- Sign up and sign in with MoonPay (its wallet sign-in: an emailed code, Google or Apple) ----------
+// The browser signs the person in with MoonPay and makes their wallet; the server checks MoonPay's
+// tokens itself, asks MoonPay which wallet is theirs, and links the account: by the MoonPay user it
+// was linked to before, else by the email MoonPay proved (an existing account with that email,
+// however it was made, is theirs). A new person picks a username next (moonpayCompleteProfile).
+export async function moonpayLogin(req: Request, res: Response) {
+  const m = await moonwallet.moonxSignIn(req.body?.accessToken, req.body?.identityToken);
+  if (!m.email) throw new Error("Sign in with an email, Google or Apple: your account needs an email address.");
+  let name = await store.kvGet<string>(moonxKey(m.sub));
+  if (!name) {
+    name = await store.kvGet<string>(emailKey(m.email)); // an existing account with this email: link it
+    if (name) await store.kvSet(moonxKey(m.sub), name.toLowerCase());
+  }
+  const user = name ? await store.kvGet<User>(userKey(name)) : null;
+  if (!user) return { needsProfile: true, email: m.email, firstName: m.givenName ?? (m.name ?? "").split(/\s+/)[0] ?? "", lastName: m.familyName ?? (m.name ?? "").split(/\s+/).slice(1).join(" ") };
+  const updated: User = { ...user, moonxId: m.sub };
+  if (updated.moonxId !== user.moonxId) await store.kvSet(userKey(user.username), updated);
+  const wallet = m.wallet ? await moonwallet.keepMoonWallet(user.username.toLowerCase(), m.wallet, m.sub) : null;
+  await addToIndex(user.username);
+  await setSession(res, updated);
+  await audit(user.username, "account.signin", "Signed in with MoonPay", { ip: clientIp(req), wallet: wallet?.address ?? null });
+  return { user: { ...pub(updated), owner: true } };
+}
+export async function moonpayCompleteProfile(req: Request, res: Response) {
+  const m = await moonwallet.moonxSignIn(req.body?.accessToken, req.body?.identityToken);
+  if (await store.kvGet<string>(moonxKey(m.sub))) return moonpayLogin(req, res); // already set up
+  if (!m.email) throw new Error("Sign in with an email, Google or Apple: your account needs an email address.");
+  const username = String(req.body?.username ?? "").trim();
+  const firstName = String(req.body?.firstName ?? "").trim();
+  const lastName = String(req.body?.lastName ?? "").trim();
+  if (!USERNAME_RE.test(username)) throw new Error("Username: 3-20 letters, numbers or _");
+  if (!firstName || !lastName || firstName.length > 40 || lastName.length > 40) throw new Error("Enter your first and last name");
+  const user: User = { username, firstName, lastName, email: m.email, salt: "", hash: "", passVer: 1, createdAt: Date.now(), avatarUrl: null, moonxId: m.sub };
+  if (!(await store.kvSet(userKey(username), user, { nx: true }))) throw new Error("That username is taken");
+  if (!(await store.kvSet(emailKey(m.email), username.toLowerCase(), { nx: true }))) {
+    await store.kvDel(userKey(username));
+    throw new Error("An account with that email already exists. Sign in again to link it.");
+  }
+  await store.kvSet(moonxKey(m.sub), username.toLowerCase());
+  const wallet = m.wallet ? await moonwallet.keepMoonWallet(username.toLowerCase(), m.wallet, m.sub) : null;
+  await addToIndex(username);
+  await audit(username, "account.signup", "Account created (MoonPay)", { email: m.email, wallet: wallet?.address ?? null });
+  await setSession(res, user);
+  await audit(username, "account.signin", "Signed in with MoonPay", { ip: clientIp(req) });
+  return { user: { ...pub(user), owner: true } };
+}
+// A signed-in customer whose MoonPay wallet is not on file yet (made after they signed in): the
+// same MoonPay sign-in, which must be this account's (same MoonPay user, or same email), puts it on file.
+export async function moonpayWalletSync(req: Request) {
+  const a = await requestAuth(req);
+  if (!a) throw new Error("Sign in first.");
+  const m = await moonwallet.moonxSignIn(req.body?.accessToken, req.body?.identityToken);
+  const mine = (a.user.moonxId && a.user.moonxId === m.sub) || (!!m.email && m.email === a.user.email.toLowerCase());
+  if (!mine) throw new Error("Sign in to MoonPay with the same email as your account.");
+  if (!m.wallet) throw new Error("MoonPay has no Solana wallet for you yet.");
+  if (a.user.moonxId !== m.sub) await store.kvSet(userKey(a.user.username), { ...a.user, moonxId: m.sub });
+  return { wallet: await moonwallet.keepMoonWallet(a.key, m.wallet, m.sub) };
+}
 
 // Step 1: verify the Privy login and sign in the matching user (by Privy ID, or by email for
 // accounts made before Privy). A brand-new person gets { needsProfile } to pick a username.

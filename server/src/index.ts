@@ -226,17 +226,38 @@ app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
 // Your real Solana wallet (read-only): SOL and token balances with USD values.
 // Real trades from the user's own wallet (Jupiter): quote -> user signs in the browser -> execute.
-const realUser = (a: NonNullable<Awaited<ReturnType<typeof auth.requestAuth>>>) => ({ key: a.key, plan: a.plan, solanaAddress: a.user.solanaAddress, tradeMode: a.user.tradeMode });
+// Which wallet they trade from: their MoonPay wallet once it is on file (and MoonPay wallets are on),
+// else their previous wallet (Privy's). The server decides; the quote names it, and the browser
+// signs with that wallet only.
+type Signed = NonNullable<Awaited<ReturnType<typeof auth.requestAuth>>>;
+async function tradingWallet(a: Signed): Promise<{ address: string; via: "moonpay" | "previous" } | null> {
+  if (moonwallet.moonxStatus().on) {
+    const w = await moonwallet.myWallet(a.key);
+    if (w) return { address: w.address, via: "moonpay" };
+  }
+  return a.user.solanaAddress ? { address: a.user.solanaAddress, via: "previous" } : null;
+}
+const realUser = async (a: Signed) => ({ key: a.key, plan: a.plan, solanaAddress: (await tradingWallet(a))?.address ?? null, tradeMode: a.user.tradeMode });
+// The balances of the wallet they trade from (the trade form shows them).
+app.get("/api/real/wallet", signedIn(async (req, res) => {
+  const w = await tradingWallet((await auth.requestAuth(req))!);
+  if (!w) return void res.json({ address: null, via: null, holdings: [], totalUsd: 0, updatedAt: Date.now() });
+  try {
+    res.json({ ...(await walletView(w.address, req.query.fresh === "1")), via: w.via });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message ?? String(e), address: w.address, via: w.via });
+  }
+}));
 app.post("/api/real/quote", needs("trade.manual", async (req, res) => {
   try {
-    res.json(await live.realQuote(realUser((await auth.requestAuth(req))!), req.body));
+    res.json(await live.realQuote(await realUser((await auth.requestAuth(req))!), req.body));
   } catch (e: any) {
     res.status(400).json({ error: e?.message ?? String(e) });
   }
 }));
 app.post("/api/real/execute", needs("trade.manual", async (req, res) => {
   try {
-    res.json(await live.realExecute(realUser((await auth.requestAuth(req))!), req.body));
+    res.json(await live.realExecute(await realUser((await auth.requestAuth(req))!), req.body));
   } catch (e: any) {
     res.status(400).json({ error: e?.message ?? String(e) });
   }
@@ -455,6 +476,10 @@ app.post("/api/auth/signout", authRoute(auth.signOut));
 // Sign in with Privy (email code or Google): verify, then link or create our own user record.
 app.post("/api/auth/privy-login", authRoute(auth.privyLogin));
 app.post("/api/auth/privy-complete", authRoute(auth.privyCompleteProfile));
+// Sign up and sign in with MoonPay (its wallet sign-in). Off until MoonPay's wallet keys are set.
+app.post("/api/auth/moonpay-login", authRoute(auth.moonpayLogin));
+app.post("/api/auth/moonpay-complete", authRoute(auth.moonpayCompleteProfile));
+app.post("/api/moonpay/wallet/sync", authRoute(auth.moonpayWalletSync));
 app.post("/api/auth/password", authRoute(auth.changePassword));
 app.post("/api/auth/trade-mode", authRoute(auth.setTradeMode));
 app.post("/api/auth/prefs", authRoute(auth.setPrefs));

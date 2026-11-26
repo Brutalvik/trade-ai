@@ -53,7 +53,7 @@ const base = { iss: "https://x-api.moonpay.com", aud: "app_trading_rust", sub: "
 const access = (c: Record<string, unknown> = {}, o = {}) => jwt({ ...base, ...c }, o);
 const identity = (c: Record<string, unknown> = {}, o = {}) => jwt({ ...base, tt: "identity", email: "Ada@Example.test", exp: now() + 36000, ...c }, o);
 const why = (p: Promise<unknown>) => p.then(() => "accepted", (e: Error) => e.message);
-expect("MoonPay's tokens for this app check out, and say who it is", await mw.verifySession(access(), identity()), { sub: "mx_user_1", email: "Ada@Example.test" });
+expect("MoonPay's tokens for this app check out, and say who it is", await mw.verifySession(access(), identity()), { sub: "mx_user_1", email: "Ada@Example.test", name: null, givenName: null, familyName: null });
 expect("refused: signed with another key", await why(mw.verifyToken(access({}, { key: other.privateKey }), "access")), "signature does not match");
 expect("refused: a changed token", await why(mw.verifyToken(access().replace(/\.([^.]+)\./, (_m, p) => `.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(p, "base64url").toString()), sub: "someone_else" })).toString("base64url")}.`), "access")), "signature does not match");
 expect("refused: issued for another app", await why(mw.verifyToken(access({ aud: "app_someone_else" }), "access")), "issued for another app");

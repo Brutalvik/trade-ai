@@ -1,8 +1,9 @@
-// Real trades from the user's own Solana wallet (Privy embedded wallet), through Jupiter Swap V2.
+// Real trades from the user's own Solana wallet (their MoonPay wallet, or the previous Privy one),
+// through Jupiter Swap V2.
 //
 // 1. quote:   the server asks Jupiter for an order (an unsigned swap transaction for the user's
 //             wallet), checks balances and limits, and keeps the order for 2 minutes.
-// 2. sign:    the browser shows the summary; the user approves and signs it with Privy.
+// 2. sign:    the browser shows the summary; the user approves and signs it with their wallet.
 //             The server never holds keys and can't sign anything.
 // 3. execute: the server checks the signed transaction is exactly the one it quoted, then hands it
 //             to Jupiter, which broadcasts it. The result (with its on-chain signature) is recorded.
@@ -155,6 +156,7 @@ export async function realQuote(u: RealUser, body: any) {
   return {
     requestId: String(j.requestId),
     transaction: String(j.transaction),
+    wallet: owner, // the wallet that must sign it (the browser signs with this one only)
     side, pay, symbol, mint,
     inAmount: ui(pending.inAmount, inDec),
     outAmount: ui(pending.outAmount, outDec),
