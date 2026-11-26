@@ -21,6 +21,12 @@
 //   the scouts' order, cheap coins only   -1.17 / +2.76 / +0.09   ahead of any coin on all three (+0.91, +4.63, +2.21; each
 //                                                                 range clear of zero): the engine's AUTO_MAX_COST_PCT
 //   the cheapest coins first              -1.77 / +2.16 / -2.05   cheap alone is not it: the cheapest are the quietest
+//   ...cheap AND past the numbers' check  -1.31 / -1.01 / -2.37   worse than cheap alone on all three: on cheap coins the
+//                                                                 moments the numbers call lively were the worse ones to buy
+//                                                                 (-2.44 / -0.69 / -2.29 a buy, against -0.98 / +3.90 / -0.22),
+//                                                                 and only 4.5 / 0.7 / 1.9 coins pass both at one time. So a
+//                                                                 shared "quality step" must not pre-select coins by the numbers;
+//                                                                 that check stays a gate before a paid AI look (measured 26 Nov).
 // The sets: the repo's fixtures (13 Nov), backtest/sets/2026-11-25-fresh, backtest/sets/2026-11-25-list.
 // A set for another day is saved with `npm run backtest:list -- <folder> <how many coins>`.
 import fs from "node:fs";
@@ -36,11 +42,15 @@ const opt = (name: string, fallback: string) => { const i = args.indexOf(`--${na
 const DIR = opt("dir", "");
 const STEP_MIN = Number(opt("step", "15")), BUDGET = Number(opt("budget", "1000")), TAKE = Number(opt("take", "3")), CHEAP = Number(opt("cheap", "1.5"));
 const CAP = 2.5, MIN_NET = EXIT_LIVE.minNetPct, STOPS = [3, 5, 8, 12], HOLDS = [60, 180], MIN_COINS = 5;
+// The engine's free check on the numbers before an agent's AI is asked (bestCase): some plain
+// order must have at least FLOOR% by the numbers alone, and pass with an AI that is AI_CEILING% sure.
+const FLOOR = 10, AI_CEILING = 95;
 const cost: CostModel = { name: "measured", roundTripPct: measuredRoundTripPct };
 
 // ---------- the looks: every coin at every decision time ----------
 type Shape = { stop: number; hold: number; numbers: number; need: number; margin: number };
-type Look = { symbol: string; pool: string; t: number; costPct: number; usd: number; scoutQ: number | null; shapes: Shape[]; netPct: number; bestNetPct: number };
+// ready = the coin passed that free check at that moment (a "quality step" would hand it to an agent).
+type Look = { symbol: string; pool: string; t: number; costPct: number; usd: number; scoutQ: number | null; shapes: Shape[]; ready: boolean; netPct: number; bestNetPct: number };
 
 // Candles that had closed by `t` (their start plus their length is at or before t): the last `keep`.
 function closedBy(c: Candle[], t: number, len: number, keep: number): Candle[] {
@@ -88,7 +98,8 @@ for (const fx of fixtures) {
     if (!shapes.length) continue;
     // The buy itself, with one order for every coin (a 5% stop), so only the coin differs between rows.
     const tr = simulate(fx, [{ time: t, stopPct: 5, maxHoldMin: 180 }], { tf: "5s", design: EXIT_LIVE, cost, budgetUsd: BUDGET, sizeCapPct: CAP })[0];
-    if (tr) all.push({ symbol: fx.symbol, pool: fx.pool, t, costPct, usd, scoutQ: fx.scouts?.quality ?? null, shapes, netPct: tr.netPct, bestNetPct: tr.bestNetPct });
+    const ready = shapes.some((sh) => sh.numbers >= FLOOR && 0.5 * AI_CEILING + 0.5 * sh.numbers >= sh.need);
+    if (tr) all.push({ symbol: fx.symbol, pool: fx.pool, t, costPct, usd, scoutQ: fx.scouts?.quality ?? null, shapes, ready, netPct: tr.netPct, bestNetPct: tr.bestNetPct });
   }
 }
 
@@ -119,6 +130,8 @@ const ways: { name: string; pick: (ls: Look[]) => Look[] }[] = [
   { name: "the scouts' order (the agents' rule before v0.68)", pick: (ls) => top(ls, TAKE, scoutScore) },
   { name: `the scouts' order, coins costing at most ${CHEAP}%`, pick: (ls) => top(ls.filter((l) => l.costPct <= CHEAP), TAKE, scoutScore) },
   { name: "the cheapest coins first", pick: (ls) => top(ls, TAKE, (l) => -l.costPct) },
+  { name: `...at most ${CHEAP}% and past the numbers' free check`, pick: (ls) => top(ls.filter((l) => l.costPct <= CHEAP && l.ready), TAKE, scoutScore) },
+  { name: "past the numbers' free check, any cost", pick: (ls) => top(ls.filter((l) => l.ready), TAKE, scoutScore) },
 ];
 
 const byTime = new Map<number, Look[]>();
@@ -142,6 +155,18 @@ for (const w of ways) {
     diffs.push(mean(chosen.map((c) => c.netPct)) - mean(ls.map((l) => l.netPct)));
   }
   line(w.name, picks, diffs);
+}
+
+// How many coins a shared quality step could hand to agents at one moment.
+{
+  const count = (f: (l: Look) => boolean) => times.map((t) => byTime.get(t)!.filter(f).length);
+  const show = (name: string, ns: number[]) => console.log(`  ${name.padEnd(58)} ${mean(ns).toFixed(1)} of ${mean(times.map((t) => byTime.get(t)!.length)).toFixed(1)} coins on average | none ${share(ns.filter((n) => n === 0).length / ns.length).padStart(4)} of the time, 1 or 2 ${share(ns.filter((n) => n === 1 || n === 2).length / ns.length).padStart(4)}, 3 or more ${share(ns.filter((n) => n >= 3).length / ns.length).padStart(4)}`);
+  console.log(`\n-- how many coins pass the free checks at one decision time (what a quality step could hand out) --`);
+  show(`cost at most ${CHEAP}% for the whole budget`, count((l) => l.costPct <= CHEAP));
+  show("past the numbers' free check", count((l) => l.ready));
+  show("both", count((l) => l.costPct <= CHEAP && l.ready));
+  const both = all.filter((l) => l.costPct <= CHEAP && l.ready), cheapNot = all.filter((l) => l.costPct <= CHEAP && !l.ready);
+  console.log(`  buys on cheap coins: past the numbers' check ${both.length} buys, per buy ${pct(mean(both.map((l) => l.netPct)))}, reached +5% ${share(both.filter((l) => l.bestNetPct >= MIN_NET).length / Math.max(1, both.length))} | not past it ${cheapNot.length} buys, per buy ${pct(mean(cheapNot.map((l) => l.netPct)))}, reached +5% ${share(cheapNot.filter((l) => l.bestNetPct >= MIN_NET).length / Math.max(1, cheapNot.length))}`);
 }
 
 console.log(`\n-- by what a round trip costs at the agent's size (every coin at every decision time) --`);
