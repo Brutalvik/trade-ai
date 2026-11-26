@@ -17,6 +17,7 @@ import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import * as moonpay from "./moonpay.js";
+import * as moonwallet from "./moonwallet.js";
 import * as wallettx from "./wallettx.js";
 import { searchCoins, coinList } from "./lists.js";
 import { AGENT_PASS, scanAgents } from "./agents.js";
@@ -126,6 +127,7 @@ app.get("/api/status", async (req, res) => {
       solanaRpc: await rpcHealth(req.query.rpc === "1"), // "custom" (e.g. Helius) or "public"; ?rpc=1 also pings it
       storageStats: engine.storageStats(), // calls and bytes to the storage since this server copy started
       moonpay: moonpay.publicStatus(), // on or off and why (never a key; the publishable key is public by design)
+      moonpayWallets: moonwallet.moonxStatus(), // the same for MoonPay's wallets
       node: process.versions.node, // MoonPay's wallet pre-generation needs Node 22 or later
       // Only when storage isn't working: names (not values) of database settings the server can see.
       ...(engine.storeKind() === "temp" || storageError ? { storageEnvNames: storageEnvNames() } : {}),
@@ -270,6 +272,44 @@ app.get("/api/wallet/transactions/:id", signedIn(async (req, res) => {
 app.post("/api/moonpay/buy/start", signedIn(async (req, res) => {
   try {
     res.json(await moonpay.startBuy((await auth.requestAuth(req))!.key, req.body));
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+// The customer's MoonPay wallet: on file only after MoonPay's sign-in and the wallet's own
+// signature are checked (moonwallet.ts). The balance is read from the blockchain.
+const deviceIp = (req: Request) => String(req.headers["x-real-ip"] ?? req.headers["x-forwarded-for"] ?? req.socket?.remoteAddress ?? "").split(",")[0].trim().replace(/^::ffff:/, "");
+app.get("/api/moonpay/wallet", signedIn(async (req, res) => {
+  try {
+    const a = (await auth.requestAuth(req))!;
+    const wallet = await moonwallet.myWallet(a.key);
+    const sandbox = moonpay.config().mode !== "live";
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ wallet, wallets: moonwallet.moonxStatus(), buying: moonpay.publicStatus(), balance: wallet ? { sol: await moonwallet.solBalance(wallet.address, sandbox), network: sandbox ? "Solana test network (devnet)" : "Solana" } : null });
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+app.post("/api/moonpay/wallet/challenge", signedIn(async (req, res) => {
+  try {
+    res.json(await moonwallet.walletChallenge((await auth.requestAuth(req))!.key));
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+app.post("/api/moonpay/wallet/prove", signedIn(async (req, res) => {
+  try {
+    const a = (await auth.requestAuth(req))!;
+    res.json({ wallet: await moonwallet.proveWallet(a.key, { email: a.user.email }, req.body ?? {}) });
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+app.post("/api/moonpay/session", signedIn(async (req, res) => {
+  try {
+    const a = (await auth.requestAuth(req))!;
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await moonpay.createSession(a.key, a.user.email, deviceIp(req)));
   } catch (e) {
     txError(res, e);
   }

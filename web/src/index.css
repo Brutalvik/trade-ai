@@ -1382,3 +1382,29 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 /* Settings, "What the app shows": a tick box with its explanation beside it. */
 .settings-show { display: flex; align-items: flex-start; gap: 9px; line-height: 1.5; }
 .settings-show input { margin-top: 4px; flex: none; }
+
+/* MoonPay in the wallet window (MoonPay.tsx) */
+.mp .tabs { margin-bottom: 12px; }
+.mp-sandbox { color: var(--amber); background: rgba(255, 200, 87, 0.07); border: 1px solid rgba(255, 200, 87, 0.28); border-radius: 10px; padding: 7px 10px; margin: 0 0 12px; }
+.mp-card { border: 1px solid rgba(0, 229, 255, 0.14); background: rgba(0, 229, 255, 0.03); border-radius: 14px; padding: 14px 16px; }
+.mp-card h3 { margin: 0 0 6px; font-size: 15px; }
+.mp-form { display: grid; gap: 10px; margin: 12px 0 8px; max-width: 420px; }
+.mp-form label { display: grid; gap: 4px; }
+.mp-form input, .mp-form select { background: rgba(4, 10, 24, 0.7); border: 1px solid rgba(0, 229, 255, 0.25); color: var(--text); border-radius: 10px; padding: 9px 10px; font-size: 15px; }
+.mp-amount { display: grid; grid-template-columns: 1fr 92px; gap: 8px; }
+.mp-amount input { font-variant-numeric: tabular-nums; font-size: 18px; }
+.mp-quick { display: flex; gap: 6px; flex-wrap: wrap; }
+.mp-tx td { vertical-align: middle; }
+.mp-row { cursor: pointer; }
+.mp-row:hover td { background: rgba(0, 229, 255, 0.04); }
+.mp-status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid currentColor; white-space: nowrap; }
+.mp-status.s-completed { color: #3ee08f; }
+.mp-status.s-pending, .mp-status.s-started { color: var(--amber); }
+.mp-status.s-failed, .mp-status.s-cancelled, .mp-status.s-expired { color: #ff6b81; }
+.mp-status.s-refunded { color: #9fb2e0; }
+.mp-flag { color: var(--amber); }
+.mp-detail-row td { background: rgba(4, 10, 24, 0.45); }
+.mp-detail dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 16px; margin: 4px 0 10px; }
+.mp-detail dt { color: var(--muted); font-size: 11px; }
+.mp-detail dd { margin: 0; }
+.mp-events { list-style: none; padding: 0; margin: 4px 0 0; display: grid; gap: 3px; }

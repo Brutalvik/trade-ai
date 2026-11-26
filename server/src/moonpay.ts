@@ -46,8 +46,9 @@ export function config(): MoonPayConfig {
 // For the status page and the app: never a key, only whether it is on and why not.
 export const publicStatus = () => {
   const c = config();
-  return { on: c.on, mode: c.mode, reason: c.reason, webhooks: c.on && !!c.webhookKey, publishableKey: c.on ? c.publishableKey : null };
+  return { on: c.on, mode: c.mode, reason: c.reason, webhooks: c.on && !!c.webhookKey, publishableKey: c.on ? c.publishableKey : null, minBuy: MIN_BUY, maxBuy: maxBuy() };
 };
+export const MIN_BUY = 20;
 export const maxBuy = () => (Number(process.env.MOONPAY_MAX_BUY) > 0 ? Number(process.env.MOONPAY_MAX_BUY) : 500);
 
 // ---------- Webhook signatures ----------
@@ -191,6 +192,27 @@ export async function customerWallet(key: string): Promise<WalletRec | null> {
   return store().kvGet<WalletRec>(`moonpay-wallet:${key}`);
 }
 
+// ---------- MoonPay's buying session (its "Platform": the app's own screens with MoonPay's frames) ----------
+// One per visit to the buy screen, used once by MoonPay's browser kit. MoonPay knows the customer
+// by our reference and checks the device's IP address across its frames.
+export const BUYING_OFF = "MoonPay has not switched on buying in your own screens for this account yet.";
+export async function createSession(key: string, email: string, deviceIp: string | undefined): Promise<{ sessionToken: string }> {
+  const c = config();
+  if (!c.on) throw new Error(c.reason ?? "MoonPay is off.");
+  const ip = String(deviceIp ?? "").trim();
+  if (!/^[0-9a-fA-F:.]{3,45}$/.test(ip)) throw new Error("Your connection's address could not be read; reload the page and try again.");
+  const ref = await customerRef(key);
+  let r: any;
+  try {
+    r = await api<any>("POST", "/platform/v1/sessions", { deviceIp: ip, externalCustomerId: ref, ...(email ? { email } : {}) });
+  } catch (e) {
+    if (e instanceof MoonPayError && e.status === 404) throw new Error(BUYING_OFF);
+    throw e;
+  }
+  if (!r?.sessionToken) throw new Error("MoonPay did not start a session.");
+  return { sessionToken: String(r.sessionToken) };
+}
+
 // ---------- Buying ----------
 const FIATS = ["usd", "eur", "gbp", "cad", "aud"];
 const ASSETS: Record<string, { network: string }> = { sol: { network: "solana" }, usdc_sol: { network: "solana" } };
@@ -205,7 +227,7 @@ export async function startBuy(key: string, body: any): Promise<{ id: string; wa
   const fiatAmount = Math.round(Number(body?.fiatAmount) * 100) / 100;
   if (!FIATS.includes(fiatCurrency)) throw new Error("Choose a currency to pay in.");
   if (!ASSETS[asset]) throw new Error("Choose a coin to buy.");
-  if (!(fiatAmount >= 20)) throw new Error("The smallest purchase is 20.");
+  if (!(fiatAmount >= MIN_BUY)) throw new Error(`The smallest purchase is ${MIN_BUY}.`);
   if (fiatAmount > maxBuy()) throw new Error(`The largest purchase is ${maxBuy()} at a time.`);
   const wallet = await customerWallet(key);
   if (!wallet?.address) throw new Error("Your wallet is not set up yet.");

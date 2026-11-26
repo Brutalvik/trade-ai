@@ -189,7 +189,29 @@ export async function prefetchChart(chain: string, pool: string, tf: Timeframe) 
   }
 }
 
+// ---------- MoonPay: the customer's wallet, buying, and every real-money transaction ----------
+export type TxStatus = "started" | "pending" | "completed" | "failed" | "cancelled" | "refunded" | "expired";
+export type WalletTx = {
+  id: string; provider: string; providerId: string | null; kind: "buy" | "sell" | "swap" | "send" | "receive"; status: TxStatus; providerStatus: string | null; final: boolean;
+  fiatCurrency: string | null; fiatAmount: number | null; feeAmount: number | null; networkFeeAmount: number | null; extraFeeAmount: number | null;
+  cryptoCurrency: string | null; network: string | null; cryptoAmount: number | null; walletAddress: string | null; txHash: string | null;
+  failureReason: string | null; flag: string | null; createdAt: number; updatedAt: number; providerUpdatedAt: number | null;
+};
+export type WalletTxEvent = { at: number; source: string; type: string | null; status: string | null; applied: boolean; note: string | null };
+export type MoonPayStatus = { on: boolean; mode: "sandbox" | "live" | null; reason: string | null; webhooks: boolean; publishableKey: string | null; minBuy: number; maxBuy: number };
+export type MoonWalletsStatus = { on: boolean; mode: "sandbox" | "live" | null; reason: string | null; publishableKey: string | null; appId: string | null };
+export type MoonWallet = { address: string; chain: "solana"; via: string; moonxUserId: string | null; at: number };
+export type MoonWalletView = { wallet: MoonWallet | null; wallets: MoonWalletsStatus; buying: MoonPayStatus; balance: { sol: number | null; network: string } | null };
+
 export const api = {
+  walletTxs: (before?: number) => req<{ transactions: WalletTx[]; moonpay: MoonPayStatus }>(`/wallet/transactions?limit=50${before ? `&before=${before}` : ""}`),
+  walletTx: (id: string) => req<{ tx: WalletTx; events: WalletTxEvent[] }>(`/wallet/transactions/${encodeURIComponent(id)}`),
+  moonWallet: () => req<MoonWalletView>("/moonpay/wallet"),
+  moonSession: () => req<{ sessionToken: string }>("/moonpay/session", {}),
+  moonChallenge: () => req<{ message: string; expiresAt: number }>("/moonpay/wallet/challenge", {}),
+  moonProve: (body: { address: string; signature: string; accessToken: string; identityToken: string }) => req<{ wallet: MoonWallet }>("/moonpay/wallet/prove", body),
+  buyStart: (body: { fiatCurrency: string; asset: string; fiatAmount: number }) => req<{ id: string; walletAddress: string; asset: string; fiatCurrency: string; fiatAmount: number; customerRef: string }>("/moonpay/buy/start", body),
+  buyLink: (id: string, transactionId: string) => req<{ ok: boolean; status: TxStatus | null }>("/moonpay/buy/link", { id, transactionId }),
   status: () => req<Status>("/status"),
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
   realQuote: (b: { side: "BUY" | "SELL"; pay: "SOL" | "USDC"; mint: string; symbol: string; usd?: number; pct?: number }) => req<RealQuote>("/real/quote", b),

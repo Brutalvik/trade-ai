@@ -1,10 +1,12 @@
-// Your Solana wallet (Privy embedded wallet): opened from the wallet button in the header.
-// SOL and token balances with USD values, and a Deposit screen (address + QR code).
+// The wallet window, opened from the wallet button in the header. Real mode: the customer's
+// MoonPay wallet, buying with MoonPay, and every real-money transaction (MoonPay.tsx); the Privy
+// wallet stays under "Previous wallet" (SOL and token balances, and a Deposit screen).
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import { api, fmtPct, fmtPrice, fmtUsd, type AppState, type WalletView } from "./api";
 import { Modal, useAccess } from "./Account";
+import { MoonPayPanel } from "./MoonPay";
 
 const fmtAmount = (n: number) => (n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n >= 1 ? n.toFixed(4) : n.toPrecision(4));
 
@@ -33,7 +35,7 @@ function WalletModal({ notify, state, onClose }: { notify: (m: string, bad?: boo
   const real = me?.tradeMode === "real";
   return (
     <Modal title="Wallet" onClose={onClose} wide>
-      {real ? <SolanaWallet notify={notify} /> : <PaperAccount state={state} />}
+      {real ? <MoonPayPanel notify={notify} previous={<SolanaWallet notify={notify} />} /> : <PaperAccount state={state} />}
     </Modal>
   );
 }

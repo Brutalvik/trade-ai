@@ -18,7 +18,8 @@ await fakeSupabase();
 type MpTx = { id: string; status: string; createdAt: string; updatedAt: string; externalCustomerId?: string; externalTransactionId?: string; wallet: { address: string }; source: { amount: number; asset: { code: string } }; destination: { amount: number; asset: { code: string } }; fees?: any; transactionHash?: string | null; customer?: { id: string } };
 const mp = new Map<string, MpTx>();
 const asked: string[] = [];
-let mpDown = false;
+let mpDown = false, sessionsOn = false;
+const sessionBodies: any[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: any, init?: any) => {
   const u = new URL(String(input instanceof Request ? input.url : input));
@@ -27,6 +28,11 @@ globalThis.fetch = (async (input: any, init?: any) => {
   const headers = new Headers(init?.headers);
   if (headers.get("x-api-key") !== "sk_test_secret") return new Response(JSON.stringify({ message: "Unauthorized" }), { status: 401 });
   if (mpDown) return new Response("{}", { status: 503 });
+  if (u.pathname === "/platform/v1/sessions") { // like the real sandbox on 26 Nov 2026, until MoonPay switches it on
+    if (!sessionsOn) return new Response(JSON.stringify({ code: "not_found", message: "Not found" }), { status: 404 });
+    sessionBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return Response.json({ sessionToken: "sess_test_123" });
+  }
   const one = u.pathname.match(/^\/platform\/v1\/transactions\/([^/]+)$/);
   if (one) return mp.has(one[1]) ? Response.json(mp.get(one[1])) : new Response(JSON.stringify({ message: "Not found" }), { status: 404 });
   if (u.pathname === "/platform/v1/transactions") {
@@ -67,6 +73,12 @@ expect("...one changed character is not", moonpay.verifySignature(b.replace("x",
 expect("...nor another key's signature", moonpay.verifySignature(b, sign(b, "wk_test_other"), "wk_test_hooks").why, "signature does not match");
 expect("...nor a missing or broken header", [moonpay.verifySignature(b, undefined, "k").why, moonpay.verifySignature(b, "t=1,s=zz", "k").why], ["no Moonpay-Signature-V2 header", "malformed signature header"]);
 expect("...nor one signed an hour in the future", moonpay.verifySignature(b, sign(b, "wk_test_hooks", Math.floor(Date.now() / 1000) + 3600), "wk_test_hooks").why, "signed in the future");
+
+// ---------- MoonPay's buying session ----------
+expect("while MoonPay has not switched buying on, the customer is told so in plain words", await moonpay.createSession("ada", "ada@example.test", "203.0.113.7").then(() => "started", (e: Error) => e.message), "MoonPay has not switched on buying in your own screens for this account yet.");
+sessionsOn = true;
+expect("once it has: a session for the customer's device, under the customer's reference", [await moonpay.createSession("ada", "ada@example.test", "203.0.113.7"), sessionBodies[0]?.deviceIp, /^cus_[0-9a-f]{24}$/.test(sessionBodies[0]?.externalCustomerId)], [{ sessionToken: "sess_test_123" }, "203.0.113.7", true]);
+expect("no session without the device's address", await moonpay.createSession("ada", "ada@example.test", "").then(() => "started", (e: Error) => e.message), "Your connection's address could not be read; reload the page and try again.");
 
 // ---------- starting a purchase ----------
 await store.kvSet("moonpay-wallet:ada", { address: "WalletAda1111", chain: "solana", via: "test", at: Date.now() });
