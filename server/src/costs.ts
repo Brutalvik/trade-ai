@@ -22,7 +22,8 @@ const KEEP_MS = 60 * 60_000; // a measured curve stands in for this long when Ju
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : hi));
 
 // cost of a round trip of `usd`, in % = basePct + perUsdPct x usd, plus the network fee (a fixed amount)
-export type CostCurve = { basePct: number; perUsdPct: number; source: "jupiter" | "depth"; at: number };
+// upTo = the largest size a measured curve was measured for (curves kept from before this was recorded have none).
+export type CostCurve = { basePct: number; perUsdPct: number; source: "jupiter" | "depth"; at: number; upTo?: number };
 export type Cost = { pct: number; usd: number; source: CostCurve["source"] };
 
 // From the pool's depth: each side of the pool holds about half its liquidity, so a trade of S
@@ -70,6 +71,12 @@ async function measure(mint: string, usd: number): Promise<number> {
 
 const curves = new Map<string, CostCurve>();
 const pending = new Map<string, Promise<CostCurve>>();
+// A measured curve is a straight line through two sizes. Up to the larger one (and a little past
+// it) it is a measurement; far past it, a guess. Since auto-pick agents price a coin before they
+// take it, one agent's measurement is read by others with different budgets: a curve measured for
+// a small agent is measured again when an agent with much more money asks.
+export const CURVE_REACH = 1.5;
+export const curveCovers = (c: CostCurve, funds: number) => !(c.upTo && funds > c.upTo * CURVE_REACH);
 // The cost curve for a coin: measured on Jupiter (two sizes), remembered for ten minutes.
 // `funds` = the largest amount that may be traded; `liquidityUsd` is used when Jupiter can't be asked;
 // `saved` = a curve measured earlier and kept with the agent (another server copy may have measured it).
@@ -77,7 +84,7 @@ export async function costCurve(mint: string | undefined, liquidityUsd: number, 
   if (!mint) return depthCurve(liquidityUsd);
   if (saved?.source === "jupiter" && saved.at > (curves.get(mint)?.at ?? 0)) curves.set(mint, saved);
   const hit = curves.get(mint);
-  if (hit && Date.now() - hit.at < CURVE_TTL_MS) return hit;
+  if (hit && Date.now() - hit.at < CURVE_TTL_MS && curveCovers(hit, funds)) return hit;
   if (!pending.has(mint)) {
     pending.set(
       mint,
@@ -88,7 +95,7 @@ export async function costCurve(mint: string | undefined, liquidityUsd: number, 
           const pSmall = await measure(mint, small);
           const pBig = await measure(mint, big);
           const perUsdPct = Math.max(0, (pBig - pSmall) / (big - small));
-          const c: CostCurve = { basePct: clamp(pSmall - perUsdPct * small, 0.05, 25), perUsdPct, source: "jupiter", at: Date.now() };
+          const c: CostCurve = { basePct: clamp(pSmall - perUsdPct * small, 0.05, 25), perUsdPct, source: "jupiter", at: Date.now(), upTo: big };
           curves.set(mint, c);
           if (curves.size > 300) for (const k of [...curves.keys()].slice(0, 100)) curves.delete(k);
           return c;

@@ -10,7 +10,9 @@
     "test:engine": "tsx test/run.mts engine",
     "test:all": "tsx test/run.mts all",
     "backtest": "tsx src/backtest/run.ts",
-    "backtest:fetch": "tsx src/backtest/fetch.ts"
+    "backtest:fetch": "tsx src/backtest/fetch.ts",
+    "backtest:pick": "tsx src/backtest/pick.ts",
+    "backtest:list": "tsx src/backtest/fetch-list.ts"
   },
   "keywords": [],
   "author": "",

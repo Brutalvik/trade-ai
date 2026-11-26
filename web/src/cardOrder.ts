@@ -24,6 +24,17 @@ export function agentMoney(slot: Slot, state: Money) {
   return { since, pos, trades, sells, realized, pnl };
 }
 
+// The list must never rearrange itself under the pointer: a click meant for one card's Stop would
+// land on another card's. So while the pointer is moving over the cards, or a finger is on them
+// (and for a moment after), the cards stay where they are: those shown keep their places, and a
+// card that is new is added after them. The order by profit is taken up again at the next refresh.
+export const HOLD_MS = 1500;
+export function heldOrder<S extends { id: string }>(shownIds: string[], wanted: S[]): S[] {
+  const byId = new Map(wanted.map((s) => [s.id, s] as const));
+  const kept = shownIds.map((id) => byId.get(id)).filter((s): s is S => !!s);
+  return [...kept, ...wanted.filter((s) => !shownIds.includes(s.id))];
+}
+
 export function cardOrder<S extends Slot>(slots: S[], state: Money): S[] {
   const cents = (v: number) => (Number.isFinite(v) ? Math.round(v * 100) : 0);
   return slots

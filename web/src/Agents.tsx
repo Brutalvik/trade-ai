@@ -10,7 +10,7 @@ import { findCoinPair } from "./CoinList";
 import { MaCrossChips } from "./MaCross";
 import { allBots, api, fmtPrice, fmtUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type CheckedOrder, type FcKey, type OrderPrediction, type PairInfo } from "./api";
 import { tradeTone } from "./tradeTone";
-import { agentMoney, cardOrder } from "./cardOrder";
+import { agentMoney, cardOrder, heldOrder, HOLD_MS } from "./cardOrder";
 
 const DEFAULT_BUDGET = 1000;
 type Notify = (m: string, bad?: boolean) => void;
@@ -82,7 +82,14 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, r
   const fullMsg = `All ${limit} agent${limit > 1 ? "s are" : " is"} running. Stop one first${limit < 10 ? ", or see Plans for more" : ""}.`;
   // The cards in a trade first, the highest profit at the top (cardOrder.ts). When the order
   // changes, each card slides from where it was to its new place, so the eye can follow it.
-  const cards = cardOrder(running, state);
+  // ...but never under the pointer: while it moves over the cards, or a finger is on them, they
+  // keep their places (heldOrder), so a click meant for one card's Stop cannot land on another's.
+  const pointerAt = useRef(0);
+  const shownIds = useRef<string[]>([]);
+  const byProfit = cardOrder(running, state);
+  const cards = Date.now() - pointerAt.current < HOLD_MS ? heldOrder(shownIds.current, byProfit) : byProfit;
+  shownIds.current = cards.map((b) => b.id);
+  const pointing = () => { pointerAt.current = Date.now(); };
   const cardKey = cards.map((b) => b.id).join(",");
   const listRef = useRef<HTMLDivElement>(null);
   const seen = useRef({ key: "", tops: new Map<string, number>() });
@@ -142,7 +149,7 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, r
         </div>
       ) : null}
       {running.length ? (
-        <div className="agent-list" ref={listRef}>
+        <div className="agent-list" ref={listRef} onPointerMove={pointing} onPointerDown={pointing}>
           {cards.map((b) => <AgentCard key={b.id} slot={b} state={state} notify={notify} refresh={refresh} onOpen={onOpen} onDetails={() => setOpenId(b.id)} />)}
         </div>
       ) : (
@@ -516,7 +523,7 @@ function AgentModal({ slot, state, notify, refresh, onOpen, onClose }: { slot: B
         ) : null}
         {a.isAuto ? (
           <div className="agent-learned">
-            <b>Auto-pick: on.</b> This agent takes the best coin on the scouts' list that none of your other agents is on{a.cfg?.autoStrict ? " (only coins that pass every scout check)" : ""}, and chooses again after every trade. If its coin gives it no order to place for 10 minutes and another coin is free, it moves on. Choosing costs no AI tokens.
+            <b>Auto-pick: on.</b> This agent takes the best coin on the scouts' list that none of your other agents is on{a.cfg?.autoStrict ? " (only coins that pass every scout check)" : ""}{a.cfg?.autoMaxCostPct === 0 ? "" : `, passing over any coin where buying and then selling its money would cost more than ${a.cfg?.autoMaxCostPct ?? 1.5}%`}, and chooses again after every trade. If its coin gives it no order to place for 10 minutes and another coin is free, it moves on. With no coin it can take, it waits. Choosing costs no AI tokens.
           </div>
         ) : null}
         {a.gate && !a.pos ? <GateBox a={a} notify={notify} refresh={refresh} /> : null}
@@ -716,6 +723,7 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
         {auto ? (
           <>
             <p className="muted small">Your agents choose their own coins. Each one takes <b>the best coin on the scouts' list below that none of your other agents is on</b>, and from there works like any agent: its AI decides when to buy and sell. <b>After every trade it chooses again</b>, and if its coin gives it no order to place for 10 minutes while another coin is free, it moves on. Choosing a coin costs no AI tokens.</p>
+            <p className="muted small"><b>A coin that is too expensive for an agent's budget is passed over.</b> Before it takes a coin, an agent measures what buying and then selling its whole budget there would cost (the pool's fees, and the price its own trade moves). Over 1.5%, it takes the next coin instead; with none it can afford, it waits, and its AI is not asked. A smaller budget can afford more coins, because a small trade moves the price less.</p>
             {!canAuto ? (
               <div className="agent-learned">Auto-pick is included from the Pro plan. <button className="link-btn" onClick={access.openPlans}>See plans</button></div>
             ) : freeCount < 1 ? (
@@ -815,7 +823,7 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
             })}
           </div>
         )}
-        <p className="muted tiny">Scores come from eight rule-based scouts (trend, volume, real traders, holders, dev wallet, liquidity, momentum, age). They are not advice, and a high score is not a promise. Hover a row for each scout's reading.{auto ? " The marks show where your agents would go if they started now; a coin one of your other agents is on is passed over, and the list changes from minute to minute." : ""}</p>
+        <p className="muted tiny">Scores come from eight rule-based scouts (trend, volume, real traders, holders, dev wallet, liquidity, momentum, age). They are not advice, and a high score is not a promise. Hover a row for each scout's reading.{auto ? " The marks show where your agents would go if they started now; a coin one of your other agents is on is passed over, so is a coin that turns out too expensive for the agent's budget (measured when the agent looks, so it is not marked here), and the list changes from minute to minute." : ""}</p>
           </>
         )}
       </div>

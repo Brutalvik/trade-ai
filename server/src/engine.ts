@@ -18,7 +18,7 @@ import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate,
 import { learn, type Learned, type Watch } from "./learn.js";
 import { maView, type MaView } from "./macross.js";
 import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitCheck, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck, type SideCost, type StopAction } from "./rules.js";
-import { costAt, costCurve, knownCurve, sizeUnderCap, type CostCurve } from "./costs.js";
+import { costAt, costCurve, curveCovers, knownCurve, sizeUnderCap, type CostCurve } from "./costs.js";
 
 import { noteCommunityBuy } from "./lists.js";
 
@@ -124,6 +124,7 @@ export type BotConfig = {
   // after every trade (see "Auto-pick agents" below). pool and symbol are empty while it has none.
   autoPick?: boolean;
   autoStrict?: boolean; // Auto-pick: only coins that pass every scout check (default: those first, then the next best that are fit to trade)
+  autoMaxCostPct?: number; // Auto-pick: pass over a coin where buying and selling all the agent's money would cost more than this % (default 1.5; 0 = take any coin)
   mint?: string; // Auto-pick: the token it is on now (the scouts list coins by token)
   agentMaxPerDay?: number; // Agents mode: most buys per day (default 6)
   agentAiCheck?: boolean; // Agents mode: one AI check before each buy (default on)
@@ -234,9 +235,14 @@ type State = {
     // Auto-pick agent: what its coin choice is doing. note = why it has no coin (shown on its card);
     // nextAt = when it looks at the list again; idleSince = since when it has had no live order on
     // its coin; again = its trade closed, so it chooses again; picks = coins chosen since it started.
-    auto?: { note: string; at: number; nextAt?: number; idleSince?: number; again?: boolean; picks?: number; pickedAt?: number };
+    // key = the kind of reason the note gives (its log is written again only when that changes,
+    // not when a count in the text moves).
+    auto?: { note: string; at: number; key?: string; nextAt?: number; idleSince?: number; again?: boolean; picks?: number; pickedAt?: number };
     // Auto-pick (shared by the account's agents): token -> not to be picked again before this time.
     autoSkip?: Record<string, number>;
+    // Auto-pick (shared by the account's agents): token -> what a round trip was last measured to
+    // cost there, kept for an hour. What one agent measured, no other agent (on any server copy) measures again.
+    autoCost?: Record<string, CostCurve>;
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -426,7 +432,7 @@ export const currentAccountKey = () => acct().key;
 const botAls = new AsyncLocalStorage<string>();
 export const currentBotId = () => botAls.getStore() ?? "1";
 export const withBot = <T>(id: string, fn: () => T): T => botAls.run(id, fn);
-const SHARED_BOT_KEYS = new Set(["coinStats", "day", "dailyOverride", "autoSkip"]);
+const SHARED_BOT_KEYS = new Set(["coinStats", "day", "dailyOverride", "autoSkip", "autoCost"]);
 const botViews = new WeakMap<object, BotState>();
 function slotOf(st: State, id: string): BotSlot | undefined {
   return id === "1" ? undefined : st.bots?.find((b) => b.id === id);
@@ -1474,7 +1480,7 @@ function startBotHere(cfg: BotConfig) {
       : isAuto(cfg)
       ? `Bot started in AUTO-PICK mode (${cfg.autoChain === "all" ? "all chains" : cfg.autoChain}). Each round the AI checks the top ${cfg.autoCandidates} coins. Cash $${state.cash.toFixed(2)}.`
       : isAutoAgent(cfg)
-        ? `Auto-pick agent started with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. It takes the best coin on the scouts' list that no other agent of yours is on${cfg.autoStrict ? " (only coins that pass every scout check)" : ""}, and chooses again after every trade.`
+        ? `Auto-pick agent started with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. It takes the best coin on the scouts' list that no other agent of yours is on${cfg.autoStrict ? " (only coins that pass every scout check)" : ""}${autoCostMax(cfg) > 0 ? `, passing over a coin where buying and selling its money would cost more than ${autoCostMax(cfg)}%` : ""}, and chooses again after every trade.`
       : isCoinAgent(cfg)
         ? `Agent started on ${cfg.symbol} with a $${cfg.budgetUsd ?? AGENT_BUDGET_DEFAULT} budget. Its AI is reading the charts and deciding now.`
       : `Bot started on ${cfg.symbol} (${cfg.tf}). Paper mode. Cash $${state.cash.toFixed(2)}.${cfg.allowRisky ? " RISKY MODE: it will also buy while the coin is falling (you accepted the risk). Trades are capped at 25% of the account, with a 5-minute cool-down after a loss." : ""}`,
@@ -2142,12 +2148,56 @@ function agentSpent(cfg: BotConfig): boolean {
 // or over its minimum). From there it is an ordinary agent on that coin: its AI plans, the order
 // check judges, the same exits apply. It chooses again
 //  - after every trade (a coin it lost on is left alone for half an hour),
-//  - when the scouts rule its coin out, and
+//  - when the scouts rule its coin out,
+//  - when its coin is too expensive for its money (see AUTO_MAX_COST_PCT), and
 //  - when its coin has given it no live order for AUTO_IDLE_MS, if another coin is free
 //    (the coin it leaves is not tried again for half an hour, so agents do not swap coins in circles).
 // With no coin to take it waits, at no AI cost, and looks at the list again every half minute.
 // Choosing a coin costs nothing; the AI is asked only once the agent is on a coin, as always.
 export const AUTO_IDLE_MS = 10 * 60_000;
+// A coin is too expensive for an auto-pick agent when buying and then selling everything the agent
+// trades with would cost more than this % (the pool's fees, and the price the trade itself moves,
+// both ways: costs.ts). The agent passes such a coin over and takes the best one it can afford;
+// with none, it waits. The size cap (AGENT_COST_CAP_PCT) does not do this job: it makes the trade
+// smaller, the cost stays near the cap, and an order then has to be right well over half the time.
+// Measured on 3,819 buys with no skill over three sets of real prices (npm run backtest:pick):
+// the scouts' order among coins costing at most 1.5% did better per buy than the scouts' order
+// alone on all three (-1.17 / +2.76 / +0.09% against -2.49 / +0.53 / -0.76%).
+// It is not a profit rule: each trade starts less far behind, nothing more.
+// The cost is for the agent's own money, so a small agent can take coins a large one cannot.
+// Only a measured cost counts (two-way Jupiter quotes). When Jupiter cannot be asked no coin is
+// passed over: the estimate from a pool's depth reads far too high for a coin that trades in
+// several pools, and an agent never refuses or leaves a coin on a guess.
+export const AUTO_MAX_COST_PCT = 1.5;
+// The line is for choosing a coin. An agent leaves the coin it is on for its cost only when that
+// is clearly over the line (by this many points): a coin priced right at the line must not send
+// its agent away and back again (every arrival asks the AI for a new plan), and an agent that
+// was on a coin just over the line when this rule arrived is not pulled off it.
+export const AUTO_COST_SLACK_PCT = 0.5;
+const AUTO_COST_KEEP_MS = 60 * 60_000; // how long a measurement counts when a coin is chosen
+// Jupiter answers one request every two seconds for everything the app asks of it (data.ts), and
+// measuring a coin is four requests. So a look at the list measures a few coins at most and goes
+// on from there half a minute later: pricing coins must not hold up the agents' own looks.
+const AUTO_PRICE_PER_LOOK = 2;
+const AUTO_PRICE_LOOK_MS = 20_000; // no new measurement once a look has taken this long
+const AUTO_PRICE_WAIT_MS = 20_000; // the longest one measurement is waited for (it takes about 8 seconds when nothing else is asking)
+// ...and only one coin is being measured for choosing at any moment, for all agents of all
+// accounts on this server copy: an agent that finds another measurement under way goes on at its
+// next look. So pricing takes at most every other turn in Jupiter's queue, however many agents wait.
+let pricingNow = 0;
+const autoCostMax = (cfg: BotConfig) => (isOff(cfg, "autoMaxCostPct") ? 0 : Math.max(0, cfg.autoMaxCostPct ?? AUTO_MAX_COST_PCT));
+// The most the coin an agent is on may cost: the line plus the slack. 0 = the rule is off.
+const costLimit = (cfg: BotConfig) => { const max = autoCostMax(cfg); return max > 0 ? max + AUTO_COST_SLACK_PCT : 0; };
+const usd0 = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
+const pct1 = (v: number) => `${v.toFixed(1)}%`;
+const nameList = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "");
+type Dear = { symbol: string; pct: number };
+// pct: what a round trip of `funds` costs there; null = it could not be measured.
+type CoinCost = { pct: number | null; funds: number; max: number };
+const hasLiveOrder = (cfg: BotConfig, now = Date.now()) => {
+  const sig = state.lastSignal;
+  return !!sig && sig.pool === cfg.pool && now < sig.consensus.expiresAt && sig.consensus.stance !== "AVOID" && sig.consensus.orders.some((o) => !o.warning);
+};
 const AUTO_RESCAN_MS = 30_000;
 const AUTO_SKIP_LOSS_MS = 30 * 60_000; // after a losing trade on it
 const AUTO_SKIP_IDLE_MS = 30 * 60_000; // after leaving it without a trade
@@ -2175,17 +2225,81 @@ function otherAgentMints() {
   for (const p of st.positions) if (p.tokenMint && !(p.source === "bot" && (p.botId ?? "1") === me)) out.add(p.tokenMint);
   return out;
 }
-// What the card shows while the agent has no coin (written to its log only when it changes).
-function autoNote(text: string) {
+// Keeps a measured cost with the account, for all of its auto-pick agents on every server copy.
+function rememberCost(mint: string | undefined, curve: CostCurve | null | undefined) {
+  if (!mint || curve?.source !== "jupiter") return;
+  const known = (state.bot.autoCost ??= {});
+  if (known[mint]?.at === curve.at) return;
+  known[mint] = curve;
+  const mints = Object.keys(known);
+  if (mints.length > 80) for (const m of mints.sort((a, b) => known[a].at - known[b].at).slice(0, mints.length - 80)) delete known[m];
+  acct().dirty = true;
+}
+// What a round trip of `funds` is known to cost in a coin: from a measurement of the last hour, by
+// this server copy or by any of the account's agents. null = not known. A measurement taken for
+// a much smaller trade only says "at least this much" about a larger one, which settles it when
+// even that is over the line.
+function knownCost(mint: string, funds: number, max: number): number | null {
+  const curve = knownCurve(mint, 0, state.bot.autoCost?.[mint]);
+  if (curve.source !== "jupiter" || Date.now() - curve.at > AUTO_COST_KEEP_MS) return null;
+  rememberCost(mint, curve);
+  if (curveCovers(curve, funds)) return costAt(curve, funds);
+  const atLeast = costAt(curve, curve.upTo ?? funds);
+  return atLeast > max ? atLeast : null;
+}
+// Measures it. "no" = Jupiter could not be asked (the coin is then not refused, as before this
+// rule). "late" = no answer in time (the look stops there and goes on next time).
+async function priceCoin(mint: string, liquidityUsd: number, funds: number): Promise<number | "no" | "late"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = costCurve(mint, liquidityUsd, funds, state.bot.autoCost?.[mint]);
+  pricingNow++; // until the measurement itself is over, also when this look stops waiting for it
+  const over = () => { pricingNow--; };
+  void work.then(over, over);
+  const curve = await Promise.race([
+    work,
+    new Promise<null>((ok) => { timer = setTimeout(() => ok(null), AUTO_PRICE_WAIT_MS); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!curve) return "late";
+  if (curve.source !== "jupiter") return "no";
+  rememberCost(mint, curve);
+  return costAt(curve, funds);
+}
+// The same for the coin the agent is on, from the measurement kept with it (every look of its AI
+// measures it). null = the rule is off for it, or nothing was measured within the hour.
+function ownCost(cfg: BotConfig): { pct: number; funds: number; max: number } | null {
+  const max = autoCostMax(cfg), funds = agentSpendable(cfg), curve = state.bot.costCurve;
+  if (!(max > 0) || !(funds > 0) || curve?.source !== "jupiter" || Date.now() - curve.at > AUTO_COST_KEEP_MS) return null;
+  return { pct: costAt(curve, funds), funds, max };
+}
+// What the card shows while the agent has no coin. Its log is written when the kind of reason
+// changes (`key`), not each time a count in the text moves.
+function autoNote(text: string, key = text) {
   const au = (state.bot.auto ??= { note: "", at: Date.now() });
   au.nextAt = Date.now() + AUTO_RESCAN_MS;
   if (au.note === text) return;
+  const sameKind = au.note !== "" && (au.key ?? au.note) === key;
   au.note = text;
+  au.key = key;
+  acct().dirty = true;
+  if (sameKind) return;
   au.at = Date.now();
   log(`Auto-pick: ${text}`);
 }
+// The agent lets its coin go and waits for one it can take (it holds no trade).
+function autoRelease(cfg: BotConfig) {
+  Object.assign(cfg, { pool: "", symbol: "" });
+  delete cfg.mint;
+  delete cfg.imageUrl;
+  state.lastSignal = null;
+  state.bot.askNow = false;
+  const au = (state.bot.auto ??= { note: "", at: Date.now() });
+  delete au.again;
+  delete au.idleSince;
+  acct().dirty = true;
+}
 // Puts the agent on a coin: from here it is an ordinary agent on it, starting from a fresh AI plan.
-function autoAssign(cfg: BotConfig, c: AgentCoin, pair: PairInfo, why: string) {
+function autoAssign(cfg: BotConfig, found: { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] }, why: string) {
+  const { coin: c, pair, cost, dear } = found;
   const same = cfg.pool === pair.pool;
   Object.assign(cfg, { chain: pair.chain, pool: pair.pool, symbol: pair.symbol, mint: c.mint });
   const img = c.icon ?? pair.imageUrl;
@@ -2199,7 +2313,7 @@ function autoAssign(cfg: BotConfig, c: AgentCoin, pair: PairInfo, why: string) {
   state.bot.freshAfter = Date.now();
   if (!same) {
     state.bot.learned = undefined;
-    state.bot.costCurve = undefined;
+    state.bot.costCurve = state.bot.autoCost?.[c.mint]; // what was measured for this coin, if anything
     state.bot.quality = undefined;
     state.bot.aiNotes = [];
     state.bot.lastFiredAt = undefined;
@@ -2208,12 +2322,20 @@ function autoAssign(cfg: BotConfig, c: AgentCoin, pair: PairInfo, why: string) {
   const au = state.bot.auto ?? { note: "", at: Date.now() };
   state.bot.auto = { note: "", at: Date.now(), pickedAt: Date.now(), picks: (au.picks ?? 0) + 1 };
   const passes = !c.vetoes.length && c.total >= AGENT_PASS;
-  log(`Auto-pick: ${why}${same ? `${pair.symbol} is still the best coin that is free, so it stays on it` : `chose ${pair.symbol}`} (the scouts' score ${c.total} of 100${passes ? ", passes every scout check" : c.timing.length ? `; the scouts' timing check says "${c.timing[0]}", so its AI decides when to buy` : `, under the ${AGENT_PASS} that passes; fit to trade`}). Its AI reads the charts now.`, "good");
+  const costNote = `${cost && cost.pct !== null ? ` Buying and selling its ${usd0(cost.funds)} there costs about ${pct1(cost.pct)}.` : ""}${cost && dear.length ? ` It passed over ${nameList(dear.slice(0, 4).map((d) => `${d.symbol} (${pct1(d.pct)})`))}${dear.length > 4 ? ` and ${dear.length - 4} more` : ""}, higher on the list: more than the ${cost.max}% it accepts.` : ""}`;
+  log(`Auto-pick: ${why}${same ? `${pair.symbol} is still the best coin that is free, so it stays on it` : `chose ${pair.symbol}`} (the scouts' score ${c.total} of 100${passes ? ", passes every scout check" : c.timing.length ? `; the scouts' timing check says "${c.timing[0]}", so its AI decides when to buy` : `, under the ${AGENT_PASS} that passes; fit to trade`}).${costNote} Its AI reads the charts now.`, "good");
   acct().dirty = true;
 }
 // The best coin this agent could take right now (not `except`), or null with the reason.
 // failed = the list itself could not be read (as opposed to: read, and nothing on it is free).
-async function autoFind(except?: string): Promise<{ coin: AgentCoin; pair: PairInfo } | { none: string; failed?: boolean }> {
+// more = the look stopped while coins were still to be priced: it goes on from there next time.
+// A coin that is returned stays claimed for this agent (autoBusy) until the caller has taken it
+// or let it be: the caller must pass the result to autoUnclaim(). A coin is claimed before
+// anything is awaited about it, so two agents looking at the same moment never get the same coin,
+// and never measure the same coin twice.
+type AutoFound = { coin: AgentCoin; pair: PairInfo; cost?: CoinCost; dear: Dear[] } | { none: string; key?: string; failed?: boolean; more?: boolean };
+const autoUnclaim = (found: AutoFound) => { if ("coin" in found) acct().autoBusy?.delete(found.coin.mint); };
+async function autoFind(except?: string): Promise<AutoFound> {
   const now = Date.now();
   const scan = await scanAgents().catch(() => null);
   const cfg = state.bot.config;
@@ -2221,28 +2343,57 @@ async function autoFind(except?: string): Promise<{ coin: AgentCoin; pair: PairI
   if (!scan?.coins.length) return { none: "the scouts' list could not be loaded just now. It tries again in half a minute", failed: true };
   const skip = (state.bot.autoSkip ??= {});
   for (const [m, until] of Object.entries(skip)) if (until < now) delete skip[m];
+  const known = state.bot.autoCost;
+  if (known) for (const [m, c] of Object.entries(known)) if (now - c.at > AUTO_COST_KEEP_MS) { delete known[m]; acct().dirty = true; }
   const list = autoCandidates(scan, cfg);
   const busy = (acct().autoBusy ??= new Set<string>());
-  let taken = 0, rested = 0;
+  const max = autoCostMax(cfg), funds = agentSpendable(cfg);
+  const rule = max > 0 && funds > 0;
+  const lookFrom = Date.now(); // (the list is read by now: the time a look may spend measuring counts from here)
+  const dear: Dear[] = [];
+  let taken = 0, rested = 0, measured = 0, more = false;
   for (const c of list) {
     if (c.mint === except) continue;
     if (skip[c.mint]) { rested++; continue; }
     if (otherAgentMints().has(c.mint) || busy.has(c.mint)) { taken++; continue; }
     busy.add(c.mint);
+    let mine = false;
     try {
+      // Too expensive for this agent's money? Then its trade would start too far behind (AUTO_MAX_COST_PCT).
+      let pct: number | null = rule ? knownCost(c.mint, funds, max) : null;
+      if (rule && pct === null) {
+        if (measured >= AUTO_PRICE_PER_LOOK || pricingNow > 0 || Date.now() - lookFrom > AUTO_PRICE_LOOK_MS) { more = true; break; }
+        measured++;
+        const got = await priceCoin(c.mint, c.liquidity, funds);
+        if (!state.bot.running) return { none: "" };
+        if (got === "late") { more = true; break; }
+        pct = got === "no" ? null : got;
+      }
+      if (pct !== null && pct > max) { dear.push({ symbol: c.symbol, pct }); continue; }
       const pair = await bestPool(c.mint).catch(() => null);
       if (!state.bot.running) return { none: "" };
       if (!pair?.pool) { skip[c.mint] = now + AUTO_SKIP_NOPOOL_MS; rested++; continue; }
       if (otherBotPools().has(pair.pool) || acct().state.positions.some((p) => p.pool === pair.pool && !(p.source === "bot" && (p.botId ?? "1") === currentBotId()))) { taken++; continue; }
-      return { coin: c, pair };
+      mine = true;
+      return { coin: c, pair, cost: rule ? { pct, funds, max } : undefined, dear };
     } finally {
-      busy.delete(c.mint);
+      if (!mine) busy.delete(c.mint);
     }
   }
+  const tooDear = dear.length ? ` Too expensive means that buying and selling there would cost more than ${max}% of the trade (${dear.slice(0, 4).map((d) => d.symbol).join(", ")}${dear.length > 4 ? ` and ${dear.length - 4} more` : ""}).` : "";
+  if (more) return { none: `it is finding out what the free coins on the list cost to trade with its ${usd0(funds)}${dear.length ? `: ${dear.length} so far ${dear.length === 1 ? "is" : "are"} too expensive.${tooDear}` : "."} It goes on in half a minute, at no AI cost`, key: "pricing", more: true };
   const n = list.filter((c) => c.mint !== except).length;
+  const wait = "It waits, at no AI cost, and looks again every half minute";
+  if (!n) return { none: `no coin ${cfg.autoStrict ? "passes every scout check" : "is fit to trade"} right now (${scan.scanned} scanned). ${wait}`, key: "none" };
   const kind = cfg.autoStrict ? (n === 1 ? "passes every scout check" : "pass every scout check") : n === 1 ? "is fit to trade" : "are fit to trade";
-  const where = taken && rested ? `with your other agents (${taken}) or resting after a recent try (${rested})` : taken ? "with your other agents" : "resting after a recent try";
-  return { none: !n ? `no coin ${cfg.autoStrict ? "passes every scout check" : "is fit to trade"} right now (${scan.scanned} scanned). It waits, at no AI cost, and looks again every half minute` : `the ${n === 1 ? "one coin" : `${n} coins`} that ${kind} right now ${n === 1 ? "is" : "are"} ${where}. It waits, at no AI cost, and looks again every half minute` };
+  const several = [taken, rested, dear.length].filter((k) => k > 0).length > 1;
+  const count = (k: number) => (several ? ` (${k})` : "");
+  const parts = [taken ? `with your other agents${count(taken)}` : "", rested ? `resting after a recent try${count(rested)}` : "", dear.length ? `too expensive for its ${usd0(funds)}${count(dear.length)}` : ""].filter(Boolean);
+  const where = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}` : parts[0] ?? "not free";
+  return {
+    none: `the ${n === 1 ? "one coin" : `${n} coins`} that ${kind} right now ${n === 1 ? "is" : "are"} ${where}.${tooDear} ${wait}`,
+    key: `some|${taken ? "t" : ""}${rested ? "r" : ""}|${dear.map((d) => d.symbol).sort().join(",")}`,
+  };
 }
 // One check of an auto-pick agent that holds no trade. true = it has no coin (nothing more to do now).
 async function autoStep(cfg: BotConfig): Promise<boolean> {
@@ -2251,56 +2402,71 @@ async function autoStep(cfg: BotConfig): Promise<boolean> {
   if (cfg.pool && !au.again) {
     // Is its coin still worth staying on?
     const sig = state.lastSignal;
-    const liveOrder = !!sig && sig.pool === cfg.pool && now < sig.consensus.expiresAt && sig.consensus.stance !== "AVOID" && sig.consensus.orders.some((o) => !o.warning);
+    rememberCost(cfg.mint, state.bot.costCurve); // what its own looks measure, the account's other agents can read
+    const liveOrder = hasLiveOrder(cfg, now);
     if (liveOrder) {
       if (au.idleSince) { delete au.idleSince; acct().dirty = true; }
       return false;
     }
     if (!au.idleSince) { au.idleSince = now; acct().dirty = true; }
     const unfit = sig?.pool === cfg.pool && sig.gate?.kind === "scouts";
-    if (!unfit && now - au.idleSince < AUTO_IDLE_MS) return false;
+    // Its coin is too expensive for its money (as last measured for it).
+    const own = ownCost(cfg), limit = costLimit(cfg);
+    const dear = !!own && limit > 0 && own.pct > limit;
+    if (!unfit && !dear && now - au.idleSince < AUTO_IDLE_MS) return false;
     if (now < (au.nextAt ?? 0)) return false;
-    // Only if another coin is free: otherwise it stays where it is and keeps looking.
     const found = await autoFind(cfg.mint);
-    const cur = state.bot.config;
-    if (!cur || cur !== cfg || !state.bot.running) return false;
-    if ("none" in found) {
-      au.nextAt = Date.now() + 2 * AUTO_RESCAN_MS;
+    try {
+      const cur = state.bot.config;
+      if (!cur || cur !== cfg || !state.bot.running) return false;
+      const tooDear = dear && own ? `buying and selling its ${usd0(own.funds)} on ${cfg.symbol} costs about ${pct1(own.pct)}, more than the ${own.max}% it accepts` : "";
+      if ("none" in found) {
+        if (tooDear && found.none && !found.failed && !found.more) {
+          // Too expensive, and no coin it can take instead: it lets the coin go and waits, at no AI
+          // cost, rather than keep asking its AI about a coin whose trades start too far behind.
+          log(`Auto-pick: left ${cfg.symbol}: ${tooDear}. No other coin is free for it right now.`);
+          autoRelease(cfg);
+          autoNote(found.none, found.key);
+          return true;
+        }
+        // Otherwise only if another coin is free: it stays where it is and keeps looking.
+        (state.bot.auto ??= au).nextAt = Date.now() + (found.more ? 1 : 2) * AUTO_RESCAN_MS;
+        return false;
+      }
+      // (A coin left for its cost is not rested for the account's other agents: one with less money may well afford it.)
+      if (cfg.mint && !tooDear) (state.bot.autoSkip ??= {})[cfg.mint] = now + (unfit ? AUTO_SKIP_UNFIT_MS : AUTO_SKIP_IDLE_MS);
+      autoAssign(cfg, found, tooDear ? `${tooDear}, so it moved on and ` : unfit ? `the scouts ruled ${cfg.symbol} out, so it moved on and ` : `${cfg.symbol} gave it no order to place for ${Math.round((now - au.idleSince) / 60_000)} minutes, so it moved on and `);
       return false;
+    } finally {
+      autoUnclaim(found);
     }
-    if (cfg.mint) (state.bot.autoSkip ??= {})[cfg.mint] = now + (unfit ? AUTO_SKIP_UNFIT_MS : AUTO_SKIP_IDLE_MS);
-    autoAssign(cfg, found.coin, found.pair, unfit ? `the scouts ruled ${cfg.symbol} out, so it moved on and ` : `${cfg.symbol} gave it no order to place for ${Math.round((now - au.idleSince) / 60_000)} minutes, so it moved on and `);
-    return false;
   }
   if (!au.again && now < (au.nextAt ?? 0)) return true; // no coin, and it looked a moment ago
   // No coin yet, or its trade has closed: take the best coin that is free.
   const after = au.again ? "after its trade, " : "";
   const found = await autoFind();
-  const cur = state.bot.config;
-  if (!cur || cur !== cfg || !state.bot.running) return true;
-  if ("none" in found) {
-    if (cfg.pool && found.failed && !(cfg.mint && ((state.bot.autoSkip ?? {})[cfg.mint] ?? 0) > Date.now())) {
-      // Its trade closed but the list cannot be read: it carries on with the coin it has.
-      delete (state.bot.auto ??= au).again;
-      acct().dirty = true;
-      log(`Auto-pick: the scouts' list could not be loaded after its trade, so it stays on ${cfg.symbol} for now.`);
-      return false;
+  try {
+    const cur = state.bot.config;
+    if (!cur || cur !== cfg || !state.bot.running) return true;
+    if ("none" in found) {
+      if (cfg.pool && found.failed && !(cfg.mint && ((state.bot.autoSkip ?? {})[cfg.mint] ?? 0) > Date.now())) {
+        // Its trade closed but the list cannot be read: it carries on with the coin it has.
+        delete (state.bot.auto ??= au).again;
+        acct().dirty = true;
+        log(`Auto-pick: the scouts' list could not be loaded after its trade, so it stays on ${cfg.symbol} for now.`);
+        return false;
+      }
+      // Its trade closed and nothing is free (its own coin is resting after a loss, no longer
+      // qualifies, or is too expensive for what is left of its money): it lets the coin go and waits.
+      if (cfg.pool) autoRelease(cfg);
+      if (found.none) autoNote(found.none, found.key);
+      return true;
     }
-    if (cfg.pool) {
-      // Its trade closed and nothing is free (its own coin is resting after a loss, or no longer qualifies): it lets the coin go and waits.
-      Object.assign(cfg, { pool: "", symbol: "" });
-      delete cfg.mint;
-      delete cfg.imageUrl;
-      state.lastSignal = null;
-      state.bot.askNow = false;
-      delete (state.bot.auto ??= au).again;
-      acct().dirty = true;
-    }
-    if (found.none) autoNote(found.none);
-    return true;
+    autoAssign(cfg, found, after);
+    return false;
+  } finally {
+    autoUnclaim(found);
   }
-  autoAssign(cfg, found.coin, found.pair, after);
-  return false;
 }
 // Start several auto-pick agents at once, one per free agent slot, each with its own budget.
 // base = the settings every agent starts with (as the app sends for one agent).
@@ -2940,6 +3106,16 @@ async function tickBot(persist: boolean) {
           return;
         }
       }
+      // An auto-pick agent does not ask its AI about a coin that is too expensive for its money (as
+      // last measured for it): its next check moves it on, or lets the coin go (autoStep).
+      if (isAutoAgent(cfg)) {
+        const own = ownCost(cfg), limit = costLimit(cfg);
+        if (own && limit > 0 && own.pct > limit) {
+          if (hasLiveOrder(cfg)) log(`Its order on ${cfg.symbol} is dropped: buying and selling its ${usd0(own.funds)} there costs about ${pct1(own.pct)}, more than the ${own.max}% it accepts. It looks for another coin.`);
+          if (state.lastSignal) { state.lastSignal = null; acct().dirty = true; }
+          return;
+        }
+      }
       log(`Asking the AI for a new plan (${why})...`);
       save();
       await flush();
@@ -2948,6 +3124,19 @@ async function tickBot(persist: boolean) {
       } else {
         // An agent's plan is judged with what its own trade would really cost in this pool (costs.ts).
         const ac = isCoinAgent(cfg) ? await getPair(cfg.chain, cfg.pool).then((p) => agentCost(cfg, p)).catch(() => undefined) : undefined;
+        // The same with the cost measured just now: this is where a coin it took while Jupiter
+        // could not be asked is priced, and where a coin whose cost has since risen is caught. Its
+        // plan, if it had one, is dropped; the checks that follow return above, without a word.
+        if (ac && isAutoAgent(cfg) && ac.source === "jupiter") {
+          rememberCost(cfg.mint, state.bot.costCurve);
+          const limit = costLimit(cfg);
+          if (limit > 0 && ac.fullPct > limit) {
+            log(`The AI was not asked after all (no AI tokens spent): buying and selling its ${usd0(ac.funds)} on ${cfg.symbol} costs about ${pct1(ac.fullPct)} now, more than the ${autoCostMax(cfg)}% it accepts. It looks for another coin.`);
+            state.lastSignal = null;
+            acct().dirty = true;
+            return;
+          }
+        }
         const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg, why, ac), ...(ac ? { cost: ac } : {}) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         if (state.lastSignal?.gate) noteOnce(`gate:numbers:${Math.floor(Date.now() / 3_600_000)}`, `${cfg.symbol}: ${consensus.note} It looks again every 5 minutes, or at once on a real move.`, "bad");

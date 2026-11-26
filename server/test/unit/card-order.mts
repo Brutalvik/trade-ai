@@ -2,7 +2,7 @@
 // profit at the top, by the figure at the card's top right; the rest after them, in the order
 // they had. And the figure itself: closed trades since the agent started, plus the open trade now.
 import { expect, finish } from "../check.mts";
-const { agentMoney, cardOrder } = await import(new URL("../../../web/src/cardOrder.ts", import.meta.url).href);
+const { agentMoney, cardOrder, heldOrder, HOLD_MS } = await import(new URL("../../../web/src/cardOrder.ts", import.meta.url).href);
 
 const START = 1_000_000;
 const slot = (id: string, startedAt = START) => ({ id, bot: { startedAt, running: true } });
@@ -42,5 +42,15 @@ expect("a difference of a cent is enough", ids([slot("1"), slot("2")], { positio
 const before = four.map((s) => s.id).join();
 cardOrder(four, { positions, trades: [] });
 expect("the list handed in is left as it was", four.map((s) => s.id).join(), before);
+
+// While the pointer is on the cards they keep their places.
+const want = [slot("3"), slot("1"), slot("4"), slot("2")];
+const held = (shown: string[], wanted: { id: string }[]) => heldOrder(shown, wanted).map((s: { id: string }) => s.id);
+expect("under the pointer the cards stay where they are shown, whatever the order by profit has become", held(["1", "2", "3", "4"], want), ["1", "2", "3", "4"]);
+expect("a card whose agent has stopped drops out, the others keep their places", held(["1", "2", "3", "4"], [slot("3"), slot("4"), slot("2")]), ["2", "3", "4"]);
+expect("an agent that has just started is added after the cards already shown", held(["1", "2"], want), ["1", "2", "3", "4"]);
+expect("nothing shown yet: the order by profit", held([], want), ["3", "1", "4", "2"]);
+expect("the cards it returns are the current ones, not stale copies", heldOrder(["1"], want)[0] === want[1], true);
+expect("the cards are held for a moment after the pointer last moved (1.5 seconds)", HOLD_MS, 1500);
 
 finish();

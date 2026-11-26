@@ -69,6 +69,7 @@ const ENGINE: Job[] = [
   { name: "auto-pick-rotate", file: "engine/auto-pick.mts", env: { SC: "rotate" }, what: "auto-pick agents take different coins from the scouts' list; after a win an agent chooses again and starts with its budget, never more; after a loss it leaves that coin and trades on with what is left" },
   { name: "auto-pick-wait", file: "engine/auto-pick.mts", env: { SC: "wait" }, what: "auto-pick, only coins that pass every scout check: with too few, agents wait at no AI cost and take the next one that passes" },
   { name: "auto-pick-nolist", file: "engine/auto-pick.mts", env: { SC: "nolist" }, what: "the scouts' list stops answering: an auto-pick agent whose trade just closed carries on with its coin, and one with no coin waits" },
+  { name: "auto-pick-cost", file: "engine/auto-pick.mts", env: { SC: "cost" }, what: "an auto-pick agent passes over a coin that is too expensive for its money, waits when it can afford none, and leaves a coin that is clearly too expensive without asking its AI" },
   { name: "auto-pick-idle", file: "engine/auto-pick.mts", env: { SC: "idle" }, what: "an auto-pick agent whose coin gives it no order for ten minutes moves to a free coin, and stays if there is none" },
   { name: "locked-budgets", file: "engine/locked-budgets.mts", env: { SC: "win" }, what: "an agent's budget can't be spent by you or another agent" },
   { name: "stop-sticks", file: "engine/stop-sticks.mts", env: { SC: "win" }, what: "a Stop wins over an AI answer that arrives after it" },

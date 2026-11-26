@@ -18,7 +18,7 @@ globalThis.fetch = (async (input: any) => {
   const out = buying ? (R_COIN * inAmt) / (R_USD + inAmt) : (R_USD * inAmt) / (R_COIN + inAmt);
   return json({ inAmount: String(amount), outAmount: String(Math.floor(out * 1e6)), priceImpactPct: "0" });
 }) as typeof fetch;
-const { costAt, costCurve, depthCurve, knownCurve, sizeUnderCap, NETWORK_FEE_USD, __resetCostsForTests } = await import(new URL("../../src/costs.ts", import.meta.url).href);
+const { costAt, costCurve, curveCovers, depthCurve, knownCurve, sizeUnderCap, NETWORK_FEE_USD, __resetCostsForTests } = await import(new URL("../../src/costs.ts", import.meta.url).href);
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail: unknown = "") => { ok ? pass++ : fail++; console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail === "" ? "" : `: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`}`); };
@@ -61,6 +61,23 @@ const kept = await costCurve("CoinMint1111", 400_000, 1000, c);
 expect("a curve saved with the agent is used by a fresh server copy without measuring again", [kept.source, kept.at === c.at, quotes - before], ["jupiter", true, 0]);
 __resetCostsForTests();
 expect("...and can be read at buy time too", knownCurve("CoinMint1111", 400_000, c).at === c.at, true);
+
+// One agent's measurement is read by others with different budgets (auto-pick agents price a
+// coin before they take it). A line through two sizes is a measurement up to the larger one.
+jupiterUp = true;
+__resetCostsForTests();
+const q0 = quotes;
+const small = await costCurve("SizeMint3333", 400_000, 250);
+expect("a curve remembers the largest size it was measured for", [small.source, small.upTo, quotes - q0], ["jupiter", 250, 4]);
+expect("it covers that size and a little more (1.5 times), not a much larger trade", [curveCovers(small, 100), curveCovers(small, 375), curveCovers(small, 376), curveCovers(small, 1000)], [true, true, false, false]);
+expect("an agent with a little more money reads the same measurement", [(await costCurve("SizeMint3333", 400_000, 370)).at === small.at, quotes - q0], [true, 4]);
+const big = await costCurve("SizeMint3333", 400_000, 1000);
+expect("an agent with much more money has it measured again, for its own size", [big.upTo, big.at >= small.at, quotes - q0], [1000, true, 8]);
+check("...and gets the pool's true cost at that size, not a line drawn out from small trades", Math.abs(costAt(big, 1000) - (truth(1000) + ((2 * NETWORK_FEE_USD) / 1000) * 100)) < 0.1, `${costAt(big, 1000)}% vs ${r2(truth(1000))}% + network`);
+expect("the smaller agent then reads the larger measurement: no more quotes", [(await costCurve("SizeMint3333", 400_000, 250)).upTo, quotes - q0], [1000, 8]);
+const old = { basePct: 0.6, perUsdPct: 0.001, source: "jupiter", at: Date.now() };
+expect("a curve kept from before sizes were recorded is used as before, whatever the size", [curveCovers(old, 50_000), (await costCurve("OldMint4444", 400_000, 5000, old)).perUsdPct, quotes - q0], [true, 0.001, 8]);
+expect("the estimate from a pool's depth has no size of its own: it is worked out for any size", curveCovers(depthCurve(400_000), 1_000_000), true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
