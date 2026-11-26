@@ -8,7 +8,10 @@
 //    and the decimal point have no bold form and stay as they are;
 //  - the gap after "T//R" is an em space, which browsers do not collapse.
 const NAME = "TRADING//RUST";
-const ICON = "/favicon.svg";
+// "?v=2": a new address, so browsers fetch the icon again instead of showing the one they stored
+// (the pages' heads, index.html and app/index.html, use the same). public/favicon.ico is drawn
+// from favicon.svg by web/scripts/favicon-ico.mjs.
+export const ICON = "/favicon.svg?v=2";
 const UP = "#00f5a0", DOWN = "#ff3d71"; // the app's own green and red (--up, --down)
 // The tab's version of the logo (public/favicon.svg): the same two shapes with the same gap, drawn
 // steeper so they fill a square tab (the full logo, public/logo.svg, is twice as wide as it is tall
@@ -54,13 +57,15 @@ export function showTab(pnl: number | null) {
   const title = pnl === null || !Number.isFinite(pnl) ? NAME : tabText(pnl);
   if (document.title !== title) document.title = title;
   const href = tabIcon(pnl === null || !Number.isFinite(pnl) ? "flat" : tabTone(pnl));
-  const old = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-  if (old?.getAttribute("href") === href) return;
+  // Every icon the page names (the .svg and the .ico; not the apple-touch-icon): with the .ico still
+  // there, a browser may keep showing it instead of the green or red one.
+  const icons = [...document.querySelectorAll<HTMLLinkElement>('link[rel~="icon"]')];
+  if (icons.length === 1 && icons[0].getAttribute("href") === href) return;
   // A new element, not a changed address: some browsers only redraw the tab's icon for a new one.
   const link = document.createElement("link");
   link.rel = "icon";
   link.type = "image/svg+xml";
   link.href = href;
-  old?.remove();
+  for (const old of icons) old.remove();
   document.head.appendChild(link);
 }
