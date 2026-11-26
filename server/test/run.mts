@@ -67,7 +67,7 @@ const ENGINE: Job[] = [
   { name: "breakout-chase", file: "engine/breakout.mts", env: { SC: "chase" }, what: "a breakout that ran away is not chased" },
   { name: "breakout-volume", file: "engine/breakout.mts", env: { SC: "buy", VOLREQ: "5" }, what: "a breakout without the volume the AI asked for is not bought" },
   { name: "relook-move", file: "engine/breakout.mts", env: { SC: "move" }, what: "a real price move makes the agent ask its AI again" },
-  { name: "relook-touch", file: "engine/breakout.mts", env: { SC: "touch", MINNUM: "0" }, what: "reaching a refused level makes the agent ask again" },
+  { name: "relook-touch", file: "engine/breakout.mts", env: { SC: "touch", MINNUM: "0", PANEL: "20" }, what: "reaching a refused level makes the agent ask again" }, // (PANEL 20: with the forecasters at 70% the order passed its check in some minutes, by the forecast's clock-seeded sample: 32% against the 29% needed at 12:19 on 26 Nov, on the old code too)
   { name: "ten-agents", file: "engine/ten-agents.mts", env: { SC: "win" }, what: "ten agents at once, an eleventh refused" },
   { name: "auto-pick-rotate", file: "engine/auto-pick.mts", env: { SC: "rotate" }, what: "auto-pick agents take different coins from the scouts' list; after a win an agent chooses again and starts with its budget, never more; after a loss it leaves that coin and trades on with what is left" },
   { name: "auto-pick-wait", file: "engine/auto-pick.mts", env: { SC: "wait" }, what: "auto-pick, only coins that pass every scout check: with too few, agents wait at no AI cost and take the next one that passes" },
@@ -81,6 +81,9 @@ const ENGINE: Job[] = [
   { name: "stop-sticks", file: "engine/stop-sticks.mts", env: { SC: "win" }, what: "a Stop wins over an AI answer that arrives after it" },
   { name: "stale-copy", file: "engine/stale-copy.mts", env: { SC: "win" }, what: "a stale server copy can't undo a Stop or a Reset" },
   { name: "watch-loop@supabase", file: "engine/watch-loop.mts", what: "as deployed, on Supabase: the scheduler's call buys, watches, sells at the stop; a Stop from the dashboard's server copy ends the watch" },
+  { name: "watch-gap-calm", file: "engine/watch-gap.mts", env: { SC: "calm", MINUTES: "2" }, what: "as deployed, across the minute: an open trade is checked every 5 seconds, also where one watch ends and the scheduler's next call begins" },
+  { name: "watch-gap-thinking", file: "engine/watch-gap.mts", env: { SC: "thinking", AI_MS: "20000" }, what: "...an AI answer still on its way as a watch ends: the open trade stays checked, and the scheduler's next call waits for its turn instead of giving up" },
+  { name: "watch-gap-crowd", file: "engine/watch-gap.mts", env: { SC: "crowd", AGENTS: "5" }, what: "...five agents, so every round of checks is slow: no call of the scheduler goes unwatched (every second one did)" },
   // The same scenarios with the account kept in Supabase (a real Postgres engine in memory).
   { name: "stale-copy@supabase", file: "engine/stale-copy.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: a stale server copy can't undo a Stop or a Reset" },
   { name: "stop-sticks@supabase", file: "engine/stop-sticks.mts", env: { SC: "win", STORE: "supabase" }, what: "...on Supabase: a Stop wins over an AI answer that arrives after it" },

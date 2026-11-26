@@ -434,7 +434,7 @@ if (SC === "window") {
   const r = await running;
   const took = realNow() - t;
   showLogs();
-  check("the watch ran its checks to its end", r.ticks >= 6 && took >= 38_000, [r, `${(took / 1000).toFixed(1)} s`]);
+  check("the watch ran its rounds to its end (it stops when there is no time left for another)", r.ticks >= 6 && took >= 33_000, [r, `${(took / 1000).toFixed(1)} s`]);
   expect("with too little of the watch left for a measurement, the step starts none: the coin is left for the next watch", triesOf("QLATE"), 0);
   check("so the watch is over when it should be, and the scheduler's next call can start the next one", took < 47_000, `${(took / 1000).toFixed(1)} s`);
   // The next watch has the time.

@@ -413,6 +413,7 @@ type Account = {
   aheadPauseUntil?: number; // Jupiter did not answer it: it leaves the queue alone until then
   aheadScanAt?: number; // when it last read the scouts' list itself
   aheadSkip?: Map<string, number>; // coins it could not price -> not tried again before this time (so the others get their turn)
+  closing?: number; // above 0: a watch of this account is over and only finishing what is in flight: open trades are checked, nothing new is started (see watch())
   backupSince?: Map<string, number>; // open trade -> since when only the backup price source has answered for it (see sameFeed)
 };
 const NEW_ACCOUNT_CASH = 10_000; // what a new paper account starts with ($1,000 until v0.63)
@@ -3073,7 +3074,7 @@ async function tickBot(persist: boolean) {
         if (!aiSell && !profitAsking.has(pos.id)) {
           const pulledBack = best > 0 && ((best - price) / best) * 100 >= pm.trailPct * 0.6;
           const due = now >= (pm.nextAt ?? 0) || (!!pm.at && (Math.floor(bestNet) > pm.step || pulledBack) && now - pm.at >= PM_MIN_GAP_MS);
-          if (due && (await tokensLeft()) > 0) askProfit(pos, price, best, cost);
+          if (due && !acct().closing && (await tokensLeft()) > 0) askProfit(pos, price, best, cost); // (not while its watch is closing: the exit in force stays in force until the next one)
         }
       }
       // Take half before the target: targets often sit at resistance, where a run can stall.
@@ -3232,6 +3233,11 @@ async function tickBot(persist: boolean) {
       }
       return;
     }
+
+    // The watch that runs this check is over and only waiting for something still on its way
+    // (see watch()). Open trades were seen to above; an agent without one starts nothing now (no
+    // coin search, no AI look): the next watch does, a few seconds from now.
+    if (acct().closing) return;
 
     recordEquity();
     if (checkDrawdown(cfg)) return;
@@ -3566,40 +3572,110 @@ function watchingBot() {
 // Serverless: run bot steps every 5 seconds for up to maxMs (one scheduler call or
 // dashboard ping keeps watch for a while). A lock stops two windows overlapping.
 // Stops early when there's nothing to watch.
+//
+// One watch hands over to the next (v0.72.0). The scheduler calls once a minute, and a watch must
+// finish what is in flight before it lets go of the lock (another server copy may run the next
+// one, and two copies saving the same account would overwrite each other). It used to work like
+// this: the watch slept 5 s after its last round before it noticed its time was up, then stood
+// still until an AI answer or a slow price check had landed; the next call, finding the lock
+// held, gave up at once, and that whole minute went unwatched. With four agents or more a round
+// of price checks takes long enough for that to happen every second minute
+// (test/engine/watch-gap.mts measures it). Now:
+//  - the scheduler's call waits for the watch before it instead of giving up (WATCH_LOCK_WAIT_MS),
+//    and its own watch still ends maxMs after the call arrived, so nothing drifts;
+//  - a watch stops when there is no time left for another round (no sleep past its end);
+//  - a watch whose time is up while something is still on its way keeps checking the open
+//    trades every 5 seconds until that has landed (at most until shortly before its lock runs
+//    out), and starts nothing new meanwhile (acct().closing: no AI look, no coin search, no new
+//    profit question; see tickBot).
+// The app's own nudges (by = "dashboard") do not wait and do not go on past their end.
+export const WATCH_MS = 58_000; // how long the scheduler's call watches (it comes every 60 s)
+const WATCH_LOCK_WAIT_MS = 32_000; // the scheduler's call waits this long for the watch before it (longer than that one's lock can last past the minute)
+const WATCH_LOCK_POLL_MS = 1_000;
+const WATCH_OVER_MS = 30_000; // the lock outlasts the watch's end by this much: time for what is in flight to land
+const WATCH_LOCK_MARGIN_MS = 4_000; // it starts no round this close to the end of its lock
+const nap = (ms: number) => new Promise<void>((r) => setTimeout(r, Math.max(0, ms)));
 export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dashboard") {
   const botOn = () => anyBotRunning();
   if (!botOn() && !hasProtected()) return { ticks: 0, reason: "bot is off" };
-  const lockName = `watch:${acct().key ?? "-"}`;
-  if (!(await store.lock(lockName, maxMs + 10_000))) return { ticks: 0, reason: "another window is already watching" };
+  const a = acct();
+  const lockName = `watch:${a.key ?? "-"}`;
+  const arrived = Date.now();
+  const end = arrived + maxMs; // (counted from the call's arrival, however long it waits for the lock)
+  const patient = by === "scheduler";
+  let lockedUntil = 0;
+  const lock = async () => {
+    const at = Date.now(), ttl = Math.max(1_000, end - at) + (patient ? WATCH_OVER_MS : 10_000);
+    if (!(await store.lock(lockName, ttl))) return false;
+    lockedUntil = at + ttl;
+    return true;
+  };
+  let got = await lock();
+  if (!got && patient) {
+    // The watch before this one is still finishing. It will let go within seconds: wait for it.
+    const giveUp = Math.min(arrived + WATCH_LOCK_WAIT_MS, end - 10_000); // (never wait the whole watch away)
+    while (!got && Date.now() < giveUp) {
+      await nap(WATCH_LOCK_POLL_MS);
+      got = await lock();
+    }
+  }
+  if (!got) return { ticks: 0, reason: "another window is already watching" };
+  const waitedMs = Date.now() - arrived;
   // Record the wake-up (one small write per window) so the dashboard can show the bot is alive.
   state.bot.lastWatch = { at: Date.now(), by };
   save(); // also makes sure this account is on the scheduler's list
-  let ticks = 0;
+  let ticks = 0, closing = false;
+  // One round: every agent's check, protected trades and limit orders, and the save. false = nothing is running any more.
+  const round = async (aheadBy: number) => {
+    // Reload first, so a Stop or manual trade from the dashboard is never overwritten.
+    await sync();
+    if (!botOn() && !hasProtected()) return false;
+    if (botOn()) await tick(false, aheadBy); // saves only if something happened
+    await guardProtected();
+    ticks++;
+    await flush();
+    return true;
+  };
   try {
-    const end = Date.now() + maxMs;
-    while (Date.now() < end) {
-      // Reload first, so a Stop or manual trade from the dashboard is never overwritten.
-      await sync();
-      if (!botOn() && !hasProtected()) break;
-      if (botOn()) await tick(false, end); // saves only if something happened
-      await guardProtected();
-      ticks++;
-      await flush();
+    for (;;) {
+      if (!(await round(end))) break;
       if (!watching()) break; // nothing to watch closely; the next scheduled check will come
-      await new Promise((r) => setTimeout(r, CHECK_MS));
+      if (end - Date.now() < CHECK_MS) break; // no time for another round
+      await nap(CHECK_MS);
     }
-    return { ticks, reason: botOn() || hasProtected() ? (watching() ? "window ended" : "nothing to watch") : "bot stopped" };
+    // Its time is up. What is still on its way now (an AI answer, a slow price check) has to
+    // land before the lock is let go; until it has, the open trades are still checked.
+    const waiting = patient && watching() ? [...(a.steps ?? []), ...(a.reviews ?? [])] : [];
+    if (waiting.length) {
+      closing = true;
+      a.closing = (a.closing ?? 0) + 1;
+      let landed = false;
+      const all = Promise.allSettled(waiting).then(() => { landed = true; });
+      const stopBy = lockedUntil - WATCH_LOCK_MARGIN_MS;
+      while (!landed && Date.now() + CHECK_MS < stopBy) {
+        await Promise.race([all, nap(CHECK_MS)]);
+        if (landed || !(await round(0))) break;
+      }
+    }
+    return { ticks, reason: botOn() || hasProtected() ? (watching() ? "window ended" : "nothing to watch") : "bot stopped", ...(waitedMs >= WATCH_LOCK_POLL_MS ? { waitedMs } : {}) };
   } finally {
     // Finish what is in flight, and apply an AI profit answer that arrived as the window closed.
-    for (let i = 0; i < 2; i++) {
+    // (From here on nothing new is started: the next watch does that.)
+    if (!closing) a.closing = (a.closing ?? 0) + 1;
+    try {
+      for (let i = 0; i < 2; i++) {
+        await settleSteps();
+        await settleReviews();
+        if (!state.positions.some((p) => profitInbox.has(p.id))) break;
+        await tick(false, 0); // (the window is over: the quality step starts nothing now)
+      }
       await settleSteps();
-      await settleReviews();
-      if (!state.positions.some((p) => profitInbox.has(p.id))) break;
-      await tick(false, 0); // (the window is over: the quality step starts nothing now)
+      await flush();
+    } finally {
+      a.closing = Math.max(0, (a.closing ?? 1) - 1);
+      // (A lock that has run out may be another watch's by now: that one is not ours to let go.)
+      if (Date.now() < lockedUntil - 500) await store.unlock(lockName);
     }
-    await settleSteps();
-    await flush();
-    await store.unlock(lockName);
   }
 }
 

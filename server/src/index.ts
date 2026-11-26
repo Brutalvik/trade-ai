@@ -408,9 +408,10 @@ app.get("/api/bot/tick", async (req, res) => {
   try {
     await engine.ensureMigrated();
     // A scheduler calls this about once a minute. Reply immediately (cron-job.org's free plan
-    // waits at most 30 s) and keep watching every 5 s for ~55 s in the background; Vercel's
-    // waitUntil keeps the function alive until that finishes.
-    const work = engine.watchAll(55_000, "scheduler").catch((e) => console.error("[tick] watch failed:", e));
+    // waits at most 30 s) and keep watching every 5 s for the rest of the minute in the
+    // background (engine.WATCH_MS; if the watch before it is still finishing, it waits for it);
+    // Vercel's waitUntil keeps the function alive until that finishes.
+    const work = engine.watchAll(engine.WATCH_MS, "scheduler").catch((e) => console.error("[tick] watch failed:", e));
     waitUntil(work);
     res.json({ ok: true, started: true, accounts: (await engine.activeAccounts()).length });
   } catch (e) {
