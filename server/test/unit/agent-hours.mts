@@ -24,7 +24,7 @@ const engine = await import(new URL("../../src/engine.ts", import.meta.url).href
 const { newStore } = await import(new URL("../../src/store.ts", import.meta.url).href);
 const store = newStore();
 await engine.ensureStore();
-expect("the server sees which setup script the database has, and that the hours table is there", engine.storageStats()?.schema, { version: 2, hours: true });
+expect("the server sees which setup script the database has, and that the hours table is there", engine.storageStats()?.schema, { version: 3, hours: true, walletTx: true });
 
 const pair = (symbol: string, priceUsd: number) => ({ chain: "solana", pool: `${symbol}Pool1111`, symbol, name: symbol, priceUsd, liquidityUsd: 500_000, tokenAddress: `${symbol}Mint1111` });
 // One round trip: bought at $1.00 and sold at `exit`, by an agent (bot) or by hand.

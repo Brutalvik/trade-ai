@@ -9,11 +9,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { applied as appliedTx, decide as decideTx, eventFromDb, fieldsForDb, fromDb as txFromDb, started as startedTx, type WalletTx, type WalletTxEvent, type WalletTxFields, type WalletTxKind, type WalletTxResult, type WalletTxUpdate } from "./wallettx-core.js";
 
 export type StoreKind = "supabase" | "redis" | "file" | "temp";
 // Calls and bytes since this server copy started (to see what the storage traffic really is).
 // auth: which kind of key the database accepted and how it was sent (never the key itself).
-export type StoreStats = { since: number; calls: Record<string, number>; sentBytes: number; receivedBytes: number; auth?: { key: "secret" | "service_role"; header: "apikey" | "apikey+bearer" }; schema?: { version: number; hours: boolean } };
+export type StoreStats = { since: number; calls: Record<string, number>; sentBytes: number; receivedBytes: number; auth?: { key: "secret" | "service_role"; header: "apikey" | "apikey+bearer" }; schema?: { version: number; hours: boolean; walletTx?: boolean } };
 
 export interface Store {
   kind: StoreKind;
@@ -45,6 +46,13 @@ export interface Store {
   // hoursAdd counts one closed trade into its hour; counting the same trade again changes nothing.
   hoursAdd?(key: string, e: HourEntry): Promise<void>;
   hoursGet?(key: string, fromMs: number, toMs: number): Promise<HourRow[]>; // oldest first
+  // Customers' real-money transactions (wallettx.ts): a table of their own, one row per
+  // transaction, tagged with its customer, never deleted, and every message about them kept.
+  wtxStart?(id: string, key: string, provider: string, kind: WalletTxKind, fields: WalletTxFields): Promise<WalletTx>;
+  wtxUpdate?(u: WalletTxUpdate): Promise<WalletTxResult>;
+  wtxList?(key: string, beforeMs: number | null, limit: number): Promise<WalletTx[]>; // newest first
+  wtxGet?(key: string, id: string): Promise<{ tx: WalletTx; events: WalletTxEvent[] } | null>; // null = not this customer's
+  wtxOpen?(provider: string, beforeMs: number, limit: number): Promise<WalletTx[]>; // not final, unchanged since beforeMs, oldest first
   // Is the store set up, and closed to the public? Throws a message a person can act on if not.
   check?(): Promise<{ accounts: number }>;
   // Saves a small account and a list entry and reads them back from the database itself (not
@@ -139,6 +147,21 @@ function fileStore(): Store {
       return {};
     }
   };
+  // Customers' transactions: one file for all (it is for one machine), written whole each time.
+  type TxFile = { txs: Record<string, WalletTx>; events: (WalletTxEvent & { txId: string | null; key: string | null; provider: string; eventId: string | null })[] };
+  const txFile = path.join(dir, "wallet-tx.json");
+  const readTx = (): TxFile => {
+    try {
+      return JSON.parse(fs.readFileSync(txFile, "utf8"));
+    } catch {
+      return { txs: {}, events: [] };
+    }
+  };
+  const writeTx = (t: TxFile) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(txFile + ".tmp", JSON.stringify(t));
+    fs.renameSync(txFile + ".tmp", txFile); // (never half a file)
+  };
   type Rec = { v: unknown; exp?: number };
   const readKv = (): Record<string, Rec> => {
     try {
@@ -215,6 +238,47 @@ function fileStore(): Store {
     async hoursGet(key: string, fromMs: number, toMs: number) {
       return Object.values(readHours(key)).filter((r) => r.hour >= fromMs && r.hour <= toMs).sort((a, b) => a.hour - b.hour).map(({ ids: _ids, ...r }) => r);
     },
+    async wtxStart(id: string, key: string, provider: string, kind: WalletTxKind, fields: WalletTxFields) {
+      if (!id || !key || !provider) throw new Error("trade_wtx_start: id, customer and provider are required");
+      const t = readTx();
+      const had = t.txs[id];
+      if (had && (had.key !== key || had.provider !== provider)) throw new Error("trade_wtx_start: that id belongs to another transaction");
+      const tx = had ?? (t.txs[id] = startedTx(id, key, provider, kind, fields));
+      t.events.push({ at: Date.now(), source: "app", type: "started", status: null, applied: !had, note: had ? "already started" : null, txId: id, key, provider, eventId: null });
+      writeTx(t);
+      return tx;
+    },
+    async wtxUpdate(u: WalletTxUpdate) {
+      const t = readTx();
+      if (u.eventId && t.events.some((e) => e.provider === u.provider && e.eventId === u.eventId)) return { applied: false, duplicate: true, note: "the same message again", tx: null };
+      let tx = (u.id && t.txs[u.id]) || (u.providerId ? Object.values(t.txs).find((x) => x.provider === u.provider && x.providerId === u.providerId) : undefined) || null;
+      if (!tx && u.id && u.key && u.fields?.kind) {
+        const clash = u.providerId ? Object.values(t.txs).find((x) => x.provider === u.provider && x.providerId === u.providerId) : undefined;
+        tx = clash ?? (t.txs[u.id] = startedTx(u.id, u.key, u.provider, u.fields.kind, {}, Date.now(), u.providerId ?? null));
+      }
+      const d = decideTx(tx, u);
+      if (tx && d.apply) tx = t.txs[tx.id] = appliedTx(tx, u, d.flag);
+      t.events.push({ at: Date.now(), source: u.source, type: u.eventType ?? null, status: u.providerStatus ?? null, applied: d.apply, note: d.note, txId: tx?.id ?? null, key: tx?.key ?? u.key ?? null, provider: u.provider, eventId: u.eventId ?? null });
+      writeTx(t);
+      return { applied: d.apply, duplicate: false, note: d.note, tx };
+    },
+    async wtxList(key: string, beforeMs: number | null, limit: number) {
+      return Object.values(readTx().txs)
+        .filter((x) => x.key === key && (beforeMs === null || x.createdAt < beforeMs))
+        .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
+        .slice(0, Math.min(Math.max(limit, 1), 200));
+    },
+    async wtxGet(key: string, id: string) {
+      const t = readTx(), tx = t.txs[id];
+      if (!tx || tx.key !== key) return null;
+      return { tx, events: t.events.filter((e) => e.txId === id).map(({ at, source, type, status, applied, note }) => ({ at, source, type, status, applied, note })) };
+    },
+    async wtxOpen(provider: string, beforeMs: number, limit: number) {
+      return Object.values(readTx().txs)
+        .filter((x) => x.provider === provider && !x.final && x.updatedAt < beforeMs)
+        .sort((a, b) => a.updatedAt - b.updatedAt)
+        .slice(0, Math.min(Math.max(limit, 1), 100));
+    },
     ...localLock,
   };
 }
@@ -231,7 +295,10 @@ function fileStore(): Store {
 // small: before, the whole account was read on every 5-second check.
 const ACCOUNT_PARTS = ["trades", "equity"];
 const SCHEMA_VERSION = 1;
-const READS = new Set(["trade_account_rev", "trade_account_load", "trade_kv_get", "trade_list_len", "trade_list_range", "trade_selfcheck"]);
+const READS = new Set(["trade_account_rev", "trade_account_load", "trade_kv_get", "trade_list_len", "trade_list_range", "trade_selfcheck", "trade_wtx_list", "trade_wtx_get", "trade_wtx_open"]);
+// Writes that are safe to send again when no answer came: doing them twice changes nothing
+// (a transaction started twice is one; the same provider message twice is kept once).
+const SAFE_AGAIN = new Set(["trade_account_save", "trade_wtx_start", "trade_wtx_update"]);
 const SHARED = "__shared__"; // the single account from before logins had their own
 const pack = (json: string) => zlib.gzipSync(Buffer.from(json, "utf8"), { level: 6 }).toString("base64");
 const unpack = (b64: string) => zlib.gunzipSync(Buffer.from(b64, "base64")).toString("utf8");
@@ -286,6 +353,7 @@ function explain(status: number, text: string, fn: string) {
   return `Supabase (${fn}): ${msg || `HTTP ${status}`}`;
 }
 
+const WALLET_TX_NOT_READY = "The customers' transactions table is not in the database yet: run the latest server/supabase/schema.sql once in the Supabase SQL editor. Until then no real-money transaction can be started.";
 const HOURS_NOT_READY = "The agents' hours table is not in the database yet: run the latest server/supabase/schema.sql once in the Supabase SQL editor. Nothing is lost meanwhile: the hours are filled in from the account's trades once the table is there.";
 type Cached = { rev: number; parts: Record<string, { h: string; json: string }> };
 export function supabaseStore(url: string, key: string | string[]): Store {
@@ -320,7 +388,7 @@ export function supabaseStore(url: string, key: string | string[]): Store {
       } catch (e) {
         // No answer. A read is asked once more, and so is a whole-account save (saving the same
         // thing twice changes nothing); other writes are not repeated blindly.
-        if (!again && (READS.has(fn) || fn === "trade_account_save")) {
+        if (!again && (READS.has(fn) || SAFE_AGAIN.has(fn))) {
           again = true;
           await sleep(250);
           continue;
@@ -398,6 +466,16 @@ export function supabaseStore(url: string, key: string | string[]): Store {
       throw new Error(m === NOT_SET_UP || /does not exist|could not find/i.test(m) ? HOURS_NOT_READY : m);
     }
   };
+  // A call about customers' transactions, with a missing table or function reported as what it is.
+  const txRpc = async <T>(fn: string, args: Record<string, unknown>): Promise<T> => {
+    try {
+      return await rpc<T>(fn, args);
+    } catch (e) {
+      const m = String((e as Error)?.message ?? e);
+      throw new Error(m === NOT_SET_UP || /does not exist|could not find/i.test(m) ? WALLET_TX_NOT_READY : m);
+    }
+  };
+  const iso = (v: number | null | undefined) => (v === null || v === undefined ? null : new Date(v).toISOString());
   return {
     kind: "supabase",
     load: async <T>(key?: string) => (await loadRev<T>(key)).value,
@@ -467,9 +545,32 @@ export function supabaseStore(url: string, key: string | string[]): Store {
       const rows = (await hoursRpc<{ hour: number; pnl: number; trades: number; wins: number; losses: number; agents: Record<string, HourAgent> }[] | null>("trade_hours", { p_key: key, p_from: new Date(fromMs).toISOString(), p_to: new Date(toMs).toISOString() })) ?? [];
       return rows.map((r) => ({ hour: Number(r.hour), pnlUsd: Number(r.pnl), trades: Number(r.trades), wins: Number(r.wins), losses: Number(r.losses), agents: r.agents ?? {} }));
     },
+    // The customers' transactions came with version 3 of schema.sql: until that has been run,
+    // these fail saying so, and no real-money transaction can be started.
+    async wtxStart(id: string, key: string, provider: string, kind: WalletTxKind, fields: WalletTxFields) {
+      return txFromDb(await txRpc("trade_wtx_start", { p_id: id, p_key: key, p_provider: provider, p_kind: kind, p_fields: fieldsForDb(fields) }));
+    },
+    async wtxUpdate(u: WalletTxUpdate) {
+      const r = await txRpc<{ applied: boolean; duplicate: boolean; note: string | null; tx: unknown }>("trade_wtx_update", {
+        p_provider: u.provider, p_id: u.id ?? null, p_provider_id: u.providerId ?? null, p_key: u.key ?? null, p_status: u.status,
+        p_provider_status: u.providerStatus ?? null, p_provider_at: iso(u.providerAt), p_fields: fieldsForDb(u.fields), p_source: u.source,
+        p_event_id: u.eventId ?? null, p_event_type: u.eventType ?? null, p_payload: u.payload ?? {},
+      });
+      return { applied: !!r.applied, duplicate: !!r.duplicate, note: r.note ?? null, tx: r.tx ? txFromDb(r.tx) : null };
+    },
+    async wtxList(key: string, beforeMs: number | null, limit: number) {
+      return ((await txRpc<unknown[] | null>("trade_wtx_list", { p_key: key, p_before: iso(beforeMs), p_limit: limit })) ?? []).map(txFromDb);
+    },
+    async wtxGet(key: string, id: string) {
+      const r = await txRpc<{ tx: unknown; events: unknown[] } | null>("trade_wtx_get", { p_key: key, p_id: id });
+      return r ? { tx: txFromDb(r.tx), events: (r.events ?? []).map(eventFromDb) } : null;
+    },
+    async wtxOpen(provider: string, beforeMs: number, limit: number) {
+      return ((await txRpc<unknown[] | null>("trade_wtx_open", { p_provider: provider, p_before: iso(beforeMs), p_limit: limit })) ?? []).map(txFromDb);
+    },
     async check() {
-      const c = await rpc<{ version: number; tables: number; rls: boolean; open: boolean; accounts: number; hours?: boolean } | null>("trade_selfcheck", {});
-      if (c) stats.schema = { version: Number(c.version), hours: !!c.hours };
+      const c = await rpc<{ version: number; tables: number; rls: boolean; open: boolean; accounts: number; hours?: boolean; wallet_tx?: boolean } | null>("trade_selfcheck", {});
+      if (c) stats.schema = { version: Number(c.version), hours: !!c.hours, walletTx: !!c.wallet_tx };
       if (!c || Number(c.tables) < 4 || Number(c.version) < SCHEMA_VERSION) throw new Error("The Supabase database is not fully set up: run the latest server/supabase/schema.sql in the Supabase SQL editor.");
       if (!c.rls || c.open) throw new Error("The Supabase tables are open to the public keys: run server/supabase/schema.sql again in the Supabase SQL editor (it closes them).");
       return { accounts: Number(c.accounts) };

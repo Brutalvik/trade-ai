@@ -16,12 +16,31 @@ import { logHistory } from "./botlog.js";
 import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
+import * as moonpay from "./moonpay.js";
+import * as wallettx from "./wallettx.js";
 import { searchCoins, coinList } from "./lists.js";
 import { AGENT_PASS, scanAgents } from "./agents.js";
 import { botLimit, can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
 
 const app = express();
 app.use(cors());
+
+// MoonPay's messages about purchases (webhooks). Registered before the JSON reader: the signature
+// is checked on the exact bytes MoonPay sent. A message is saved before it is acknowledged; one
+// that could not be saved gets an error, so MoonPay sends it again (moonpay.ts).
+app.post("/api/moonpay/webhook", express.raw({ type: () => true, limit: "1mb" }), async (req, res) => {
+  try {
+    await engine.ensureStore();
+    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from("");
+    const r = await moonpay.webhook(raw, req.headers);
+    if (r.after) waitUntil(r.after());
+    res.status(r.status).json(r.body);
+  } catch (e) {
+    console.error("[moonpay] webhook not saved:", engine.shortError(e));
+    res.status(503).json({ error: "Not saved; send it again." });
+  }
+});
+
 app.use(express.json());
 
 // Nothing that reads accounts or logins runs before the storage is ready: set up, and holding what
@@ -106,6 +125,8 @@ app.get("/api/status", async (req, res) => {
       activeAccounts: active, // bots / orders the scheduler keeps watching (null = the storage did not answer)
       solanaRpc: await rpcHealth(req.query.rpc === "1"), // "custom" (e.g. Helius) or "public"; ?rpc=1 also pings it
       storageStats: engine.storageStats(), // calls and bytes to the storage since this server copy started
+      moonpay: moonpay.publicStatus(), // on or off and why (never a key; the publishable key is public by design)
+      node: process.versions.node, // MoonPay's wallet pre-generation needs Node 22 or later
       // Only when storage isn't working: names (not values) of database settings the server can see.
       ...(engine.storeKind() === "temp" || storageError ? { storageEnvNames: storageEnvNames() } : {}),
     });
@@ -220,6 +241,46 @@ app.post("/api/real/execute", needs("trade.manual", async (req, res) => {
 }));
 app.get("/api/real/trades", signedIn(async (req, res) => {
   res.json(await live.realTrades((await auth.requestAuth(req))!.key, num(req.query.limit, 50)));
+}));
+// The customer's real-money transactions (buys, and later sells, swaps, sends, receives), newest
+// first: only their own, and never the provider's raw record (wallettx.ts).
+const txError = (res: Response, e: unknown) => void res.status(/not in the database yet/.test(String((e as Error)?.message)) ? 503 : 400).json({ error: (e as Error)?.message ?? String(e) });
+app.get("/api/wallet/transactions", signedIn(async (req, res) => {
+  try {
+    const a = (await auth.requestAuth(req))!;
+    const before = req.query.before ? num(req.query.before, 0) || null : null;
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ transactions: await wallettx.myTransactions(a.key, before, num(req.query.limit, 50)), moonpay: moonpay.publicStatus() });
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+app.get("/api/wallet/transactions/:id", signedIn(async (req, res) => {
+  try {
+    const r = await wallettx.myTransaction((await auth.requestAuth(req))!.key, String(req.params.id));
+    if (!r) return void res.status(404).json({ error: "No such transaction." });
+    res.setHeader("Cache-Control", "no-store");
+    res.json(r);
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+// Buying with a card or Apple Pay (MoonPay): the server starts the purchase with the customer's
+// own wallet from its records, and links what MoonPay's frame reports only after asking MoonPay.
+app.post("/api/moonpay/buy/start", signedIn(async (req, res) => {
+  try {
+    res.json(await moonpay.startBuy((await auth.requestAuth(req))!.key, req.body));
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+app.post("/api/moonpay/buy/link", signedIn(async (req, res) => {
+  try {
+    const r = await moonpay.linkBuy((await auth.requestAuth(req))!.key, String(req.body?.id ?? ""), String(req.body?.transactionId ?? ""));
+    res.json({ ok: true, status: r.tx?.status ?? null });
+  } catch (e) {
+    txError(res, e);
+  }
 }));
 app.get("/api/wallet", signedIn(async (req, res) => {
   const a = (await auth.requestAuth(req))!;
@@ -413,6 +474,8 @@ app.get("/api/bot/tick", async (req, res) => {
     // Vercel's waitUntil keeps the function alive until that finishes.
     const work = engine.watchAll(engine.WATCH_MS, "scheduler").catch((e) => console.error("[tick] watch failed:", e));
     waitUntil(work);
+    // Customers' MoonPay purchases that are not finished: asked about again (does nothing while MoonPay is not set up).
+    waitUntil(moonpay.reconcile(15_000).catch((e) => console.error("[moonpay] check failed:", e?.message ?? e)));
     res.json({ ok: true, started: true, accounts: (await engine.activeAccounts()).length });
   } catch (e) {
     // The storage is not answering. Said in a normal reply, not as a failed call: a scheduler

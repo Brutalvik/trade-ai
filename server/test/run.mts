@@ -31,6 +31,8 @@ const UNIT: Job[] = [
   { name: "indicators", file: "unit/indicators.mts", what: "MACD and Bollinger Bands as the AI is given them, and the strategy playbook the planners are sent" },
   { name: "agent-log", file: "unit/agent-log.mts", what: "the agents' log is kept for a week: written with each save, read in pages (today, the last 7 days), older lines cleared by the archive function; what a line decided is kept with it" },
   { name: "decisions", file: "unit/decisions.mts", what: "the one-line view of the log: one row per decision, repeats folded, the size or the result at the right, the sum above" },
+  { name: "moonpay", file: "unit/moonpay.mts", what: "buying with MoonPay: the server starts a purchase into the customer's own wallet, believes MoonPay asked directly (never the browser), takes only signed messages, and finds purchases the browser never reported" },
+  { name: "wallet-tx", file: "unit/wallet-tx.mts", what: "customers' real-money transactions: one row each, kept the same way in the database and the local file; the same message twice counts once, older news never overwrites newer, never across customers" },
   { name: "quality", file: "unit/quality.mts", what: "the quality step's sums: what a coin is known to cost for an agent's money, when it is measured again, the verdict on each coin of the list" },
   { name: "pipeline", file: "unit/pipeline.mts", what: "the Pipeline tab: six steps (scan, check, AI, size, execute, log), each with what it did, worked out from the decisions kept with the log" },
   { name: "user-prefs", file: "unit/user-prefs.mts", what: "a part of the app a user hides in Settings stays hidden on every sign-in: the choice is saved on the account" },
