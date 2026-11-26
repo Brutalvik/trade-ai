@@ -31,7 +31,9 @@ globalThis.fetch = (async (input: any, init?: any) => {
   if (one) return mp.has(one[1]) ? Response.json(mp.get(one[1])) : new Response(JSON.stringify({ message: "Not found" }), { status: 404 });
   if (u.pathname === "/platform/v1/transactions") {
     const ext = u.searchParams.get("externalCustomerId"), since = Date.parse(u.searchParams.get("startDate") ?? "");
-    return Response.json({ data: [...mp.values()].filter((t) => t.externalCustomerId === ext && Date.parse(t.createdAt) >= since), pageInfo: { nextCursor: null } });
+    // Like the real sandbox (seen 26 Nov 2026): a customer MoonPay has never seen is "not found", not an empty list.
+    if (ext && ![...mp.values()].some((t) => t.externalCustomerId === ext)) return new Response(JSON.stringify({ code: "not_found", message: "Not found" }), { status: 404 });
+    return Response.json({ data: [...mp.values()].filter((t) => (!ext || t.externalCustomerId === ext) && (!Number.isFinite(since) || Date.parse(t.createdAt) >= since)), pageInfo: { nextCursor: null } });
   }
   return new Response("{}", { status: 404 });
 }) as typeof fetch;
@@ -80,6 +82,7 @@ const buy = await moonpay.startBuy("ada", { fiatCurrency: "USD", asset: "sol", f
 expect("the purchase goes to the wallet in the server's record, whatever the browser sends", [buy.walletAddress, (await wallettx.myTransactions("ada", null, 5))[0].walletAddress, (await wallettx.myTransactions("ada", null, 5))[0].status], ["WalletAda1111", "WalletAda1111", "started"]);
 check("MoonPay knows the customer by a reference that says nothing about them", /^cus_[0-9a-f]{24}$/.test(buy.customerRef) && buy.customerRef === (await moonpay.customerRef("ada")), buy.customerRef);
 const ref = buy.customerRef, bobRef = await moonpay.customerRef("bob");
+expect("a customer MoonPay has never seen has no purchases (MoonPay answers 'not found' for them)", await moonpay.fetchCustomerTransactions(ref, Date.now() - 86_400_000), []);
 
 // ---------- the browser reports MoonPay's transaction ----------
 mp.set("mp_bob", mpTx("mp_bob", { externalCustomerId: bobRef, wallet: { address: "WalletAda1111" } }));
@@ -144,6 +147,7 @@ offset = 25 * 3_600_000; // a day later
 tally = await moonpay.reconcile(10_000);
 expect("after a day it is closed as expired, with why", [(await wallettx.myTransaction("ada", forgotten.id))!.tx.status, (await wallettx.myTransaction("ada", forgotten.id))!.tx.failureReason], ["expired", "The payment was never completed at MoonPay."]);
 mpDown = true;
+expect("...but when MoonPay's list itself does not work, that is an error, never an empty list", await moonpay.fetchCustomerTransactions("cus_000000000000000000000000", 0).then(() => "empty", (e: Error) => e.message.slice(0, 11)), "MoonPay 503");
 const pend = await moonpay.startBuy("ada", { fiatCurrency: "usd", asset: "sol", fiatAmount: 40 });
 mp.set("mp_4", mpTx("mp_4", { externalCustomerId: ref, createdAt: iso(), status: "pending" }));
 offset += 3 * 60_000;

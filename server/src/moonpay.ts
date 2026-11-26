@@ -88,7 +88,7 @@ async function api<T>(method: "GET" | "POST", path: string, body?: unknown): Pro
   if (!res.ok) {
     let msg = text.slice(0, 200);
     try { msg = JSON.parse(text)?.message ?? msg; } catch { /* not JSON */ }
-    throw new MoonPayError(`MoonPay ${res.status}: ${msg || res.statusText}${res.status === 404 && /\/platform\//.test(path) ? " (if this is a whole feature, MoonPay may not have switched it on for the account yet)" : ""}`, res.status);
+    throw new MoonPayError(`MoonPay ${res.status}: ${msg || res.statusText}${res.status === 404 && /^\/platform\/v1\/[a-z-]+(\?|$)/.test(path) ? " (MoonPay may not have switched this feature on for the account yet)" : ""}`, res.status);
   }
   return (text ? JSON.parse(text) : null) as T;
 }
@@ -98,12 +98,26 @@ export async function fetchTransaction(id: string): Promise<any> {
   return api<any>("GET", `/platform/v1/transactions/${encodeURIComponent(id)}`);
 }
 // A customer's purchases (as MoonPay knows them) since a time, oldest pages first, at most `max`.
+// MoonPay answers "not found" (404) for a customer it has never seen, which is every customer
+// before their first purchase (seen in the sandbox on 26 Nov 2026): that is "no purchases", but
+// only once the list itself is known to work (asked without a customer, at most every 10
+// minutes), so a list that is down or switched off is never mistaken for an empty one.
+let listWorksAt = 0;
+async function listWorks() {
+  if (Date.now() - listWorksAt < 10 * 60_000) return true;
+  await api<any>("GET", "/platform/v1/transactions?limit=1"); // throws if it does not work
+  listWorksAt = Date.now();
+  return true;
+}
 export async function fetchCustomerTransactions(externalCustomerId: string, sinceMs: number, max = 100): Promise<any[]> {
   const out: any[] = [];
   let cursor: string | null = null;
   do {
     const q = new URLSearchParams({ externalCustomerId, startDate: new Date(sinceMs).toISOString(), limit: "50", ...(cursor ? { cursor } : {}) });
-    const page: any = await api<any>("GET", `/platform/v1/transactions?${q}`);
+    const page: any = await api<any>("GET", `/platform/v1/transactions?${q}`).catch(async (e) => {
+      if (e instanceof MoonPayError && e.status === 404 && !cursor && (await listWorks())) return { data: [], pageInfo: { nextCursor: null } };
+      throw e;
+    });
     out.push(...(Array.isArray(page?.data) ? page.data : Array.isArray(page?.transactions) ? page.transactions : Array.isArray(page) ? page : []));
     cursor = page?.pageInfo?.nextCursor ?? null;
   } while (cursor && out.length < max);
