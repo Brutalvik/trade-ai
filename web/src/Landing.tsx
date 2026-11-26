@@ -593,7 +593,7 @@ const FAQ: [string, ReactNode][] = [
   ["Is it real money?", "You start in Paper mode with practice money and real prices. Switch to Real mode in your profile to trade from your own Solana wallet; you approve every swap."],
   ["Does the AI guarantee profit?", "No. Its plans and win chances are estimates and are often wrong, and small coins can fall fast. The bot's rules limit losses, but trading is at your own risk."],
   ["Do I need to keep the page open?", "No. A scheduler wakes your bots about every minute and they check prices every 5 seconds."],
-  ["Who holds my funds?", "You do. Your wallet is created and secured by Privy; we never hold your keys or your funds."],
+  ["Who holds my funds?", "You do. Your wallet is made for you by MoonPay when you sign up and secured with your sign-in; we never hold your keys or your funds."],
   ["What limits an agent?", "Its budget. You choose how much each agent may invest; its AI decides when to buy and sell, and the agent stops when the budget is used up."],
 ];
 function Faq() {

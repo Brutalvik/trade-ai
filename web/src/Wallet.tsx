@@ -1,9 +1,8 @@
 // The wallet window, opened from the wallet button in the header. Real mode: the customer's
-// MoonPay wallet, buying with MoonPay, and every real-money transaction (MoonPay.tsx); the Privy
-// wallet stays under "Previous wallet" (SOL and token balances, and a Deposit screen).
+// MoonPay wallet, buying with MoonPay, and every real-money transaction (MoonPay.tsx). An account
+// that had a wallet before MoonPay (made by Privy, no longer used) sees it under "Previous wallet",
+// view only: nothing in the app can sign for it any more.
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
-import QRCode from "qrcode";
 import { api, fmtPct, fmtPrice, fmtUsd, type AppState, type WalletView } from "./api";
 import { Modal, useAccess } from "./Account";
 import { MoonPayPanel } from "./MoonPay";
@@ -35,7 +34,7 @@ function WalletModal({ notify, state, onClose }: { notify: (m: string, bad?: boo
   const real = me?.tradeMode === "real";
   return (
     <Modal title="Wallet" onClose={onClose} wide>
-      {real ? <MoonPayPanel notify={notify} previous={<SolanaWallet notify={notify} />} /> : <PaperAccount state={state} />}
+      {real ? <MoonPayPanel notify={notify} previous={me?.solanaAddress ? <SolanaWallet notify={notify} /> : null} /> : <PaperAccount state={state} />}
     </Modal>
   );
 }
@@ -95,7 +94,6 @@ function SolanaWallet({ notify }: { notify: (m: string, bad?: boolean) => void }
   const [view, setView] = useState<WalletView | null>(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
-  const [depositOpen, setDepositOpen] = useState(false);
   const load = (fresh = false) => {
     setLoading(true);
     setErr("");
@@ -109,22 +107,22 @@ function SolanaWallet({ notify }: { notify: (m: string, bad?: boolean) => void }
   return (
     <>
       {!address ? (
-        <p className="muted small">Your Solana wallet is being created. Sign out and back in, or open this again in a moment.</p>
+        <p className="muted small">This account has no wallet from before MoonPay.</p>
       ) : (
         <div className="wallet-tab">
           <div className="wallet-head">
             <div>
-              <div className="label-sm">Solana wallet</div>
+              <div className="label-sm">Previous wallet · Solana · view only</div>
               <div className="wallet-total">{view ? fmtUsd(view.totalUsd) : "…"}</div>
               <button className="link-btn mono small" onClick={() => void copy(address, notify)} title="Copy the full address">{address.slice(0, 6)}…{address.slice(-6)} ⧉</button>
             </div>
             <div className="wallet-actions">
-              <button className="btn buy" onClick={() => setDepositOpen(true)}>Deposit</button>
               <button className="btn ghost" onClick={() => load(true)} disabled={loading}>{loading ? "Refreshing…" : "↻ Refresh"}</button>
             </div>
           </div>
-          <p className="muted small">
-            Your own wallet: you can export its keys from Privy.
+          <p className="small down">
+            Your wallet from before MoonPay (made by Privy, which this app no longer uses). The app can't
+            send from it any more, so don't send money to it. Your wallet is in the first tab.
           </p>
           {err && <p className="down small">{err}</p>}
           {view && (
@@ -147,11 +145,9 @@ function SolanaWallet({ notify }: { notify: (m: string, bad?: boolean) => void }
                   ))}
                 </tbody>
               </table>
-              {view.holdings.length === 1 && view.holdings[0].amount === 0 && <p className="muted small pad">Empty so far. Use Deposit to add SOL or USDC.</p>}
               <p className="muted tiny">Updated {new Date(view.updatedAt).toLocaleTimeString()}{view.rpc === "public" ? " · using the public Solana network connection (can be slow)" : ""}</p>
             </div>
           )}
-          {depositOpen && <DepositModal address={address} onClose={() => setDepositOpen(false)} notify={notify} />}
         </div>
       )}
     </>
@@ -165,33 +161,4 @@ async function copy(text: string, notify: (m: string, bad?: boolean) => void) {
   } catch {
     notify(text);
   }
-}
-
-function DepositModal({ address, onClose, notify }: { address: string; onClose: () => void; notify: (m: string, bad?: boolean) => void }) {
-  const [qr, setQr] = useState("");
-  useEffect(() => {
-    QRCode.toDataURL(`solana:${address}`, { margin: 1, width: 220, color: { dark: "#04101c", light: "#ffffff" } }).then(setQr).catch(() => setQr(""));
-  }, [address]);
-  return createPortal(
-    <div className="modal-backdrop on-top">
-      <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="deposit-title">
-        <div className="modal-head">
-          <h2 id="deposit-title">Deposit to your wallet</h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close" title="Close">✕</button>
-        </div>
-        <div className="modal-body deposit-body">
-          <p>Send <b>SOL</b> or <b>USDC</b> (or other Solana tokens) to this address, from an exchange or another wallet.</p>
-          {qr && <img className="deposit-qr" src={qr} alt="QR code of your wallet address" />}
-          <div className="deposit-address mono">{address}</div>
-          <button className="btn buy wide" onClick={() => void copy(address, notify)}>Copy address</button>
-          <ul className="small deposit-notes">
-            <li><b>Solana network only.</b> Sending from another network (Ethereum, Base, BNB…) can lose the funds.</li>
-            <li>Keep a little SOL (about 0.01–0.05) for network fees.</li>
-            <li>Start small while real trading is new.</li>
-          </ul>
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
 }

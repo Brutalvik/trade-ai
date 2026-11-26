@@ -13,7 +13,6 @@ import { waitUntil } from "@vercel/functions";
 import * as auth from "./auth.js";
 import * as history from "./audit.js";
 import { logHistory } from "./botlog.js";
-import * as privy from "./privy.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import * as moonpay from "./moonpay.js";
@@ -123,7 +122,6 @@ app.get("/api/status", async (req, res) => {
       serverless: Boolean(process.env.VERCEL), // true = the dashboard must send heartbeats to keep the bot ticking
       commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").slice(0, 7), // deployed build, so open pages can offer a refresh
       alerts: alertChannel(), // "telegram" | "ntfy" | null
-      privyAppId: privy.privyAppId(), // public: the page uses it to load the wallet SDK
       activeAccounts: active, // bots / orders the scheduler keeps watching (null = the storage did not answer)
       solanaRpc: await rpcHealth(req.query.rpc === "1"), // "custom" (e.g. Helius) or "public"; ?rpc=1 also pings it
       storageStats: engine.storageStats(), // calls and bytes to the storage since this server copy started
@@ -227,16 +225,14 @@ app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
 // Your real Solana wallet (read-only): SOL and token balances with USD values.
 // Real trades from the user's own wallet (Jupiter): quote -> user signs in the browser -> execute.
-// Which wallet they trade from: their MoonPay wallet once it is on file (and MoonPay wallets are on),
-// else their previous wallet (Privy's). The server decides; the quote names it, and the browser
-// signs with that wallet only.
+// The wallet they trade from: their MoonPay wallet on file (MoonPay wallets on). The server decides;
+// the quote names it, and the browser signs with that wallet only. A wallet from before MoonPay
+// (Privy's) is never traded from: nothing in the app can sign for it any more.
 type Signed = NonNullable<Awaited<ReturnType<typeof auth.requestAuth>>>;
-async function tradingWallet(a: Signed): Promise<{ address: string; via: "moonpay" | "previous" } | null> {
-  if (moonwallet.moonxStatus().on) {
-    const w = await moonwallet.myWallet(a.key);
-    if (w) return { address: w.address, via: "moonpay" };
-  }
-  return a.user.solanaAddress ? { address: a.user.solanaAddress, via: "previous" } : null;
+async function tradingWallet(a: Signed): Promise<{ address: string; via: "moonpay" } | null> {
+  if (!moonwallet.moonxStatus().on) return null;
+  const w = await moonwallet.myWallet(a.key);
+  return w ? { address: w.address, via: "moonpay" } : null;
 }
 const realUser = async (a: Signed) => ({ key: a.key, plan: a.plan, solanaAddress: (await tradingWallet(a))?.address ?? null, tradeMode: a.user.tradeMode });
 // The balances of the wallet they trade from (the trade form shows them).
@@ -468,25 +464,9 @@ const authRoute = (fn: (req: Request, res: Response) => Promise<unknown>) => asy
   }
 };
 app.get("/api/auth/me", authRoute(auth.me));
-// Privy custom auth: the public key set, and a short-lived token for the signed-in user.
-app.get("/api/auth/jwks.json", async (_req, res) => {
-  res.setHeader("Cache-Control", "public, max-age=300");
-  res.json(await privy.jwks());
-});
-app.get("/api/auth/privy-token", authRoute(async (req, res) => {
-  const a = await auth.requestAuth(req);
-  if (!a) {
-    res.status(401);
-    throw new Error("Sign in first");
-  }
-  return privy.tokenFor(a.key);
-}));
 app.post("/api/auth/signup", authRoute(auth.signUp));
 app.post("/api/auth/signin", authRoute(auth.signIn));
 app.post("/api/auth/signout", authRoute(auth.signOut));
-// Sign in with Privy (email code or Google): verify, then link or create our own user record.
-app.post("/api/auth/privy-login", authRoute(auth.privyLogin));
-app.post("/api/auth/privy-complete", authRoute(auth.privyCompleteProfile));
 // Sign up and sign in with MoonPay (its wallet sign-in). Off until MoonPay's wallet keys are set.
 app.post("/api/auth/moonpay-login", authRoute(auth.moonpayLogin));
 app.post("/api/auth/moonpay-complete", authRoute(auth.moonpayCompleteProfile));

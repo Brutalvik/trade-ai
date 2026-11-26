@@ -1,7 +1,5 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
-import { createContext, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { usePrivy } from "@privy-io/react-auth";
-import { useWallets } from "@privy-io/react-auth/solana";
+import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api, fmtPrice, fmtUsd, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type Trade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 
@@ -146,124 +144,23 @@ export function Avatar({ user, size }: { user: User; size: number }) {
 // as soon as sign-in is ready, then the flag is cleared.
 export const SIGNIN_PENDING = "nexus-signin-pending";
 
-// True when the page runs inside Privy's provider (sign-in and wallets through Privy).
-export const PrivyEnabled = createContext(false);
 // When MoonPay's wallets are switched on (keys set on the server), sign-in runs on MoonPay: its
 // account button is given here (MoonPaySignIn.tsx, loaded only then: MoonPay's kit is large).
 export const MoonPayUI = createContext<null | { AccountButton: (p: AccountButtonProps) => ReactNode }>(null);
-// A wallet this browser can sign real trades with (MoonPay's, from MoonPaySignIn.tsx; or the previous
-// one, Privy's). The server names the wallet each trade must be signed by; only that one is used.
-export type TxSigner = { via: "moonpay" | "previous"; addresses: string[]; sign: (address: string, tx: Uint8Array) => Promise<Uint8Array> };
+// The MoonPay wallet this browser can sign real trades with (MoonPaySignIn.tsx). The server names the
+// wallet each trade must be signed by; only that one is used.
+export type TxSigner = { via: "moonpay"; addresses: string[]; sign: (address: string, tx: Uint8Array) => Promise<Uint8Array> };
 export const MoonPaySigner = createContext<TxSigner | null>(null);
 
 type Props = { notify: (m: string, bad?: boolean) => void; onChange: () => void; state: AppState | null };
 export type AccountButtonProps = Props;
 export function AccountButton(props: Props) {
   const moonpay = useContext(MoonPayUI);
-  const privy = useContext(PrivyEnabled);
   if (moonpay) return <>{moonpay.AccountButton(props)}</>;
-  return privy ? <PrivyAccountButton {...props} /> : <PasswordAccountButton {...props} />;
+  return <PasswordAccountButton {...props} />;
 }
 
-// Sign in with Privy (email code or Google). The server verifies it and keeps its own copy of
-// the user (linked by email for existing accounts); new people pick a username once.
-function PrivyAccountButton({ notify, onChange, state }: Props) {
-  const { ready, authenticated, login, logout, getAccessToken } = usePrivy();
-  useEffect(() => {
-    const open = () => {
-      if (!ready) return;
-      if (authenticated) void link();
-      else login();
-    };
-    window.addEventListener(SIGNIN_EVENT, open);
-    return () => window.removeEventListener(SIGNIN_EVENT, open);
-  }); // re-subscribes each render so it uses the latest state
-  useEffect(() => {
-    if (!ready || !sessionStorage.getItem(SIGNIN_PENDING)) return;
-    sessionStorage.removeItem(SIGNIN_PENDING);
-    if (!authenticated) login();
-  }, [ready, authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
-  const { wallets } = useWallets();
-  const [user, setUser] = useState<User | null | undefined>(undefined);
-  const [open, setOpen] = useState(false);
-  const [setup, setSetup] = useState<{ email: string | null; firstName: string; lastName: string } | null>(null);
-  const linking = useRef(false);
-  useEffect(() => {
-    api.me().then((r) => setUser(r.user)).catch(() => setUser(null));
-  }, []);
-  const link = async () => {
-    if (linking.current) return;
-    linking.current = true;
-    try {
-      const token = await getAccessToken();
-      if (!token) return;
-      const r = await api.privyLogin(token);
-      if (r.needsProfile) setSetup({ email: r.email ?? null, firstName: r.firstName ?? "", lastName: r.lastName ?? "" });
-      else if (r.user) {
-        setUser(r.user);
-        onChange();
-        notify(`Welcome, ${r.user.firstName}! Your paper account and wallet are ready.`);
-      }
-    } catch (e: any) {
-      notify(e.message, true);
-    } finally {
-      linking.current = false;
-    }
-  };
-  // Signed in to Privy but not to the app yet: link the two.
-  useEffect(() => {
-    if (ready && authenticated && user === null && !setup) void link();
-  }, [ready, authenticated, user, setup]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The wallet is created just after the first sign-in: tell the server its address once it exists.
-  const wallet = wallets[0]?.address;
-  useEffect(() => {
-    if (user && wallet && !user.solanaAddress && authenticated) void link();
-  }, [user?.username, wallet, authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
-  const signOut = async () => {
-    await api.signOut().catch(() => {});
-    await logout().catch(() => {});
-    setUser(null);
-    setOpen(false);
-    onChange();
-    notify("Signed out. Your paper account is hidden until you sign in again.");
-  };
-  if (user === undefined) return <span className="avatar-slot" />;
-  return (
-    <>
-      {user ? (
-        <button className="avatar-btn" onClick={() => setOpen(true)} data-tip="Profile" aria-label={`Profile: ${user.firstName} ${user.lastName}`}>
-          <Avatar user={user} size={34} />
-        </button>
-      ) : (
-        <button className="btn ghost signin-btn" onClick={() => (authenticated ? void link() : login())} disabled={!ready}>Sign in</button>
-      )}
-      {setup && (
-        <SetupProfileModal
-          initial={setup}
-          onClose={() => { setSetup(null); void logout(); }}
-          onDone={(u) => { setSetup(null); setUser(u); onChange(); notify(`Welcome, ${u.firstName}! Your paper account and wallet are ready.`); }}
-          complete={async (f) => {
-            const token = await getAccessToken();
-            if (!token) throw new Error("Your sign-in expired. Please sign in again.");
-            return api.privyComplete({ accessToken: token, ...f });
-          }}
-        />
-      )}
-      {open && user && (
-        <ProfileModal
-          user={{ ...user, solanaAddress: user.solanaAddress ?? wallet ?? null }}
-          state={state}
-          notify={notify}
-          onClose={() => setOpen(false)}
-          onSignedOut={() => void signOut()}
-          signOutOverride={signOut}
-        />
-      )}
-    </>
-  );
-}
-
-// First sign-in (MoonPay or Privy): pick a username (and confirm the name) for the app's own account.
+// First MoonPay sign-in: pick a username (and confirm the name) for the app's own account.
 export type ProfileFields = { username: string; firstName: string; lastName: string };
 export function SetupProfileModal({ initial, onClose, onDone, complete, walletNote = "Your Solana wallet is created automatically." }: { initial: { email: string | null; firstName: string; lastName: string }; onClose: () => void; onDone: (u: User) => void; complete: (f: ProfileFields) => Promise<{ user: User }>; walletNote?: string }) {
   const [f, setF] = useState({ username: "", firstName: initial.firstName, lastName: initial.lastName });

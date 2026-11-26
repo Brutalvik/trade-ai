@@ -8,8 +8,8 @@
 //  - and the wallet must sign a one-time message from the server (checked here with the wallet's
 //    own public key, which is its address).
 // Once a wallet is on file, another one is never put in its place by these routes.
-// (Making a customer's wallet in advance from the server needs MoonPay's server kit, whose package
-// clashes with Privy's over the "viem" library as of 26 Nov 2026; it can be added when that is fixed.)
+// (Making a customer's wallet in advance from the server would need MoonPay's server kit; it is not
+// used: MoonPay makes the wallet when the customer signs up.)
 //
 // Settings (Vercel): MOONX_PUBLISHABLE_KEY (moon_pk_test_... / moon_pk_live_...), MOONX_APP_ID (the
 // wallet app's id, from its dashboard), MOONX_ISSUER (default https://x-api.moonpay.com).

@@ -209,8 +209,7 @@ expect("it is signed the way MoonPay checks: HMAC-SHA256 of the query, with the 
 expect("...and tied to the customer's address, which this account requires in sandbox too", qs.get("allowedIpAddress"), crypto.createHmac("sha256", "sk_test_secret").update("203.0.113.42").digest("base64"));
 const local = await moonpay.widgetBuy("ada", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 60 }, "127.0.0.1");
 expect("on the customer's own machine (the server sees 'localhost'), the address MoonPay sees is asked of MoonPay", new URL(local.url).searchParams.get("allowedIpAddress"), crypto.createHmac("sha256", "sk_test_secret").update("198.51.100.23").digest("base64"));
-const noWallet = await moonpay.widgetBuy("eve", { solanaAddress: "EveCurrent11111111111111111111111111111111" }, { fiatCurrency: "usd", asset: "sol", fiatAmount: 40 }, "203.0.113.9");
-expect("without a MoonPay wallet, in sandbox only, test coins go to the account's current wallet", [noWallet.which, new URL(noWallet.url).searchParams.get("walletAddress")], ["current-test", "EveCurrent11111111111111111111111111111111"]);
+expect("without a MoonPay wallet nothing is bought, sandbox included: a wallet from before MoonPay (Privy's) is never paid into", await wfail(moonpay.widgetBuy("eve", { solanaAddress: "EveCurrent11111111111111111111111111111111" }, { fiatCurrency: "usd", asset: "sol", fiatAmount: 40 }, "203.0.113.9")), "Your wallet is not set up yet.")
 // The modal asks how it is going: the server asks MoonPay for the purchases carrying our reference.
 expect("before the customer pays, MoonPay knows of no purchase: still started", (await moonpay.checkBuy("ada", w.id)).status, "started");
 widgetTxs.push({ id: "mpw_other_wallet", status: "completed", createdAt: iso(), updatedAt: iso(), externalTransactionId: w.id, externalCustomerId: ref, walletAddress: "SomeoneElse222", baseCurrencyAmount: 60, quoteCurrencyAmount: 0.4 });

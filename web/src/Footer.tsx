@@ -69,14 +69,14 @@ function TermsModal({ onClose, onPrivacy }: { onClose: () => void; onPrivacy: ()
           <p>TRADING//RUST is an experimental crypto trading app. It shows market data, asks an AI model for trading plans, runs bots that follow those plans on a practice ("paper") account, and lets you trade real crypto from your own Solana wallet. By creating an account or using the app you agree to these terms. You must be at least 18 and allowed to trade crypto where you live.</p>
 
           <h3>2. Your account</h3>
-          <p>You sign in with an email code or Google (through Privy) or with a username and password. One account per person. Your username can't be changed. Keep your sign-in secure: you are responsible for everything done from your account. Every account has its own paper account, bots, trades and history.</p>
+          <p>You sign in through MoonPay, with a code sent to your email, Google or Apple. One account per person. Your username can't be changed. Keep your sign-in secure: you are responsible for everything done from your account. Every account has its own paper account, bots, trades and history.</p>
 
           <h3>3. Paper trading</h3>
           <p>The paper account uses practice money. Nothing is bought or sold for real. Fees and slippage are simulated from the settings you choose, so real results would differ, often for the worse.</p>
 
           <h3>4. Real trading from your own wallet</h3>
           <ul>
-            <li><b>Your wallet, your keys.</b> Your Solana wallet is created and secured by Privy. We never hold your keys or your funds, and we can't move them. You can export your keys from Privy.</li>
+            <li><b>Your wallet, your keys.</b> Your Solana wallet is made for you by MoonPay when you sign up and is secured by MoonPay with your sign-in. We never hold your keys or your funds, and we can't move them: every transaction from it is approved by you.</li>
             <li><b>You approve every real trade.</b> Each one is a swap routed by Jupiter that you review and sign yourself. Once signed and confirmed on the blockchain it can't be reversed.</li>
             <li><b>Prices move.</b> What you receive can differ from the quote within the slippage shown, and network fees apply. A swap can fail; failed swaps don't move your funds but may cost a network fee.</li>
             <li><b>Solana only.</b> Real trading supports Solana tokens. Coins on other chains are paper-only. Sending funds from another network to your wallet can lose them.</li>
@@ -103,7 +103,7 @@ function TermsModal({ onClose, onPrivacy }: { onClose: () => void; onPrivacy: ()
           <p>How we collect, use, share and protect your personal information, and your rights over it, is set out in our <button className="link" onClick={onPrivacy}>Privacy Policy</button>, which is part of these terms. We don't sell your data.</p>
 
           <h3>11. Third-party services</h3>
-          <p>The app relies on other services, each with its own terms: Privy (sign-in and wallets), Jupiter (swaps), the Solana network and RPC providers such as Helius (balances and transactions), CoinGecko, DexScreener, GeckoTerminal and CoinMarketCap (prices and charts), Anthropic (AI), and Vercel and Upstash (hosting and storage). Their data can be delayed, incomplete or wrong, and they can be unavailable.</p>
+          <p>The app relies on other services, each with its own terms: MoonPay (sign-in, wallets and buying crypto), Jupiter (swaps), the Solana network and RPC providers such as Helius (balances and transactions), CoinGecko, DexScreener, GeckoTerminal and CoinMarketCap (prices and charts), Anthropic (AI), and Vercel and Supabase (hosting and storage). Their data can be delayed, incomplete or wrong, and they can be unavailable.</p>
 
           <h3>12. Fair use</h3>
           <p>Don't misuse the app: no attacks, scraping or automated abuse of our services, no use for anything illegal, and no use where crypto trading is prohibited or by sanctioned persons. We may suspend accounts that break these terms.</p>
@@ -148,8 +148,8 @@ function PrivacyModal({ onClose }: { onClose: () => void }) {
 
           <h3>2. What we collect</h3>
           <ul>
-            <li><b>Account details</b>: first and last name, username, email address, and a securely hashed password (if you use one). If you sign in with an email code or Google, our sign-in provider Privy confirms your email for us.</li>
-            <li><b>Wallet information</b>: your Solana wallet's public address (created by Privy). We never receive or store your private keys.</li>
+            <li><b>Account details</b>: first and last name, username, email address, and a securely hashed password (only for accounts made with one before sign-in moved to MoonPay). When you sign in, MoonPay confirms your email for us.</li>
+            <li><b>Wallet information</b>: your Solana wallet's public address (made by MoonPay). We never receive or store your private keys.</li>
             <li><b>Trading and app activity</b>: your paper account, positions, trades, orders, bot settings and logs, AI analyses and token use, real-trade records (amounts, tokens and transaction signatures), and your plan.</li>
             <li><b>Activity and consent records</b>: sign-ins, setting changes, bot starts and stops, and each "I understand" you confirm, with the warning shown, the time, your IP address and your browser type.</li>
             <li><b>Stored on your device</b>: display preferences, chart drawings and cached chart data are kept in your browser's local storage, not on our servers. We don't use advertising or tracking cookies, and we don't use analytics trackers.</li>
@@ -171,7 +171,7 @@ function PrivacyModal({ onClose }: { onClose: () => void }) {
           <h3>5. Who we share it with</h3>
           <p>We share personal information only with service providers that help run the app, and only what each needs:</p>
           <ul>
-            <li><b>Privy</b>: sign-in and your embedded wallet.</li>
+            <li><b>MoonPay</b>: sign-in, your wallet, and buying crypto. When you buy, MoonPay receives the amount, your wallet address and our reference for your account; it takes the payment and checks your identity under its own terms and privacy policy.</li>
             <li><b>Vercel</b> (hosting) and <b>Supabase</b> (database storage).</li>
             <li><b>Anthropic</b> (AI): coin market data and anonymous statistics about your bot's past trades are sent to create AI plans. Your name, email and username are not sent.</li>
             <li><b>Jupiter</b>, <b>Helius</b> and the <b>Solana network</b>: your wallet address and the trades you sign. Transactions on the blockchain are public and permanent by design.</li>
@@ -186,7 +186,7 @@ function PrivacyModal({ onClose }: { onClose: () => void }) {
           <p>We keep your information while your account is open. If you ask us to close your account, we delete or anonymize your personal information within 90 days, except records we need to keep for legal, tax or dispute reasons (such as consent records and transaction history), which we keep for up to 7 years and then delete. Information already recorded on a public blockchain can't be deleted by anyone.</p>
 
           <h3>8. How we protect it</h3>
-          <p>We use safeguards suited to its sensitivity: encrypted connections (HTTPS), hashed passwords, access limited to staff who need it, and providers with recognised security practices. Your wallet's keys stay with Privy and you. No system is perfectly secure; if a breach creates a real risk of significant harm, we will notify you and the Privacy Commissioner of Canada (and Quebec's Commission d'accès à l'information where required) as the law requires, and keep a record of it.</p>
+          <p>We use safeguards suited to its sensitivity: encrypted connections (HTTPS), hashed passwords, access limited to staff who need it, and providers with recognised security practices. Your wallet's keys are secured by MoonPay with your sign-in; we never hold them. No system is perfectly secure; if a breach creates a real risk of significant harm, we will notify you and the Privacy Commissioner of Canada (and Quebec's Commission d'accès à l'information where required) as the law requires, and keep a record of it.</p>
 
           <h3>9. Your rights</h3>
           <ul>

@@ -1,11 +1,10 @@
 // Real mode: buy and sell from your own Solana wallet through Jupiter.
 // Flow: Review (server gets a price + unsigned swap for the wallet you trade from) -> you check it ->
-// Confirm (that wallet signs in your browser: MoonPay's, or the previous one, Privy's) -> the server
-// checks it's the same swap and sends it. Nothing moves until you sign.
-import { useContext, useEffect, useState, type ReactNode } from "react";
-import { useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+// Confirm (your MoonPay wallet signs in your browser) -> the server checks it's the same swap and
+// sends it. Nothing moves until you sign.
+import { useContext, useEffect, useState } from "react";
 import { api, fmtPrice, fmtUsd, type PairInfo, type RealQuote, type RealTrade, type WalletView } from "./api";
-import { MoonPaySigner, PrivyEnabled, useAccess, type TxSigner } from "./Account";
+import { MoonPaySigner, useAccess, type TxSigner } from "./Account";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -19,29 +18,11 @@ const bytesToB64 = (u: Uint8Array) => {
 export const solscanTx = (sig: string) => `https://solscan.io/tx/${sig}`;
 
 export function RealTradePanel({ pair, notify }: { pair: PairInfo | null; notify: (m: string, bad?: boolean) => void }) {
-  const privy = useContext(PrivyEnabled);
   const moonpay = useContext(MoonPaySigner);
-  if (!privy && !moonpay) return <RealShell><p className="muted small">Real trading needs wallet sign-in, which isn't set up on this server.</p></RealShell>;
+  if (!moonpay) return <RealShell><p className="muted small">Real trading needs MoonPay sign-in, which isn't switched on yet.</p></RealShell>;
   if (!pair) return <RealShell><p className="muted small">Pick a coin to trade.</p></RealShell>;
   if (pair.chain !== "solana") return <RealShell><p className="muted small">Real trading is Solana-only. Pick a Solana coin from the lists on the left.</p></RealShell>;
-  if (!privy) return <RealTradeForm pair={pair} notify={notify} signers={[moonpay!]} />;
-  return <WithPrivy>{(p) => <RealTradeForm pair={pair} notify={notify} signers={moonpay ? [moonpay, p] : [p]} />}</WithPrivy>;
-}
-
-// The previous wallet (Privy's), for customers who trade from it until their MoonPay wallet is on file.
-function WithPrivy({ children }: { children: (s: TxSigner) => ReactNode }) {
-  const { wallets } = useWallets();
-  const { signTransaction } = useSignTransaction();
-  const signer: TxSigner = {
-    via: "previous",
-    addresses: wallets.map((w) => w.address),
-    sign: async (address, tx) => {
-      const w = wallets.find((x) => x.address === address);
-      if (!w) throw new Error("Your wallet isn't connected yet. Sign out and back in, then try again.");
-      return (await signTransaction({ transaction: tx, wallet: w, chain: "solana:mainnet" })).signedTransaction;
-    },
-  };
-  return <>{children(signer)}</>;
+  return <RealTradeForm pair={pair} notify={notify} signers={[moonpay]} />;
 }
 
 function RealShell({ children }: { children: React.ReactNode }) {
@@ -58,7 +39,7 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
   const [pay, setPay] = useState<"SOL" | "USDC">("SOL");
   const [usd, setUsd] = useState("10");
   const [pct, setPct] = useState(100);
-  const [wallet, setWallet] = useState<(WalletView & { via?: "moonpay" | "previous" | null }) | null>(null);
+  const [wallet, setWallet] = useState<(WalletView & { via?: "moonpay" | null }) | null>(null);
   const [quote, setQuote] = useState<RealQuote | null>(null);
   const [busy, setBusy] = useState<"" | "quote" | "sign" | "send">("");
   const [err, setErr] = useState("");
@@ -101,7 +82,7 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
     if (!quote) return;
     // Only the wallet the server quoted for may sign it.
     const s = signers.find((x) => x.addresses.includes(quote.wallet));
-    if (!s) return setErr(wallet?.via === "moonpay" ? "Sign in with MoonPay again to sign with your MoonPay wallet." : "Your wallet isn't connected yet. Sign out and back in, then try again.");
+    if (!s) return setErr("Sign in with MoonPay again to sign with your MoonPay wallet.");
     setErr("");
     setBusy("sign");
     try {

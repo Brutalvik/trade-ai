@@ -1,5 +1,4 @@
-// Real trades from the user's own Solana wallet (their MoonPay wallet, or the previous Privy one),
-// through Jupiter Swap V2.
+// Real trades from the user's own Solana wallet (their MoonPay wallet), through Jupiter Swap V2.
 //
 // 1. quote:   the server asks Jupiter for an order (an unsigned swap transaction for the user's
 //             wallet), checks balances and limits, and keeps the order for 2 minutes.
@@ -83,7 +82,7 @@ async function platformFee(key: string, plan: PlanId): Promise<{ bps: number; no
 
 function checkUser(u: RealUser) {
   if (u.tradeMode !== "real") throw new Error("Switch to Real in your profile first.");
-  if (!u.solanaAddress || !BASE58.test(u.solanaAddress)) throw new Error("Your wallet isn't ready yet. Sign out and back in.");
+  if (!u.solanaAddress || !BASE58.test(u.solanaAddress)) throw new Error("Your MoonPay wallet isn't connected yet. Open the wallet and choose Connect with MoonPay.");
   return u.solanaAddress;
 }
 

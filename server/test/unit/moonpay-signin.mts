@@ -85,8 +85,9 @@ const pw = await call("/api/auth/signup", { username: "bob", email: "bob@example
 check("(an account made the old way, with a password)", pw.status === 200, pw.body);
 const rw = async (cookie: string) => { const r = (await call("/api/real/wallet", undefined, cookie)).body; return [r.address, r.via]; };
 expect("real trades: no wallet at all, no trading wallet", await rw(pw.cookie), [null, null]);
-await store.kvSet("user:bob", { ...(await store.kvGet("user:bob")), solanaAddress: A("BBPRIVY") }); // (as a Privy sign-in left it)
-expect("real trades: before a MoonPay wallet is on file, from the previous (Privy) wallet", await rw(pw.cookie), [A("BBPRIVY"), "previous"]);
+await store.kvSet("user:bob", { ...(await store.kvGet("user:bob")), solanaAddress: A("BBPRIVY") }); // (as a Privy sign-in left it, before Privy was removed)
+expect("real trades: a wallet from before MoonPay (Privy's) is never traded from", await rw(pw.cookie), [null, null]);
+expect("...and the old Privy sign-in is gone", (await call("/api/auth/privy-login", { accessToken: "x" })).status, 404);
 people.mx_bob = { status: "active", wallets: [sol(A("BBNEW"), "2026-11-26T12:00:00Z"), sol(A("BBPREV"), "2026-11-26T09:00:00Z")] };
 const bob = await call("/api/auth/moonpay-login", tokens("mx_bob", "bob@example.test"));
 expect("signing in with MoonPay with the same email lands in that account", bob.body.user?.username, "bob");
@@ -137,7 +138,7 @@ people.mx_dot = { status: "active", wallets: [] };
 const dot = await call("/api/auth/moonpay-complete", { ...tokens("mx_dot", "dot@example.test"), username: "dot", firstName: "Dot", lastName: "C" });
 expect("when MoonPay has made none yet, connecting says to try again", (await call("/api/moonpay/wallet/sync", tokens("mx_dot", "dot@example.test"), dot.cookie)).body.error, "Your wallets have not been made yet. Try again in a moment.");
 delete process.env.MOONX_PUBLISHABLE_KEY;
-expect("real trades: with MoonPay wallets switched off, from the previous wallet again", await rw(bob.cookie), [A("BBPRIVY"), "previous"]);
+expect("real trades: with MoonPay wallets switched off, from no wallet at all", await rw(bob.cookie), [null, null]);
 expect("switched off, a MoonPay sign-in says so plainly", await err(tokens("mx_ada", "ada@example.test")), "Signing in with MoonPay is not switched on. MoonPay wallets are not set up (no MOONX_PUBLISHABLE_KEY).");
 server.close();
 

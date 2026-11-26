@@ -21,7 +21,7 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
     window.addEventListener(MOONPAY_WALLET_EVENT, again);
     return () => window.removeEventListener(MOONPAY_WALLET_EVENT, again);
   }, []);
-  const tabs: [Tab, string][] = [["wallet", "Your wallets"], ["buy", "Buy"], ["history", "Transactions"], ["previous", "Previous wallet"]];
+  const tabs: [Tab, string][] = [["wallet", "Your wallets"], ["buy", "Buy"], ["history", "Transactions"], ...(previous ? ([["previous", "Previous wallet"]] as [Tab, string][]) : [])];
   return (
     <div className="mp">
       <div className="tabs" role="tablist">

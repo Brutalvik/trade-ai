@@ -354,15 +354,11 @@ async function publicIpFor(observed: string | undefined): Promise<string> {
 }
 const WIDGET = (mode: string | null) => (mode === "live" ? "https://buy.moonpay.com" : "https://buy-sandbox.moonpay.com");
 const PAY_WITH: Record<string, string> = { card: "credit_debit_card", apple_pay: "apple_pay", google_pay: "google_pay" };
-// Where a test purchase goes when the customer has no MoonPay wallet yet: the account's current
-// wallet address, in sandbox only (test coins on Solana's test network). Real money only ever goes
-// to a MoonPay wallet on file.
-async function buyInto(key: string, user: { solanaAddress?: string | null }, kind: WalletKind = "solana"): Promise<{ address: string; which: "moonpay" | "current-test" } | null> {
+// Where a purchase goes: only ever the customer's MoonPay wallet of the coin's kind on file
+// (sandbox and live alike).
+async function buyInto(key: string, _user?: unknown, kind: WalletKind = "solana"): Promise<{ address: string; which: "moonpay" } | null> {
   const w = await walletOf(key, kind);
-  if (w?.address) return { address: w.address, which: "moonpay" };
-  if (kind !== "solana") return null;
-  if (config().mode === "sandbox" && user.solanaAddress && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(user.solanaAddress)) return { address: user.solanaAddress, which: "current-test" };
-  return null;
+  return w?.address ? { address: w.address, which: "moonpay" } : null;
 }
 export { buyInto as buyDestination };
 async function checkRate(key: string) {

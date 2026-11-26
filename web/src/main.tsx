@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 
 // The landing page lives at "/", the trading app at "/app". Each loads only its own code:
-// the landing page never downloads the app (or Privy). Old links to the app's pages
+// the landing page never downloads the app (or MoonPay's sign-in kit). Old links to the app's pages
 // (/#guide, /#privacy, /#terms) still open them in the app.
 const path = window.location.pathname
 const inApp = path === '/app' || path.startsWith('/app/')

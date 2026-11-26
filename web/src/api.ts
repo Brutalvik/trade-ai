@@ -228,8 +228,8 @@ export const api = {
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
   realQuote: (b: { side: "BUY" | "SELL"; pay: "SOL" | "USDC"; mint: string; symbol: string; usd?: number; pct?: number }) => req<RealQuote>("/real/quote", b),
   realExecute: (b: { requestId: string; signedTransaction: string }) => req<RealTrade>("/real/execute", b),
-  // The wallet real trades come from (the MoonPay wallet once on file, else the previous one) and its balances.
-  realWallet: (fresh = false) => req<WalletView & { via: "moonpay" | "previous" | null }>(`/real/wallet${fresh ? "?fresh=1" : ""}`),
+  // The wallet real trades come from (the MoonPay wallet on file) and its balances.
+  realWallet: (fresh = false) => req<WalletView & { via: "moonpay" | null }>(`/real/wallet${fresh ? "?fresh=1" : ""}`),
   realTrades: (limit = 50) => req<RealTrade[]>(`/real/trades?limit=${limit}`),
   list: (kind: ListKind) => req<{ kind: ListKind; coins: ListCoin[] }>(`/lists/${kind}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
@@ -261,8 +261,6 @@ export const api = {
   signIn: (b: { login: string; password: string }) => req<{ user: User }>("/auth/signin", b),
   signUp: (b: { username: string; firstName: string; lastName: string; email: string; password: string }) => req<{ user: User }>("/auth/signup", b),
   signOut: () => req("/auth/signout", {}),
-  privyLogin: (accessToken: string) => req<{ user?: User; needsProfile?: boolean; email?: string | null; firstName?: string; lastName?: string }>("/auth/privy-login", { accessToken }),
-  privyComplete: (b: { accessToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/privy-complete", b),
   // Sign up and sign in with MoonPay (its wallet sign-in): MoonPay's two tokens; the server checks them itself.
   moonpayLogin: (t: { accessToken: string; identityToken: string }) => req<{ user?: User; needsProfile?: boolean; email?: string | null; firstName?: string; lastName?: string }>("/auth/moonpay-login", t),
   moonpayComplete: (b: { accessToken: string; identityToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/moonpay-complete", b),
