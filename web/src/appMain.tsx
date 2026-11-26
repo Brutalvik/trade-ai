@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import type { Root } from 'react-dom/client'
 import { PrivyProvider } from '@privy-io/react-auth'
+import { Analytics } from '@vercel/analytics/react'
 import App from './App.tsx'
 import { PrivyEnabled } from './Account.tsx'
 
@@ -28,6 +29,7 @@ export function start(root: Root) {
         ) : (
           <App />
         )}
+        <Analytics />
       </StrictMode>,
     )
   }

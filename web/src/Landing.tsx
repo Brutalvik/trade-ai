@@ -1,6 +1,7 @@
 // Landing page at "/": live markets, a try-the-AI demo on real candles, a playable bot replay,
 // features and interactive pricing. The trading app itself lives at /app.
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import { api, fmtBig, fmtPrice, type Candle, type ListCoin, type PlanInfo } from "./api";
 import "./landing.css";
 
@@ -59,6 +60,7 @@ export default function Landing() {
         </nav>
         <p>Trading is at your own risk. Crypto, and small coins above all, can lose most of their value in minutes. AI plans are estimates and are often wrong. Nothing here is financial advice.</p>
       </footer>
+      <Analytics />
     </div>
   );
 }
