@@ -32,7 +32,7 @@ export function moonxConfig() {
   // moon_pk_live_ is live; any other is treated as a test key. The common mix-ups are named
   // precisely, and the value itself is never shown.
   if (/^["']|["']$/.test(publishableKey)) return off("MOONX_PUBLISHABLE_KEY has quotes around it in Vercel: remove them.");
-  if (publishableKey.startsWith("moon_sk_") || publishableKey.startsWith("sk_")) return off("MOONX_PUBLISHABLE_KEY holds a SECRET key: delete it from Vercel, roll that key in MoonPay's dashboard, and use the publishable key (moon_pk_...) instead.");
+  if (publishableKey.startsWith("moon_sk_") || publishableKey.startsWith("sk_")) return off("MOONX_PUBLISHABLE_KEY holds a SECRET key: replace it with the wallet app's publishable key (moon_pk_...), from the Embedded Wallets dashboard, Developer, API Keys. (The server never sends this value anywhere.)");
   if (publishableKey.startsWith("pk_")) return off("MOONX_PUBLISHABLE_KEY holds MoonPay's buying key (pk_...): use the wallet app's publishable key (moon_pk_...), from the Embedded Wallets dashboard, Developer, API Keys.");
   if (!publishableKey.startsWith("moon_pk_")) return off("MOONX_PUBLISHABLE_KEY is not a MoonPay wallet key: it should start with moon_pk_ (Embedded Wallets dashboard, Developer, API Keys).");
   const mode = publishableKey.startsWith("moon_pk_live_") ? "live" : "sandbox";

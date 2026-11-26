@@ -10,8 +10,11 @@
 const NAME = "TRADING//RUST";
 const ICON = "/favicon.svg";
 const UP = "#00f5a0", DOWN = "#ff3d71"; // the app's own green and red (--up, --down)
-// The logo's two shapes (public/favicon.svg, public/logo.svg), drawn in a light-to-deep gradient of
-// one colour, as the logo is in cyan and blue: [light, middle, deep] for each of its two shapes.
+// The tab's version of the logo (public/favicon.svg): the same two shapes with the same gap, drawn
+// steeper so they fill a square tab (the full logo, public/logo.svg, is twice as wide as it is tall
+// and would be a thin strip there). Each in a light-to-deep gradient of one colour, as the logo is
+// in cyan and blue: [light, middle, deep] for each of its two shapes.
+export const ICON_SHAPES = { left: "M0 76 47 0V76Z", right: "M53 0H100L53 76Z" };
 const SHADES = {
   up: { left: ["#8dffd6", UP, "#00a866"], right: ["#3dfcc0", "#00dc92", "#00995f"] },
   down: { left: ["#ffa3b9", DOWN, "#c20f3d"], right: ["#ff7a9b", "#f5285f", "#b30c39"] },
@@ -19,7 +22,7 @@ const SHADES = {
 const logoIcon = (tone: "up" | "down") => {
   const g = (id: string, x2: string, [a, b, c]: string[]) => `<linearGradient id="${id}" x1="0" y1="0" x2="${x2}" y2="1"><stop offset="0" stop-color="${a}"/><stop offset=".48" stop-color="${b}"/><stop offset="1" stop-color="${c}"/></linearGradient>`;
   const s = SHADES[tone];
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 22 1048 476"><defs>${g("l", "1", s.left)}${g("r", ".7", s.right)}</defs><path d="M24 490 506 30V490Z" fill="url(#l)"/><path d="M530 30H1056L530 490Z" fill="url(#r)"/></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -12 100 100"><defs>${g("l", "1", s.left)}${g("r", ".7", s.right)}</defs><path d="${ICON_SHAPES.left}" fill="url(#l)"/><path d="${ICON_SHAPES.right}" fill="url(#r)"/></svg>`;
 };
 
 export type TabTone = "up" | "down" | "flat";

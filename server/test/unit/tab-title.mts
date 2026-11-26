@@ -1,7 +1,8 @@
 // The browser tab's text and icon (web/src/tabTitle.ts): "T//R" and the account's profit or loss
 // in dollars; the icon is green in profit, red at a loss, and the usual one at zero.
 import { check, expect, finish } from "../check.mts";
-const { tabText, tabTone, tabIcon, showTab, boldDigits, pnlText } = await import(new URL("../../../web/src/tabTitle.ts", import.meta.url).href);
+import { readFileSync } from "node:fs";
+const { tabText, tabTone, tabIcon, showTab, boldDigits, pnlText, ICON_SHAPES } = await import(new URL("../../../web/src/tabTitle.ts", import.meta.url).href);
 // The same figure under EQUITY in the header: always with its sign, and no sign at zero.
 expect("under EQUITY: a profit has a plus, a loss a minus before the dollar sign, thousands are separated", [pnlText(64.41), pnlText(-11.22), pnlText(1234.567), pnlText(-9000)], ["+$64.41", "-$11.22", "+$1,234.57", "-$9,000.00"]);
 expect("under EQUITY: zero, and anything under half a cent either way, reads $0.00 with no sign", [pnlText(0), pnlText(0.004), pnlText(-0.004)], ["$0.00", "$0.00", "$0.00"]);
@@ -18,7 +19,8 @@ expect("zero, and anything under half a cent either way, reads $0.00 with no sig
 expect("the colour: green in profit, red at a loss, neither at zero", [tabTone(0.01), tabTone(-0.01), tabTone(0), tabTone(-0.004)], ["up", "down", "flat", "flat"]);
 const upIcon = decodeURIComponent(tabIcon("up")), downIcon = decodeURIComponent(tabIcon("down"));
 check("the icon is the logo in the app's green in profit and its red at a loss", upIcon.includes('stop-color="#00f5a0"') && !upIcon.includes("#ff3d71") && downIcon.includes('stop-color="#ff3d71"') && !downIcon.includes("#00f5a0") && tabIcon("up").startsWith("data:image/svg+xml,"), upIcon.slice(0, 80));
-expect("...its two shapes, the same as the logo's", [upIcon.includes('d="M24 490 506 30V490Z"'), upIcon.includes('d="M530 30H1056L530 490Z"'), downIcon.includes('d="M24 490 506 30V490Z"')], [true, true, true]);
+const plain = readFileSync(new URL("../../../web/public/favicon.svg", import.meta.url), "utf8");
+expect("...the same two shapes as the usual tab icon (public/favicon.svg)", [ICON_SHAPES.left, ICON_SHAPES.right].map((d) => [plain.includes(`d="${d}"`), upIcon.includes(`d="${d}"`), downIcon.includes(`d="${d}"`)]), [[true, true, true], [true, true, true]]);
 expect("at zero the usual icon is used", tabIcon("flat"), "/favicon.svg");
 
 // In a page: the title and the icon follow the figure, and go back to the plain name.
