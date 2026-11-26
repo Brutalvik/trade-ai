@@ -1408,3 +1408,8 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .mp-detail dt { color: var(--muted); font-size: 11px; }
 .mp-detail dd { margin: 0; }
 .mp-events { list-style: none; padding: 0; margin: 4px 0 0; display: grid; gap: 3px; }
+.modal.mp-pay { width: min(480px, calc(100vw - 24px)); }
+.modal.mp-pay .modal-body { max-height: calc(100vh - 110px); overflow-y: auto; }
+.mp-frame { width: 100%; height: min(600px, calc(100vh - 290px)); min-height: 360px; border: 0; border-radius: 12px; background: #0b1020; display: block; }
+.mp-step { margin: 10px 0 6px; }
+.mp-pay-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }

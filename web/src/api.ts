@@ -201,7 +201,8 @@ export type WalletTxEvent = { at: number; source: string; type: string | null; s
 export type MoonPayStatus = { on: boolean; mode: "sandbox" | "live" | null; reason: string | null; webhooks: boolean; publishableKey: string | null; minBuy: number; maxBuy: number };
 export type MoonWalletsStatus = { on: boolean; mode: "sandbox" | "live" | null; reason: string | null; publishableKey: string | null; appId: string | null };
 export type MoonWallet = { address: string; chain: "solana"; via: string; moonxUserId: string | null; at: number };
-export type MoonWalletView = { wallet: MoonWallet | null; wallets: MoonWalletsStatus; buying: MoonPayStatus; balance: { sol: number | null; network: string } | null };
+export type BuyOptions = { coins: { id: string; label: string }[]; fiats: { code: string; min: number; max: number }[] };
+export type MoonWalletView = { wallet: MoonWallet | null; wallets: MoonWalletsStatus; buying: MoonPayStatus; options: BuyOptions | null; buyInto: { address: string; which: "moonpay" | "current-test" } | null; balance: { sol: number | null; network: string } | null };
 
 export const api = {
   walletTxs: (before?: number) => req<{ transactions: WalletTx[]; moonpay: MoonPayStatus }>(`/wallet/transactions?limit=50${before ? `&before=${before}` : ""}`),
@@ -211,6 +212,8 @@ export const api = {
   moonChallenge: () => req<{ message: string; expiresAt: number }>("/moonpay/wallet/challenge", {}),
   moonProve: (body: { address: string; signature: string; accessToken: string; identityToken: string }) => req<{ wallet: MoonWallet }>("/moonpay/wallet/prove", body),
   buyStart: (body: { fiatCurrency: string; asset: string; fiatAmount: number }) => req<{ id: string; walletAddress: string; asset: string; fiatCurrency: string; fiatAmount: number; customerRef: string }>("/moonpay/buy/start", body),
+  buyWidget: (body: { fiatCurrency: string; asset: string; fiatAmount: number; payWith: "card" | "apple_pay" | "google_pay" }) => req<{ id: string; url: string; walletAddress: string; which: string; fiatCurrency: string; fiatAmount: number; asset: string }>("/moonpay/buy/widget", body),
+  buyCheck: (id: string) => req<{ status: TxStatus; failureReason: string | null; providerId: string | null }>("/moonpay/buy/check", { id }),
   buyLink: (id: string, transactionId: string) => req<{ ok: boolean; status: TxStatus | null }>("/moonpay/buy/link", { id, transactionId }),
   status: () => req<Status>("/status"),
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),

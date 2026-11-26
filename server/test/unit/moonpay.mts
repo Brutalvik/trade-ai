@@ -19,6 +19,12 @@ type MpTx = { id: string; status: string; createdAt: string; updatedAt: string; 
 const mp = new Map<string, MpTx>();
 const asked: string[] = [];
 let mpDown = false, sessionsOn = false;
+// MoonPay's public list (only what the sandbox offered this account on 26 Nov 2026: SOL, not USDC on Solana)
+const CURRENCIES = [
+  { code: "sol", type: "crypto", isSuspended: false, supportsTestMode: true },
+  { code: "usd", type: "fiat", minBuyAmount: 20, maxBuyAmount: 30000 }, { code: "cad", type: "fiat", minBuyAmount: 30, maxBuyAmount: 16000 },
+];
+const widgetTxs: any[] = []; // purchases made in MoonPay's window, as its older API shows them
 const sessionBodies: any[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: any, init?: any) => {
@@ -26,8 +32,22 @@ globalThis.fetch = (async (input: any, init?: any) => {
   if (u.host !== "api.moonpay.com") return realFetch(input, init);
   asked.push(`${u.pathname}${u.search ? "?" : ""}`);
   const headers = new Headers(init?.headers);
-  if (headers.get("x-api-key") !== "sk_test_secret") return new Response(JSON.stringify({ message: "Unauthorized" }), { status: 401 });
   if (mpDown) return new Response("{}", { status: 503 });
+  // ---- MoonPay's older ("widget") API, as the real sandbox answered on 26 Nov 2026 ----
+  if (u.pathname === "/v3/currencies") return u.searchParams.get("apiKey") === "pk_test_public" ? Response.json(CURRENCIES) : new Response("{}", { status: 401 });
+  if (u.pathname === "/v4/ip_address") return Response.json({ ipAddress: "198.51.100.23", isBuyAllowed: true });
+  if (u.pathname === "/v1/transactions") { // server-to-server: the secret key in the Authorization header
+    if (headers.get("authorization") !== "Api-Key sk_test_secret") return new Response(JSON.stringify({ moonPayErrorCode: "4_SYS_NOT_AUTHORIZED" }), { status: 401 });
+    const ext = u.searchParams.get("externalTransactionId");
+    return Response.json(widgetTxs.filter((t) => t.externalTransactionId === ext));
+  }
+  const pub = u.pathname.match(/^\/v1\/transactions\/([^/]+)$/);
+  if (pub) { // one purchase: a public call (the secret key is refused there)
+    if (u.searchParams.get("apiKey") !== "pk_test_public") return new Response(JSON.stringify({ moonPayErrorCode: "4_SYS_NOT_AUTHORIZED" }), { status: 401 });
+    const t = widgetTxs.find((x) => x.id === pub[1]);
+    return t ? Response.json(t) : new Response(JSON.stringify({ message: "Transaction not found" }), { status: 404 });
+  }
+  if (headers.get("x-api-key") !== "sk_test_secret") return new Response(JSON.stringify({ message: "Unauthorized" }), { status: 401 });
   if (u.pathname === "/platform/v1/sessions") { // like the real sandbox on 26 Nov 2026, until MoonPay switches it on
     if (!sessionsOn) return new Response(JSON.stringify({ code: "not_found", message: "Not found" }), { status: 404 });
     sessionBodies.push(JSON.parse(String(init?.body ?? "{}")));
@@ -169,6 +189,46 @@ mpDown = false;
 offset += 2 * 60_000;
 await moonpay.reconcile(10_000);
 expect("...and next time it is linked", (await wallettx.myTransaction("ada", pend.id))!.tx.providerId, "mp_4");
+
+
+// ---------- MoonPay's own window, in the app's modal ----------
+expect("the address MoonPay sees, written the one way it compares", [moonpay.canonicalIp("::ffff:203.0.113.42"), moonpay.canonicalIp("2001:0DB8:0000:0000:0000:0000:0000:0001"), moonpay.canonicalIp("[2001:db8::1]")], ["203.0.113.42", "2001:db8::1", "2001:db8::1"]);
+expect("what can be bought and paid with comes from MoonPay's own list (USDC on Solana is not offered to this account)", await moonpay.buyOptions(), { coins: [{ id: "sol", label: "SOL (Solana)" }], fiats: [{ code: "usd", min: 20, max: 500 }, { code: "cad", min: 30, max: 500 }] });
+const wfail = (p: Promise<unknown>) => p.then(() => "accepted", (e: Error) => e.message);
+expect("the window's link needs a whole amount within MoonPay's limits for that currency, and a coin MoonPay offers", [
+  await wfail(moonpay.widgetBuy("ada", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 50.5 }, "203.0.113.42")),
+  await wfail(moonpay.widgetBuy("ada", {}, { fiatCurrency: "cad", asset: "sol", fiatAmount: 25 }, "203.0.113.42")),
+  await wfail(moonpay.widgetBuy("ada", {}, { fiatCurrency: "usd", asset: "usdc_sol", fiatAmount: 50 }, "203.0.113.42")),
+], ["Use a whole amount, without cents.", "The smallest purchase is 30 CAD.", "Choose a coin to buy."]);
+expect("a customer with no wallet at all cannot open it", await wfail(moonpay.widgetBuy("dan", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 50 }, "203.0.113.42")), "Your wallet is not set up yet.");
+const w = await moonpay.widgetBuy("ada", { solanaAddress: "SomeOtherAddr1111111111111111111111111111111" }, { fiatCurrency: "usd", asset: "sol", fiatAmount: 60, walletAddress: "AttackerWallet999", payWith: "card" }, "203.0.113.42");
+const link = new URL(w.url), qs = link.searchParams;
+expect("the link opens MoonPay's sandbox, for the MoonPay wallet on file (whatever the browser sends), amount locked, our references in it", [link.origin, qs.get("walletAddress"), qs.get("baseCurrencyAmount"), qs.get("lockAmount"), qs.get("currencyCode"), qs.get("externalTransactionId"), qs.get("externalCustomerId"), qs.get("paymentMethod")], ["https://buy-sandbox.moonpay.com", "WalletAda1111", "60", "true", "sol", w.id, ref, "credit_debit_card"]);
+const signed = link.search.slice(0, link.search.indexOf("&signature="));
+expect("it is signed the way MoonPay checks: HMAC-SHA256 of the query, with the secret key", qs.get("signature"), crypto.createHmac("sha256", "sk_test_secret").update(signed).digest("base64"));
+expect("...and tied to the customer's address, which this account requires in sandbox too", qs.get("allowedIpAddress"), crypto.createHmac("sha256", "sk_test_secret").update("203.0.113.42").digest("base64"));
+const local = await moonpay.widgetBuy("ada", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 60 }, "127.0.0.1");
+expect("on the customer's own machine (the server sees 'localhost'), the address MoonPay sees is asked of MoonPay", new URL(local.url).searchParams.get("allowedIpAddress"), crypto.createHmac("sha256", "sk_test_secret").update("198.51.100.23").digest("base64"));
+const noWallet = await moonpay.widgetBuy("eve", { solanaAddress: "EveCurrent11111111111111111111111111111111" }, { fiatCurrency: "usd", asset: "sol", fiatAmount: 40 }, "203.0.113.9");
+expect("without a MoonPay wallet, in sandbox only, test coins go to the account's current wallet", [noWallet.which, new URL(noWallet.url).searchParams.get("walletAddress")], ["current-test", "EveCurrent11111111111111111111111111111111"]);
+// The modal asks how it is going: the server asks MoonPay for the purchases carrying our reference.
+expect("before the customer pays, MoonPay knows of no purchase: still started", (await moonpay.checkBuy("ada", w.id)).status, "started");
+widgetTxs.push({ id: "mpw_other_wallet", status: "completed", createdAt: iso(), updatedAt: iso(), externalTransactionId: w.id, externalCustomerId: ref, walletAddress: "SomeoneElse222", baseCurrencyAmount: 60, quoteCurrencyAmount: 0.4 });
+await new Promise((r) => setTimeout(r, 4_100)); // (the modal is answered from the record if it asked within 4 seconds)
+expect("a purchase with our reference paying into another wallet is not taken as this one", (await moonpay.checkBuy("ada", w.id)).status, "started");
+widgetTxs.push({ id: "mpw_1", status: "waitingPayment", createdAt: iso(), updatedAt: iso(), externalTransactionId: w.id, externalCustomerId: ref, walletAddress: "WalletAda1111", baseCurrencyAmount: 60, quoteCurrencyAmount: 0.38, feeAmount: 3.99, networkFeeAmount: 0.01 });
+await new Promise((r) => setTimeout(r, 4_100));
+const c1 = await moonpay.checkBuy("ada", w.id);
+expect("MoonPay's purchase with our reference, this customer, this wallet: linked, with MoonPay's status", [c1.status, c1.providerId], ["pending", "mpw_1"]);
+widgetTxs[1] = { ...widgetTxs[1], status: "completed", updatedAt: iso(Date.now() + 1000), cryptoTransactionId: "SolSigWindow1" };
+await new Promise((r) => setTimeout(r, 4_100));
+expect("then completed, with the blockchain record", [(await moonpay.checkBuy("ada", w.id)).status, (await wallettx.myTransaction("ada", w.id))!.tx.txHash], ["completed", "SolSigWindow1"]);
+expect("another customer cannot ask about it", await wfail(moonpay.checkBuy("bob", w.id)), "Unknown purchase.");
+const abandoned = await moonpay.widgetBuy("ada", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 30 }, "203.0.113.42");
+widgetTxs.push({ id: "mpw_2", status: "completed", createdAt: iso(), updatedAt: iso(), externalTransactionId: abandoned.id, externalCustomerId: ref, walletAddress: "WalletAda1111", baseCurrencyAmount: 30 });
+offset += 3 * 60_000;
+const t2 = await moonpay.reconcile(10_000);
+expect("a window purchase whose modal was closed is linked by the minute check, by our reference", [(await wallettx.myTransaction("ada", abandoned.id))!.tx.providerId, (await wallettx.myTransaction("ada", abandoned.id))!.tx.status, t2.linked >= 1], ["mpw_2", "completed", true]);
 
 // ---------- the customer's own list, through the real route ----------
 const signup = await fetch(`${base}/api/auth/signup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "carol", email: "carol@example.test", password: "correct horse battery 9", firstName: "Carol", lastName: "Test" }) });

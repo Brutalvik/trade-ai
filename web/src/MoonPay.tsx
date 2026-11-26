@@ -3,6 +3,7 @@
 // Everything shown comes from the server, which records only what MoonPay itself confirms: no
 // price, fee or "paid" is ever made up here.
 import { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { api, type MoonWalletView, type TxStatus, type WalletTx, type WalletTxEvent } from "./api";
 
 type Tab = "wallet" | "buy" | "history" | "previous";
@@ -68,58 +69,123 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
 }
 
 // ---------- Buying ----------
-const COINS = [{ id: "sol", label: "SOL (Solana)" }, { id: "usdc_sol", label: "USDC on Solana" }];
-const CURRENCIES = ["usd", "cad", "eur", "gbp", "aud"];
+// The app's own form; the payment itself in MoonPay's window, built and signed by the server (so
+// nothing in it can be changed here), shown in a modal. Card payments run in the modal; Apple Pay
+// and Google Pay cannot run inside an embedded window, so they open MoonPay's own tab.
+type PayWith = "card" | "apple_pay" | "google_pay";
+const PAY_WITH: { id: PayWith; label: string }[] = [{ id: "card", label: "Debit or credit card" }, { id: "apple_pay", label: "Apple Pay" }, { id: "google_pay", label: "Google Pay" }];
+type Pending = { id: string; url: string; fiatAmount: number; fiatCurrency: string; asset: string };
 function BuyTab({ view, toWallet, toHistory }: { view: MoonWalletView | null; toWallet: () => void; toHistory: () => void }) {
+  const fiats = view?.options?.fiats ?? [], coins = view?.options?.coins ?? [];
   const [currency, setCurrency] = useState("usd");
-  const [coin, setCoin] = useState("sol");
+  const [coin, setCoin] = useState("");
+  const [payWith, setPayWith] = useState<PayWith>("card");
   const [amount, setAmount] = useState("100");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
-  const min = view?.buying.minBuy ?? 20, max = view?.buying.maxBuy ?? 500;
+  const [pending, setPending] = useState<Pending | null>(null);
+  const fiat = fiats.find((f) => f.code === currency) ?? fiats[0];
+  const asset = coins.some((c) => c.id === coin) ? coin : coins[0]?.id ?? "";
   const n = Number(amount);
-  const amountProblem = !amount ? "" : !(n >= min) ? `The smallest purchase is ${money(min, currency)}.` : n > max ? `The largest purchase is ${money(max, currency)} at a time.` : "";
+  const amountProblem = !amount || !fiat ? "" : n < fiat.min ? `The smallest purchase is ${money(fiat.min, fiat.code, 0)}.` : n > fiat.max ? `The largest purchase is ${money(fiat.max, fiat.code, 0)} at a time.` : "";
+  const into = view?.buyInto ?? null;
   const go = async () => {
     setMsg(null);
     if (!view?.buying.on) return setMsg({ text: "Buying is not switched on in this app yet.", bad: true });
-    if (!view.wallet) return setMsg({ text: "Connect your MoonPay wallet first: your crypto goes into it." , bad: true });
+    if (!into) return setMsg({ text: "Connect your MoonPay wallet first: your crypto goes into it.", bad: true });
+    // Apple Pay and Google Pay: MoonPay's own tab, opened now (in the click) so the browser allows it.
+    const tab = payWith === "card" ? null : window.open("about:blank", "_blank");
     setBusy(true);
     try {
-      await api.moonSession();
-      // (MoonPay's secure payment box, its sign-in and the price summary come here once MoonPay
-      // has switched buying on for this app; until then the step above explains why not.)
-      setMsg({ text: "MoonPay is ready. The secure payment step arrives in the next update." });
+      const r = await api.buyWidget({ fiatCurrency: fiat!.code, asset, fiatAmount: n, payWith });
+      if (tab) {
+        tab.opener = null;
+        tab.location.href = r.url;
+      }
+      setPending({ id: r.id, url: r.url, fiatAmount: r.fiatAmount, fiatCurrency: r.fiatCurrency, asset: r.asset });
     } catch (e: any) {
+      tab?.close();
       setMsg({ text: e.message, bad: true });
     } finally {
       setBusy(false);
     }
   };
+  const clear = () => setMsg(null);
+  if (view && !view.options) return <div className="mp-card"><h3>Buy crypto</h3><p className="small down">MoonPay's list of coins could not be read just now. Try again in a moment.</p></div>;
   return (
     <div className="mp-card">
       <h3>Buy crypto</h3>
-      <p className="small">Pay with a debit or credit card, Apple Pay or Google Pay. The crypto goes straight into your MoonPay wallet{view?.wallet ? <> (<span className="mono">{view.wallet.address.slice(0, 4)}…{view.wallet.address.slice(-4)}</span>)</> : null}.</p>
-      {!view?.wallet && view && <p className="small"><button className="link-btn" onClick={toWallet}>Connect your MoonPay wallet</button> first.</p>}
+      <p className="small">
+        Pay with a card, Apple Pay or Google Pay. The crypto goes straight into{" "}
+        {into ? (into.which === "moonpay" ? <>your MoonPay wallet (<span className="mono">{short(into.address)}</span>)</> : <>your current wallet (<span className="mono">{short(into.address)}</span>), as test coins</>) : "your wallet"}.
+      </p>
+      {!into && view && <p className="small"><button className="link-btn" onClick={toWallet}>Connect your MoonPay wallet</button> first.</p>}
       <div className="mp-form">
         <label>
           <span className="label-sm">You pay</span>
           <span className="mp-amount">
-            <input inputMode="decimal" value={amount} onChange={(e) => { setAmount(e.target.value.replace(/[^0-9.]/g, "")); setMsg(null); }} aria-label="Amount to pay" />
-            <select value={currency} onChange={(e) => { setCurrency(e.target.value); setMsg(null); }} aria-label="Currency">{CURRENCIES.map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select>
+            <input inputMode="numeric" value={amount} onChange={(e) => { setAmount(e.target.value.replace(/[^0-9]/g, "").slice(0, 6)); clear(); }} aria-label="Amount to pay (whole number)" />
+            <select value={fiat?.code ?? ""} onChange={(e) => { setCurrency(e.target.value); clear(); }} aria-label="Currency">{fiats.map((f) => <option key={f.code} value={f.code}>{f.code.toUpperCase()}</option>)}</select>
           </span>
         </label>
-        <div className="mp-quick">{[50, 100, 250].map((v) => <button key={v} className="btn ghost small" onClick={() => { setAmount(String(v)); setMsg(null); }}>{money(v, currency, 0)}</button>)}</div>
+        <div className="mp-quick">{[50, 100, 250].map((v) => <button key={v} className="btn ghost small" onClick={() => { setAmount(String(v)); clear(); }}>{fiat ? money(v, fiat.code, 0) : v}</button>)}</div>
         <label>
           <span className="label-sm">You get</span>
-          <select value={coin} onChange={(e) => { setCoin(e.target.value); setMsg(null); }} aria-label="Coin to buy">{COINS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select>
+          <select value={asset} onChange={(e) => { setCoin(e.target.value); clear(); }} aria-label="Coin to buy">{coins.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select>
         </label>
+        <label>
+          <span className="label-sm">Pay with</span>
+          <select value={payWith} onChange={(e) => { setPayWith(e.target.value as PayWith); clear(); }} aria-label="Pay with">{PAY_WITH.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
+        </label>
+        {payWith !== "card" && <p className="muted tiny">{payWith === "apple_pay" ? "Apple Pay works in Safari on iPhone and Mac. " : ""}It opens in MoonPay's own tab; this window shows how it is going.</p>}
         {amountProblem && <p className="down small">{amountProblem}</p>}
-        <p className="muted tiny">MoonPay shows the exact amount you get, its fee and the network fee before you pay. Nothing is charged until you confirm.</p>
-        <button className="btn buy wide" disabled={busy || !!amountProblem || !amount} onClick={() => void go()}>{busy ? "Asking MoonPay…" : "Continue"}</button>
+        <p className="muted tiny">MoonPay shows the exact amount you get, its fee and the network fee before you pay. Nothing is charged until you confirm there.</p>
+        <button className="btn buy wide" disabled={busy || !!amountProblem || !amount || !fiat || !asset} onClick={() => void go()}>{busy ? "Preparing…" : "Continue to MoonPay"}</button>
         {msg && <p className={`small ${msg.bad ? "down" : "up"}`}>{msg.text}</p>}
       </div>
       <p className="muted tiny">Payments by MoonPay. Every purchase is recorded under <button className="link-btn" onClick={toHistory}>Transactions</button>.</p>
+      {pending && <PayModal p={pending} inModal={payWith === "card"} sandbox={view?.buying.mode !== "live"} onClose={() => setPending(null)} toHistory={() => { setPending(null); toHistory(); }} />}
     </div>
+  );
+}
+
+// MoonPay's window in the app's modal, with how the purchase is going underneath (asked of the
+// server every 5 seconds; the server asks MoonPay).
+const STEP: Partial<Record<TxStatus, string>> = { started: "Waiting for you to pay at MoonPay…", pending: "MoonPay is processing the payment…", completed: "Done: the crypto is on its way to your wallet.", failed: "The payment did not go through.", cancelled: "The payment was cancelled.", expired: "The payment was not completed." };
+function PayModal({ p, inModal, sandbox, onClose, toHistory }: { p: Pending; inModal: boolean; sandbox: boolean; onClose: () => void; toHistory: () => void }) {
+  const [st, setSt] = useState<{ status: TxStatus; failureReason: string | null } | null>(null);
+  useEffect(() => {
+    let off = false;
+    const ask = () => api.buyCheck(p.id).then((r) => !off && setSt(r)).catch(() => {});
+    void ask();
+    const id = window.setInterval(() => void ask(), 5_000);
+    return () => { off = true; window.clearInterval(id); void api.buyCheck(p.id).catch(() => {}); };
+  }, [p.id]);
+  const done = st && ["completed", "failed", "cancelled", "refunded", "expired"].includes(st.status);
+  return createPortal(
+    <div className="modal-backdrop on-top">
+      <div className="modal mp-pay" role="dialog" aria-modal="true" aria-labelledby="mp-pay-title">
+        <div className="modal-head">
+          <h2 id="mp-pay-title">Pay {money(p.fiatAmount, p.fiatCurrency, 0)} with MoonPay{sandbox ? " · test mode" : ""}</h2>
+          <button className="modal-close" onClick={onClose} aria-label="Close" title="Close">✕</button>
+        </div>
+        <div className="modal-body">
+          {inModal && !done && (
+            <iframe className="mp-frame" src={p.url} title="MoonPay" allow="accelerometer; autoplay; camera; gyroscope; payment; clipboard-write" referrerPolicy="strict-origin-when-cross-origin" />
+          )}
+          {!inModal && !done && <p className="small">MoonPay opened in a new tab. Finish the payment there; this window follows along.</p>}
+          <p className={`small mp-step ${st?.status === "completed" ? "up" : st && ["failed", "cancelled", "expired"].includes(st.status) ? "down" : ""}`}>
+            {st ? STEP[st.status] ?? st.status : "Connecting to MoonPay…"}{st?.failureReason ? ` ${st.failureReason}` : ""}
+          </p>
+          <div className="mp-pay-actions">
+            {!done && <a className="link-btn small" href={p.url} target="_blank" rel="noopener noreferrer">Open in MoonPay's own tab instead ↗</a>}
+            <button className="btn ghost small" onClick={toHistory}>See it in Transactions</button>
+          </div>
+          {sandbox && !done && <p className="muted tiny">Test mode: use MoonPay's test card (see MoonPay's sandbox guide). No real money moves.</p>}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -217,6 +283,7 @@ function money(v: number, currency: string, digits = 2) {
   }
 }
 const fmtCoin = (v: number) => (v >= 1000 ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : v >= 1 ? v.toFixed(4) : v.toPrecision(4));
+const short = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 const coinName = (c: string | null) => (c ?? "").replace(/_sol$|_base$|_eth$/i, "").toUpperCase();
 async function copy(text: string, notify: Notify, done = "Wallet address copied") {
   try {

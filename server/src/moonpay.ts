@@ -98,6 +98,39 @@ export async function fetchTransaction(id: string): Promise<any> {
   if (!MP_ID_RE.test(id)) throw new Error("Not a MoonPay transaction id.");
   return api<any>("GET", `/platform/v1/transactions/${encodeURIComponent(id)}`);
 }
+// A purchase made in MoonPay's own window is MoonPay's older ("widget") API's. Its lists (filtered
+// by our reference or the customer's) are server-to-server calls with the secret key in the
+// Authorization header; one purchase by MoonPay's own number is a public call with the publishable
+// key (the secret key is refused there, seen 26 Nov 2026). Both answers come from MoonPay itself.
+async function classic<T>(path: string, how: "secret" | "public" = "secret"): Promise<T> {
+  const c = config();
+  if (!c.on) throw new Error(c.reason ?? "MoonPay is off.");
+  const url = how === "public" ? `${API()}${path}${path.includes("?") ? "&" : "?"}apiKey=${encodeURIComponent(c.publishableKey)}` : `${API()}${path}`;
+  const res = await fetch(url, { headers: { ...(how === "secret" ? { Authorization: `Api-Key ${c.secretKey}` } : {}), Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text.slice(0, 200);
+    try { msg = JSON.parse(text)?.message ?? msg; } catch { /* not JSON */ }
+    throw new MoonPayError(`MoonPay ${res.status}: ${msg || res.statusText}`, res.status);
+  }
+  return (text ? JSON.parse(text) : null) as T;
+}
+export async function fetchAny(id: string): Promise<any> {
+  try {
+    return await fetchTransaction(id);
+  } catch (e) {
+    if (!(e instanceof MoonPayError && e.status === 404)) throw e;
+    return classic<any>(`/v1/transactions/${encodeURIComponent(id)}`, "public");
+  }
+}
+// MoonPay's purchases that carry our reference (externalTransactionId): from our own signed link
+// only. Asked with the secret key through the list filtered by our reference (the look-up at
+// /v1/transactions/ext/{id} refuses the secret key, seen 26 Nov 2026).
+export async function fetchByOurId(ourId: string): Promise<any[]> {
+  if (!TX_ID_RE.test(ourId)) return [];
+  const r = await classic<any>(`/v1/transactions?externalTransactionId=${encodeURIComponent(ourId)}`);
+  return Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : [];
+}
 // A customer's purchases (as MoonPay knows them) since a time, oldest pages first, at most `max`.
 // MoonPay answers "not found" (404) for a customer it has never seen, which is every customer
 // before their first purchase (seen in the sandbox on 26 Nov 2026): that is "no purchases", but
@@ -239,6 +272,127 @@ export async function startBuy(key: string, body: any): Promise<{ id: string; wa
   return { id: tx.id, walletAddress: wallet.address, asset, fiatCurrency, fiatAmount, customerRef: ref };
 }
 
+// ---------- MoonPay's own payment window ("widget"), shown in the app's modal ----------
+// Until MoonPay switches its Platform on for the account, a purchase is paid in MoonPay's own
+// window. The server builds the whole link (amount, coin, wallet, our references) and signs it
+// with the secret key, so nothing in it can be changed in the browser: MoonPay refuses a link
+// whose signature does not match. The amount is locked. The link is also tied to the customer's
+// internet address (allowedIpAddress): MoonPay requires it to go live, and this account enforces
+// it in sandbox too (seen 26 Nov 2026: its check answers "Missing allowedIpAddress on signed URL").
+// What can be bought and paid with comes from MoonPay's own list (kept an hour).
+let listCache: { at: number; list: any[] } | null = null;
+async function moonpayCurrencies(): Promise<any[]> {
+  if (listCache && Date.now() - listCache.at < 3_600_000) return listCache.list;
+  const r = await fetch(`${API()}/v3/currencies?apiKey=${encodeURIComponent(config().publishableKey)}`, { signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) throw new Error(`MoonPay's list of currencies: HTTP ${r.status}`);
+  const list = await r.json();
+  listCache = { at: Date.now(), list: Array.isArray(list) ? list : [] };
+  return listCache.list;
+}
+const COIN_LABEL: Record<string, string> = { sol: "SOL (Solana)", usdc_sol: "USDC on Solana" };
+export async function buyOptions(): Promise<{ coins: { id: string; label: string }[]; fiats: { code: string; min: number; max: number }[] }> {
+  const c = config();
+  if (!c.on) return { coins: [], fiats: [] };
+  const list = await moonpayCurrencies();
+  const coins = Object.keys(ASSETS).filter((code) => {
+    const x = list.find((y) => y?.code === code && y?.type === "crypto");
+    return x && !x.isSuspended && (c.mode === "live" || x.supportsTestMode);
+  }).map((id) => ({ id, label: COIN_LABEL[id] ?? id.toUpperCase() }));
+  const fiats = FIATS.map((code) => list.find((y) => y?.code === code && y?.type === "fiat")).filter(Boolean)
+    .map((x: any) => ({ code: String(x.code), min: Math.max(MIN_BUY, Math.ceil(Number(x.minBuyAmount) || 0)), max: Math.min(maxBuy(), Math.floor(Number(x.maxBuyAmount) || maxBuy())) }))
+    .filter((f) => f.min <= f.max);
+  return { coins, fiats };
+}
+// The address MoonPay sees: IPv4 as dotted quads, IPv6 in its short lowercase form, IPv4-in-IPv6 unwrapped.
+export function canonicalIp(ip: string): string {
+  let v = String(ip ?? "").trim().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  if (/^::ffff:\d+\.\d+\.\d+\.\d+$/i.test(v)) v = v.slice(7);
+  if (v.includes(":")) {
+    try { v = new URL(`http://[${v}]/`).hostname.replace(/^\[|\]$/g, ""); } catch { /* left as it is */ }
+  }
+  return v.toLowerCase();
+}
+// Loopback and private addresses are what a server on the customer's own machine sees (local
+// testing): then the address MoonPay sees is asked of MoonPay itself (server and browser are the
+// same machine). On Vercel the customer's public address is always there.
+const isPrivateIp = (ip: string) => !ip || ip === "localhost" || /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || ip === "::1" || /^f[cd][0-9a-f]{2}:/i.test(ip) || /^fe80:/i.test(ip);
+async function publicIpFor(observed: string | undefined): Promise<string> {
+  const ip = canonicalIp(observed ?? "");
+  if (!isPrivateIp(ip)) return ip;
+  const r = await fetch(`${API()}/v4/ip_address?apiKey=${encodeURIComponent(config().publishableKey)}`, { signal: AbortSignal.timeout(10_000) });
+  const j: any = await r.json().catch(() => ({}));
+  const seen = canonicalIp(String(j?.ipAddress ?? ""));
+  if (!seen) throw new Error("Your connection's address could not be read; reload the page and try again.");
+  return seen;
+}
+const WIDGET = (mode: string | null) => (mode === "live" ? "https://buy.moonpay.com" : "https://buy-sandbox.moonpay.com");
+const PAY_WITH: Record<string, string> = { card: "credit_debit_card", apple_pay: "apple_pay", google_pay: "google_pay" };
+// Where a test purchase goes when the customer has no MoonPay wallet yet: the account's current
+// wallet address, in sandbox only (test coins on Solana's test network). Real money only ever goes
+// to a MoonPay wallet on file.
+async function buyInto(key: string, user: { solanaAddress?: string | null }): Promise<{ address: string; which: "moonpay" | "current-test" } | null> {
+  const w = await customerWallet(key);
+  if (w?.address) return { address: w.address, which: "moonpay" };
+  if (config().mode === "sandbox" && user.solanaAddress && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(user.solanaAddress)) return { address: user.solanaAddress, which: "current-test" };
+  return null;
+}
+export { buyInto as buyDestination };
+async function checkRate(key: string) {
+  // No more than 10 purchases started per customer in an hour (a stuck screen or a script cannot flood the table).
+  const recent = await myTransactions(key, null, 20);
+  if (recent.filter((t) => t.kind === "buy" && Date.now() - t.createdAt < 3_600_000).length >= 10) throw new Error("Too many purchases started in the last hour. Try again later.");
+}
+export async function widgetBuy(key: string, user: { solanaAddress?: string | null }, body: any, deviceIp: string | undefined): Promise<{ id: string; url: string; walletAddress: string; which: string; fiatCurrency: string; fiatAmount: number; asset: string }> {
+  const c = config();
+  if (!c.on) throw new Error(c.reason ?? "MoonPay is off.");
+  const opts = await buyOptions();
+  const fiatCurrency = String(body?.fiatCurrency ?? "").toLowerCase(), asset = String(body?.asset ?? "").toLowerCase();
+  const fiatAmount = Number(body?.fiatAmount), pay = PAY_WITH[String(body?.payWith ?? "card")] ?? PAY_WITH.card;
+  const fiat = opts.fiats.find((f) => f.code === fiatCurrency);
+  if (!fiat) throw new Error("Choose a currency to pay in.");
+  if (!opts.coins.some((x) => x.id === asset)) throw new Error("Choose a coin to buy.");
+  if (!Number.isInteger(fiatAmount)) throw new Error("Use a whole amount, without cents.");
+  if (fiatAmount < fiat.min) throw new Error(`The smallest purchase is ${fiat.min} ${fiatCurrency.toUpperCase()}.`);
+  if (fiatAmount > fiat.max) throw new Error(`The largest purchase is ${fiat.max} ${fiatCurrency.toUpperCase()} at a time.`);
+  const into = await buyInto(key, user);
+  if (!into) throw new Error("Your wallet is not set up yet.");
+  await checkRate(key);
+  const ref = await customerRef(key);
+  const tx = await startTx(key, PROVIDER, "buy", { fiatCurrency, fiatAmount, cryptoCurrency: asset, network: ASSETS[asset].network, walletAddress: into.address, detail: { channel: "widget", customerRef: ref, mode: c.mode, payWith: pay, into: into.which } });
+  const q = new URLSearchParams({
+    apiKey: c.publishableKey, currencyCode: asset, baseCurrencyCode: fiatCurrency, baseCurrencyAmount: String(fiatAmount), lockAmount: "true",
+    walletAddress: into.address, externalTransactionId: tx.id, externalCustomerId: ref, paymentMethod: pay, theme: "dark",
+  });
+  q.set("allowedIpAddress", crypto.createHmac("sha256", c.secretKey).update(await publicIpFor(deviceIp)).digest("base64"));
+  const search = `?${q.toString()}`;
+  const signature = crypto.createHmac("sha256", c.secretKey).update(search).digest("base64");
+  return { id: tx.id, url: `${WIDGET(c.mode)}/${search}&signature=${encodeURIComponent(signature)}`, walletAddress: into.address, which: into.which, fiatCurrency, fiatAmount, asset };
+}
+
+// The modal asks how purchase `id` is going. The server asks MoonPay for the purchases carrying
+// our reference (only our own signed link can carry it), takes the one under this customer's
+// reference paying into this purchase's wallet, and records MoonPay's word. Nothing comes from the
+// browser but our id. At most once every 4 seconds per purchase.
+const lastCheck = new Map<string, number>();
+export async function checkBuy(key: string, id: string): Promise<{ status: string; failureReason: string | null; providerId: string | null }> {
+  if (!TX_ID_RE.test(id)) throw new Error("Unknown purchase.");
+  const mine = (await myTransactions(key, null, 200)).find((t) => t.id === id);
+  if (!mine || mine.kind !== "buy" || mine.provider !== PROVIDER) throw new Error("Unknown purchase.");
+  const out = (t: { status: string; failureReason: string | null; providerId: string | null }) => ({ status: t.status, failureReason: t.failureReason, providerId: t.providerId });
+  if (mine.final || Date.now() - (lastCheck.get(id) ?? 0) < 4_000) return out(mine);
+  lastCheck.set(id, Date.now());
+  if (lastCheck.size > 5_000) lastCheck.clear();
+  const r = await linkByOurId(key, mine);
+  return out(r?.tx ?? mine);
+}
+async function linkByOurId(key: string, mine: { id: string; providerId: string | null; walletAddress: string | null; createdAt: number }) {
+  if (mine.providerId) return recheck(mine.id, mine.providerId, key);
+  const ref = await customerRef(key);
+  const theirs = (await fetchByOurId(mine.id)).map(fromMoonPay).filter((m) => m.providerId && m.externalTransactionId === mine.id && (!m.externalCustomerId || m.externalCustomerId === ref));
+  const m = theirs.filter((x) => !checkTheirs(x, { wallet: mine.walletAddress, startedAt: mine.createdAt, ref })).sort((a, b) => (b.providerAt ?? 0) - (a.providerAt ?? 0))[0];
+  return m ? recordUpdate(updateFrom(m, { id: mine.id, key, source: "check", eventId: `link:${m.providerId}` })) : null;
+}
+
 // The browser reports that MoonPay's frame finished purchase `id` (ours) as MoonPay transaction
 // `transactionId`. Nothing is taken from the browser but those two numbers. The server asks
 // MoonPay for the customer's purchases (MoonPay lists only those made under this customer's
@@ -255,7 +409,7 @@ export async function linkBuy(key: string, id: string, transactionId: string) {
   const ref = await customerRef(key);
   const listed = (await fetchCustomerTransactions(ref, mine.createdAt - 5 * 60_000)).some((t) => String(t?.id) === transactionId);
   if (!listed) throw new Error("MoonPay does not list that transaction under this customer (yet). It will be picked up by itself if it is theirs.");
-  const m = fromMoonPay(await fetchTransaction(transactionId));
+  const m = fromMoonPay(await fetchAny(transactionId));
   const problem = checkTheirs(m, { wallet: mine.walletAddress, startedAt: mine.createdAt, ref });
   if (problem) throw new Error(`MoonPay's transaction does not match this purchase: ${problem}.`);
   return recordUpdate(updateFrom(m, { id, key, source: "check" }));
@@ -314,7 +468,7 @@ export async function webhook(raw: Buffer, headers: Record<string, string | stri
   return { status: 200, body: { ok: true, duplicate: r.duplicate }, after };
 }
 async function recheck(id: string, providerId: string, key: string) {
-  const m = fromMoonPay(await fetchTransaction(providerId));
+  const m = fromMoonPay(await fetchAny(providerId));
   return recordUpdate(updateFrom(m, { id, key, source: "check" }));
 }
 
@@ -377,7 +531,9 @@ export async function reconcile(budgetMs = 15_000): Promise<Tally> {
           await recordUpdate({ provider: PROVIDER, id: tx.id, key: tx.key, status: "expired", providerStatus: null, providerAt: null, source: "check", eventId: `expire:${tx.id}`, eventType: "expired", payload: { reason: "never reached MoonPay within a day" }, fields: { failureReason: "The payment was never completed at MoonPay." } });
           out.expired++;
         } else if (Date.now() - tx.createdAt > 2 * 60_000) {
-          unlinked.set(tx.key, [...(unlinked.get(tx.key) ?? []), tx]);
+          if ((tx.detail as any)?.channel === "widget") {
+            if (await linkByOurId(tx.key, tx)) out.linked++;
+          } else unlinked.set(tx.key, [...(unlinked.get(tx.key) ?? []), tx]);
         }
       } catch (e: any) {
         out.errors++;

@@ -278,6 +278,8 @@ app.post("/api/moonpay/buy/start", signedIn(async (req, res) => {
 }));
 // The customer's MoonPay wallet: on file only after MoonPay's sign-in and the wallet's own
 // signature are checked (moonwallet.ts). The balance is read from the blockchain.
+// The customer's public address (MoonPay ties its links to it). Vercel sets x-real-ip itself (a
+// visitor cannot set it), so it comes first; a header a visitor could send comes last.
 const deviceIp = (req: Request) => String(req.headers["x-real-ip"] ?? req.headers["x-forwarded-for"] ?? req.socket?.remoteAddress ?? "").split(",")[0].trim().replace(/^::ffff:/, "");
 app.get("/api/moonpay/wallet", signedIn(async (req, res) => {
   try {
@@ -285,7 +287,8 @@ app.get("/api/moonpay/wallet", signedIn(async (req, res) => {
     const wallet = await moonwallet.myWallet(a.key);
     const sandbox = moonpay.config().mode !== "live";
     res.setHeader("Cache-Control", "no-store");
-    res.json({ wallet, wallets: moonwallet.moonxStatus(), buying: moonpay.publicStatus(), balance: wallet ? { sol: await moonwallet.solBalance(wallet.address, sandbox), network: sandbox ? "Solana test network (devnet)" : "Solana" } : null });
+    const [options, buyInto] = await Promise.all([moonpay.buyOptions().catch(() => null), moonpay.buyDestination(a.key, { solanaAddress: a.user.solanaAddress })]);
+    res.json({ wallet, wallets: moonwallet.moonxStatus(), buying: moonpay.publicStatus(), options, buyInto, balance: wallet ? { sol: await moonwallet.solBalance(wallet.address, sandbox), network: sandbox ? "Solana test network (devnet)" : "Solana" } : null });
   } catch (e) {
     txError(res, e);
   }
@@ -310,6 +313,25 @@ app.post("/api/moonpay/session", signedIn(async (req, res) => {
     const a = (await auth.requestAuth(req))!;
     res.setHeader("Cache-Control", "no-store");
     res.json(await moonpay.createSession(a.key, a.user.email, deviceIp(req)));
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+// MoonPay's own payment window, shown in the app's modal: the server builds and signs the whole
+// link; the modal then asks how the purchase is going (the server asks MoonPay).
+app.post("/api/moonpay/buy/widget", signedIn(async (req, res) => {
+  try {
+    const a = (await auth.requestAuth(req))!;
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await moonpay.widgetBuy(a.key, { solanaAddress: a.user.solanaAddress }, req.body ?? {}, deviceIp(req)));
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+app.post("/api/moonpay/buy/check", signedIn(async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await moonpay.checkBuy((await auth.requestAuth(req))!.key, String(req.body?.id ?? "")));
   } catch (e) {
     txError(res, e);
   }
