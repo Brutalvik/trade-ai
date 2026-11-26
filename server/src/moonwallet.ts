@@ -153,6 +153,8 @@ export async function moonxMe(accessToken: string): Promise<{ userId: string; st
 // then MoonPay's own record of the same person, who must be active. Returns who it is and their
 // Solana wallet (null when they have none yet).
 export async function moonxSignIn(accessToken: string, identityToken: string) {
+  const c = moonxConfig();
+  if (!c.on) throw new Error(`Signing in with MoonPay is not switched on. ${c.reason ?? ""}`.trim());
   let s;
   try {
     s = await verifySession(String(accessToken ?? ""), String(identityToken ?? ""));

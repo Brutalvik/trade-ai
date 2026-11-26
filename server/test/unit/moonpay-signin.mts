@@ -120,5 +120,6 @@ expect("a wallet on file is never replaced by another", (await call("/api/moonpa
 expect("signed out, the wallet cannot be synced at all", (await call("/api/moonpay/wallet/sync", ghost)).body.error, "Sign in first.");
 delete process.env.MOONX_PUBLISHABLE_KEY;
 expect("real trades: with MoonPay wallets switched off, from the previous wallet again", await rw(bob.cookie), [A("BBPRIVY"), "previous"]);
+expect("switched off, a MoonPay sign-in says so plainly", await err(tokens("mx_ada", "ada@example.test")), "Signing in with MoonPay is not switched on. MoonPay wallets are not set up (no MOONX_PUBLISHABLE_KEY).");
 server.close();
 finish();
