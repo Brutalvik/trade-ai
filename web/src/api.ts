@@ -62,6 +62,7 @@ export type Learned = { at: number; netTargetPct: number; table: StratResult[]; 
 // storageError: the database is set up but not answering (what it said); the bot is paused until it does.
 export type Status = { claude: boolean; openai: boolean; mode: string; storage: "supabase" | "redis" | "file" | "temp"; storageError?: string; serverless: boolean; commit?: string; alerts?: "telegram" | "ntfy" | null };
 export type AppState = {
+  stepLog?: { t: number; msg: string; level: "info" | "good" | "bad"; d?: Decision }[]; // the quality step's newest lines
   mode: "paper";
   startCash: number;
   cash: number;
@@ -107,7 +108,11 @@ export type AppState = {
 // One line of the agents' log: which agent wrote it (and on which coin), when, and how it should look.
 // What a log line decided (server/src/botlog.ts): bought, sold, stayed out and why, chose a coin...
 export type DecisionAct = "enter" | "exit" | "skip" | "filtered" | "order" | "pick" | "left" | "wait" | "lock" | "start" | "stop";
-export type Decision = { act: DecisionAct; coin?: string; why: string; usd?: number; of?: number; pnl?: number; pct?: number };
+// by = for a coin ruled out or let go: which check did it.
+export type Decision = { act: DecisionAct; coin?: string; why: string; by?: "scouts" | "numbers" | "cost"; usd?: number; of?: number; pnl?: number; pct?: number };
+// Lines of the quality step (it works for all of the account's agents, so they are no one agent's)
+// carry this in place of an agent's number.
+export const STEP_BOT = "0";
 export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad"; d?: Decision };
 export type BotSlot = { id: string; bot: AppState["bot"]; lastSignal: AppState["lastSignal"] };
 // Every bot of the account, bot 1 first.

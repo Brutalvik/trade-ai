@@ -39,6 +39,7 @@ expect("the scanner: what the scouts scanned, how many pass, the top of the list
 expect("the quality check: every time a coin was ruled out or let go, on how many coins, and by whom",
   [by("check").figure, by("check").caption], ["6 ruled out", `4 coins ${B} by the scouts 1 ${B} by the numbers 2 ${B} by the cost 3`]);
 expect("who ruled a coin out is read from how the engine begins the reason", night.filter((l) => l.d && (l.d.act === "filtered" || l.d.act === "left")).map((l) => ruledOutBy(l.d)), ["scouts", "numbers", "numbers", "cost", "cost", "cost"]);
+expect("since v0.71 the decision itself says who ruled the coin out, whatever its reason says", [ruledOutBy({ act: "filtered", by: "cost", why: "anything at all" }), ruledOutBy({ act: "filtered", by: "numbers", why: "the scouts: looks like their line" }), ruledOutBy({ act: "left", by: "scouts", why: "" })], ["cost", "numbers", "scouts"]);
 expect("a reason that begins some other way still counts as ruled out", [ruledOutBy({ act: "filtered", why: "something new" }), pipelineSteps({ lines: [line(5, "1", { act: "filtered", coin: "X", why: "something new" })], now: NOW, open: 0, running: 1 })[1].caption], ["other", `1 coin ${B} by the scouts 0 ${B} by the numbers 0 ${B} by the cost 0 ${B} other 1`]);
 expect("the AI and the odds: how often it stayed out, how many orders were approved and bought, how many plans wait at a price",
   [by("ai").figure, by("ai").caption], ["2 stayed out", `2 orders approved and bought ${B} 1 plan waiting at a price`]);

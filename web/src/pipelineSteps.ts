@@ -42,9 +42,11 @@ const signed = (v: number) => `${v > 0.004 ? "+" : v < -0.004 ? "-" : ""}${money
 const n = (k: number, one: string, many = `${one}s`) => `${k.toLocaleString("en-US")} ${k === 1 ? one : many}`;
 const times = (k: number) => (k === 1 ? "once" : `${k.toLocaleString("en-US")} times`);
 
-// Who ruled a coin out, from how the reason begins (the engine writes "the scouts: ...",
-// "the numbers: ...", "the cost: ..."; an order dropped for its cost begins "its order is dropped").
+// Who ruled a coin out: the decision says so (`by`, since v0.71). Lines written before that are
+// read from how the reason begins (the engine wrote "the scouts: ...", "the numbers: ...",
+// "the cost: ..."; an order dropped for its cost began "its order is dropped").
 export function ruledOutBy(d: Decision): "scouts" | "numbers" | "cost" | "other" {
+  if (d.by === "scouts" || d.by === "numbers" || d.by === "cost") return d.by;
   const w = d.why ?? "";
   return w.startsWith("the scouts:") ? "scouts" : w.startsWith("the numbers:") ? "numbers" : w.startsWith("the cost:") || w.startsWith("its order is dropped:") ? "cost" : "other";
 }

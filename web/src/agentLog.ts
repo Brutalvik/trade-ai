@@ -5,7 +5,7 @@
 // decisions = only the lines that decided something (each carries what it decided, `d`).
 import { useEffect, useState } from "react";
 import { useAccess } from "./Account";
-import { allBots, api, type AppState, type LogLine } from "./api";
+import { allBots, api, STEP_BOT, type AppState, type LogLine } from "./api";
 
 export const LOG_DAY = 86_400_000;
 export const logId = (l: LogLine) => `${l.t}|${l.bot}|${l.msg}`;
@@ -47,7 +47,8 @@ export function useAgentLog(state: AppState | null, range: "today" | "week", dec
       window.clearInterval(id);
     };
   }, [me?.username, from, decisions]); // eslint-disable-line react-hooks/exhaustive-deps
-  const live: LogLine[] = bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id })));
+  // (the agents' own lines, and those of the quality step, which is no one agent)
+  const live: LogLine[] = [...bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id }))), ...(state?.stepLog ?? []).map((l) => ({ ...l, bot: STEP_BOT }))];
   // One copy of each line. Where the server sent a line's decision and the account's own copy
   // has none (a buy or sale from before decisions were kept with the lines), the server's is used.
   const byId = new Map<string, LogLine>();

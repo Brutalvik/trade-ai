@@ -77,6 +77,9 @@ const pending = new Map<string, Promise<CostCurve>>();
 // a small agent is measured again when an agent with much more money asks.
 export const CURVE_REACH = 1.5;
 export const curveCovers = (c: CostCurve, funds: number) => !(c.upTo && funds > c.upTo * CURVE_REACH);
+// true = this coin is being measured right now (asking for its cost joins that measurement and
+// starts no new one).
+export const measuring = (mint: string | undefined) => !!mint && pending.has(mint);
 // The cost curve for a coin: measured on Jupiter (two sizes), remembered for ten minutes.
 // `funds` = the largest amount that may be traded; `liquidityUsd` is used when Jupiter can't be asked;
 // `saved` = a curve measured earlier and kept with the agent (another server copy may have measured it).

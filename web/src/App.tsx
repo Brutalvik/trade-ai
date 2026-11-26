@@ -16,6 +16,7 @@ import { isMuted, playSoundPreview, setMuted, unlockAudioOnFirstGesture } from "
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
 import { ACT_HINT, ACT_LABEL, decisionRows, figureOf, summaryText, toneOf } from "./decisions";
 import { LOG_DAY, logId, useAgentLog } from "./agentLog";
+import { STEP_BOT } from "./api";
 import { Pipeline } from "./Pipeline";
 import { MaCrossChips } from "./MaCross";
 import { pnlText, showTab, tabTone } from "./tabTitle";
@@ -1656,7 +1657,7 @@ function BotLog({ state }: { state: AppState | null }) {
                 <span className={`dec-tag ${tone}`} title={ACT_HINT[r.d.act]}>{ACT_LABEL[r.d.act]}</span>
                 <span className="dec-coin">
                   <b>{r.coin || "–"}</b>
-                  {many ? <small> agent {r.bot}</small> : null}
+                  {r.bot === STEP_BOT ? <small title="Found by the quality check, which works for all of your agents."> quality check</small> : many ? <small> agent {r.bot}</small> : null}
                   {r.n > 1 ? <small title={`It decided the same ${r.n} times in a row, from ${hhmm(r.from)} to ${hhmm(r.t)}. The reason shown is the latest.`}> ×{r.n} since {hhmm(r.from)}</small> : null}
                 </span>
                 <span className={`dec-fig ${tone}`}>{figureOf(r.d)}</span>
@@ -1674,7 +1675,7 @@ function BotLog({ state }: { state: AppState | null }) {
             if (day) lastDay = day;
             return [
               head,
-              <div key={logId(l)} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {many && <span className="bot-tag" title={l.sym ? `Agent ${l.bot}, on ${l.sym}` : undefined}>Bot {l.bot}</span>} {aiText(l.msg)}</div>,
+              <div key={logId(l)} className={l.level}><span className="muted mono">{new Date(l.t).toLocaleTimeString()}</span> {l.bot === STEP_BOT ? <span className="bot-tag" title="The quality check, which works for all of your agents">Quality</span> : many && <span className="bot-tag" title={l.sym ? `Agent ${l.bot}, on ${l.sym}` : undefined}>Bot {l.bot}</span>} {aiText(l.msg)}</div>,
             ];
           })}
           {more ? <button className="chip log-older" onClick={older} disabled={busy}>{busy ? "Loading…" : "Show older lines"}</button> : null}

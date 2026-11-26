@@ -18,7 +18,7 @@ globalThis.fetch = (async (input: any) => {
   const out = buying ? (R_COIN * inAmt) / (R_USD + inAmt) : (R_USD * inAmt) / (R_COIN + inAmt);
   return json({ inAmount: String(amount), outAmount: String(Math.floor(out * 1e6)), priceImpactPct: "0" });
 }) as typeof fetch;
-const { costAt, costCurve, curveCovers, depthCurve, knownCurve, sizeUnderCap, NETWORK_FEE_USD, __resetCostsForTests } = await import(new URL("../../src/costs.ts", import.meta.url).href);
+const { costAt, costCurve, curveCovers, depthCurve, knownCurve, measuring, sizeUnderCap, NETWORK_FEE_USD, __resetCostsForTests } = await import(new URL("../../src/costs.ts", import.meta.url).href);
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail: unknown = "") => { ok ? pass++ : fail++; console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail === "" ? "" : `: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`}`); };
@@ -78,6 +78,12 @@ expect("the smaller agent then reads the larger measurement: no more quotes", [(
 const old = { basePct: 0.6, perUsdPct: 0.001, source: "jupiter", at: Date.now() };
 expect("a curve kept from before sizes were recorded is used as before, whatever the size", [curveCovers(old, 50_000), (await costCurve("OldMint4444", 400_000, 5000, old)).perUsdPct, quotes - q0], [true, 0.001, 8]);
 expect("the estimate from a pool's depth has no size of its own: it is worked out for any size", curveCovers(depthCurve(400_000), 1_000_000), true);
+// A coin that is being measured right now: whoever asks next joins that measurement.
+const q1 = quotes;
+const first = costCurve("JoinMint6666", 400_000, 1000);
+expect("while a coin is being measured, that can be seen (so a second asker knows it starts nothing new)", [measuring("JoinMint6666"), measuring("SizeMint3333"), measuring(undefined)], [true, false, false]);
+const second = costCurve("JoinMint6666", 400_000, 1000);
+expect("two askers at once share the one measurement, and it is over when they have their answer", [(await first).at === (await second).at, quotes - q1, measuring("JoinMint6666")], [true, 4, false]);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

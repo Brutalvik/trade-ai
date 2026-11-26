@@ -18,7 +18,8 @@ import { AGENT_KEYS, AGENT_PASS, flowText, marketText, QUALITY_MIN, qualityGate,
 import { learn, type Learned, type Watch } from "./learn.js";
 import { maView, type MaView } from "./macross.js";
 import { breakoutHoldSec, chaseLimitPct, EXIT_LIVE, exitCheck, exitHit, exitInForce, fillBuy, fillSell, lockDue, lockedFloor, ruleTrailPct, stopCheck, type SideCost, type StopAction } from "./rules.js";
-import { costAt, costCurve, curveCovers, knownCurve, sizeUnderCap, type CostCurve } from "./costs.js";
+import { costAt, costCurve, knownCurve, measuring, sizeUnderCap, type CostCurve } from "./costs.js";
+import { knownPct, needsPricing, vet } from "./quality.js";
 
 import { noteCommunityBuy } from "./lists.js";
 
@@ -189,6 +190,9 @@ export type ProfitPlan = { atrPct?: number; floor: number; trailPct: number; by:
 
 type State = {
   resetAt?: number; // when this account was last reset (older copies are never saved over it)
+  // Lines written by the quality step, which works for all of the account's agents and so has no
+  // agent's log to write in: the newest 50 (they are also in the week's log, as agent "0").
+  stepLog?: { t: number; msg: string; level: "info" | "good" | "bad"; d?: Decision }[];
   raised10k?: boolean; // the one-time raise of an account opened with the earlier $1,000 has been looked at
   mode: "paper";
   startCash: number;
@@ -243,6 +247,9 @@ type State = {
     // Auto-pick (shared by the account's agents): token -> what a round trip was last measured to
     // cost there, kept for an hour. What one agent measured, no other agent (on any server copy) measures again.
     autoCost?: Record<string, CostCurve>;
+    // Auto-pick (shared by the account's agents): "token|money" -> when the quality step last wrote
+    // that this coin is too expensive for that much money (it writes it once an hour, not per agent).
+    autoSaid?: Record<string, number>;
     // Auto-pick: the coin the bot is currently waiting to buy, and what Claude said about each candidate.
     target: { chain: string; pool: string; symbol: string; chosenAt: number } | null;
     candidates: { symbol: string; chain: string; pool: string; action: string; confidence: number; note: string }[];
@@ -402,6 +409,10 @@ type Account = {
   logQueue?: LogLine[]; // log lines written since the last save, on their way to the week's log (botlog.ts)
   hoursRetryAt?: number; // the hours table did not answer: not asked again before this time
   autoBusy?: Set<string>; // tokens an auto-pick agent is taking right now (so two never take the same one in one round)
+  ahead?: Promise<unknown> | null; // the quality step's work in flight for this account (it prices one coin at a time)
+  aheadPauseUntil?: number; // Jupiter did not answer it: it leaves the queue alone until then
+  aheadScanAt?: number; // when it last read the scouts' list itself
+  aheadSkip?: Map<string, number>; // coins it could not price -> not tried again before this time (so the others get their turn)
   backupSince?: Map<string, number>; // open trade -> since when only the backup price source has answered for it (see sameFeed)
 };
 const NEW_ACCOUNT_CASH = 10_000; // what a new paper account starts with ($1,000 until v0.63)
@@ -432,7 +443,7 @@ export const currentAccountKey = () => acct().key;
 const botAls = new AsyncLocalStorage<string>();
 export const currentBotId = () => botAls.getStore() ?? "1";
 export const withBot = <T>(id: string, fn: () => T): T => botAls.run(id, fn);
-const SHARED_BOT_KEYS = new Set(["coinStats", "day", "dailyOverride", "autoSkip", "autoCost"]);
+const SHARED_BOT_KEYS = new Set(["coinStats", "day", "dailyOverride", "autoSkip", "autoCost", "autoSaid"]);
 const botViews = new WeakMap<object, BotState>();
 function slotOf(st: State, id: string): BotSlot | undefined {
   return id === "1" ? undefined : st.bots?.find((b) => b.id === id);
@@ -861,6 +872,18 @@ function log(msg: string, level: "info" | "good" | "bad" = "info", d?: Decision)
     (a.logQueue ??= []).push({ t, bot: currentBotId(), ...(sym ? { sym } : {}), msg, level, ...(d ? { d } : {}) });
   }
   console.log(`[bot] ${msg}`);
+}
+// A line written by the quality step. It works for all of the account's agents, so its lines are
+// not any one agent's: they are kept with the account (state.stepLog) and go to the week's log
+// under the agent number STEP_BOT, which the app shows as "quality check".
+export const STEP_BOT = "0";
+function stepLog(msg: string, level: "info" | "good" | "bad" = "info", d?: Decision) {
+  const a = acct();
+  a.dirty = true;
+  const t = Date.now();
+  a.state.stepLog = [{ t, msg, level, ...(d ? { d } : {}) }, ...(a.state.stepLog ?? [])].slice(0, 50);
+  if (a.key) (a.logQueue ??= []).push({ t, bot: STEP_BOT, msg, level, ...(d ? { d } : {}) });
+  console.log(`[quality] ${msg}`);
 }
 // The log lines written since the last save go to the week's log in one write. A write that
 // fails is tried again with the next save (the newest 500 lines are held for it).
@@ -2116,7 +2139,7 @@ function standAside(cfg: BotConfig, gate: PlanGate, note: string, extra: Partial
   };
   state.bot.armedSince = [];
   state.bot.skipNoted = [];
-  if (gate.kind === "scouts") noteOnce(`gate:scouts:${Math.floor(now / 3_600_000)}:${gate.reasons.join("|").slice(0, 160)}`, `${note} It looks again every 5 minutes.`, "bad", { act: "filtered", coin: cfg.symbol, why: shortWhy(`the scouts: ${gate.reasons.join("; ")}`) });
+  if (gate.kind === "scouts") noteOnce(`gate:scouts:${Math.floor(now / 3_600_000)}:${gate.reasons.join("|").slice(0, 160)}`, `${note} It looks again every 5 minutes.`, "bad", { act: "filtered", coin: cfg.symbol, by: "scouts", why: shortWhy(`the scouts: ${gate.reasons.join("; ")}`) });
   acct().dirty = true;
 }
 // Turn an agent's quality gate off ("trade it anyway", recorded) or back on.
@@ -2192,6 +2215,12 @@ const AUTO_PRICE_WAIT_MS = 20_000; // the longest one measurement is waited for 
 // about two minutes instead of five.
 let pricingNow = 0;
 const AUTO_PRICE_RETRY_MS = 10_000;
+// The quality step's own measurement in flight (it prices coins ahead of the agents, see
+// aheadStep): one at a time for all accounts on this server copy, and started only while no
+// agent's look is measuring. Agents' looks do not wait for it: the step gives way to them, never
+// the other way round. So an agent's look is exactly as quick as before the step existed, or
+// quicker, and at most two coins are ever being measured at once.
+let aheadNow = 0;
 const autoCostMax = (cfg: BotConfig) => (isOff(cfg, "autoMaxCostPct") ? 0 : Math.max(0, cfg.autoMaxCostPct ?? AUTO_MAX_COST_PCT));
 // The most the coin an agent is on may cost: the line plus the slack. 0 = the rule is off.
 const costLimit = (cfg: BotConfig) => { const max = autoCostMax(cfg); return max > 0 ? max + AUTO_COST_SLACK_PCT : 0; };
@@ -2248,23 +2277,41 @@ function rememberCost(mint: string | undefined, curve: CostCurve | null | undefi
 // even that is over the line.
 function knownCost(mint: string, funds: number, max: number): number | null {
   const curve = knownCurve(mint, 0, state.bot.autoCost?.[mint]);
-  if (curve.source !== "jupiter" || Date.now() - curve.at > AUTO_COST_KEEP_MS) return null;
-  rememberCost(mint, curve);
-  if (curveCovers(curve, funds)) return costAt(curve, funds);
-  const atLeast = costAt(curve, curve.upTo ?? funds);
-  return atLeast > max ? atLeast : null;
+  const pct = knownPct(curve, funds, max, Date.now(), AUTO_COST_KEEP_MS); // (the sums: quality.ts)
+  if (curve.source === "jupiter" && Date.now() - curve.at <= AUTO_COST_KEEP_MS) rememberCost(mint, curve);
+  return pct;
+}
+// A coin found too expensive for an agent with this much money is the quality step's finding,
+// whichever agent's look (or the step's own work ahead) came across it: written once an hour for
+// the whole account, in the step's own lines. So the record of what was ruled out is complete,
+// and ten agents passing the same coin over do not write it ten times.
+// (It is called from inside an agent's look: writing the record must never stop the look.)
+function ruledOutForCost(symbol: string, mint: string, pct: number, funds: number, max: number) {
+  try {
+    const said = (state.bot.autoSaid ??= {});
+    const now = Date.now(), k = `${mint}|${Number(funds.toPrecision(2))}`; // (to two figures: $997 and $1,000 are the same money here)
+    for (const [key, at] of Object.entries(said)) if (now - at > 2 * 3_600_000) delete said[key];
+    if (now - (said[k] ?? 0) < 3_600_000) return;
+    said[k] = now;
+    stepLog(`Quality check: ${symbol} is passed over for an agent with ${usd0(funds)}: buying and selling there costs about ${pct1(pct)}, more than the ${max}% it accepts.`, "info",
+      { act: "filtered", coin: symbol, by: "cost", why: `the cost: trading ${usd0(funds)} there costs ${pct1(pct)}, the line is ${max}%` });
+  } catch (e) {
+    console.error("[quality] record:", e);
+  }
 }
 // Measures it. "no" = Jupiter could not be asked (the coin is then not refused, as before this
 // rule). "late" = no answer in time (the look stops there and goes on next time).
-async function priceCoin(mint: string, liquidityUsd: number, funds: number): Promise<number | "no" | "late"> {
+// step = the quality step is asking, not an agent's look (it is counted apart, see aheadNow).
+async function priceCoin(mint: string, liquidityUsd: number, funds: number, waitMs = AUTO_PRICE_WAIT_MS, step = false): Promise<number | "no" | "late"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const work = costCurve(mint, liquidityUsd, funds, state.bot.autoCost?.[mint]);
-  pricingNow++; // until the measurement itself is over, also when this look stops waiting for it
-  const over = () => { pricingNow--; };
+  // (counted until the measurement itself is over, also when the asker stops waiting for it)
+  if (step) aheadNow++; else pricingNow++;
+  const over = () => { if (step) aheadNow--; else pricingNow--; };
   void work.then(over, over);
   const curve = await Promise.race([
     work,
-    new Promise<null>((ok) => { timer = setTimeout(() => ok(null), AUTO_PRICE_WAIT_MS); }),
+    new Promise<null>((ok) => { timer = setTimeout(() => ok(null), Math.max(0, waitMs)); }),
   ]).finally(() => clearTimeout(timer));
   if (!curve) return "late";
   if (curve.source !== "jupiter") return "no";
@@ -2375,15 +2422,20 @@ async function autoFind(except?: string): Promise<AutoFound> {
       // Too expensive for this agent's money? Then its trade would start too far behind (AUTO_MAX_COST_PCT).
       let pct: number | null = rule ? knownCost(c.mint, funds, max) : null;
       if (rule && pct === null) {
-        if (measured >= AUTO_PRICE_PER_LOOK || Date.now() - lookFrom > AUTO_PRICE_LOOK_MS) { more = true; break; }
-        if (pricingNow > 0) { more = true; soon = !measured; break; }
-        measured++;
+        // This very coin is being measured right now (by the quality step, working ahead): the
+        // look waits for that answer, which starts nothing new.
+        const joins = measuring(c.mint);
+        if (!joins) {
+          if (measured >= AUTO_PRICE_PER_LOOK || Date.now() - lookFrom > AUTO_PRICE_LOOK_MS) { more = true; break; }
+          if (pricingNow > 0) { more = true; soon = !measured; break; }
+          measured++;
+        }
         const got = await priceCoin(c.mint, c.liquidity, funds);
         if (!state.bot.running) return { none: "" };
         if (got === "late") { more = true; break; }
         pct = got === "no" ? null : got;
       }
-      if (pct !== null && pct > max) { dear.push({ symbol: c.symbol, pct }); continue; }
+      if (pct !== null && pct > max) { dear.push({ symbol: c.symbol, pct }); ruledOutForCost(c.symbol, c.mint, pct, funds, max); continue; }
       const pair = await bestPool(c.mint).catch(() => null);
       if (!state.bot.running) return { none: "" };
       if (!pair?.pool) { skip[c.mint] = now + AUTO_SKIP_NOPOOL_MS; rested++; continue; }
@@ -2410,6 +2462,99 @@ async function autoFind(except?: string): Promise<AutoFound> {
     why: `no coin free: ${[taken ? `${taken} with your other agents` : "", rested ? `${rested} resting after a recent try` : "", dear.length ? `${dear.length} too expensive for its ${usd0(funds)} (${dear.slice(0, 4).map((d) => d.symbol).join(", ")}${dear.length > 4 ? ", ..." : ""})` : ""].filter(Boolean).join(", ")}`,
   };
 }
+// ---------- The quality step works ahead ----------
+// While an account has auto-pick agents running, the step keeps the first AUTO_AHEAD coins of
+// their list priced, for the most money any of them trades with, one coin at a time. An agent
+// that needs a coin then finds the answer waiting instead of measuring during its own look. A
+// measurement is taken again once it is AUTO_AHEAD_FRESH_MS old. Coins that an agent is on, or
+// that are resting, are left for later: nobody could take them now.
+// Nothing depends on it: where the step has not got to a coin yet, the agent's own look measures
+// it as before (or joins the step's measurement of that coin, if one is under way), and never
+// waits for the step. The step asks Jupiter for one coin at a time and starts only while no
+// agent's look is measuring. When a try brings no fresh measurement (Jupiter does not answer, is
+// too busy to answer in time, or has no price for that coin) it stands back for five minutes, and
+// leaves that coin alone for a quarter of an hour, so that one coin which cannot be priced does
+// not keep the others waiting. AUTO_AHEAD=0 switches it off.
+// by = when the watch that runs this check ends (as deployed, a watch lasts under a minute and
+// the scheduler's next call must find it over). The step starts a measurement only when the whole
+// wait for one still fits in the watch, so it never makes a watch run long. Not given = no end
+// (the local 5-second loop).
+const aheadEnv = (process.env.AUTO_AHEAD ?? "").trim();
+export const AUTO_AHEAD = aheadEnv !== "" && Number.isFinite(Number(aheadEnv)) ? Math.max(0, Math.floor(Number(aheadEnv))) : 20; // (anything that is not a number keeps the 20)
+const AUTO_AHEAD_FRESH_MS = 45 * 60_000;
+const AUTO_AHEAD_PAUSE_MS = 5 * 60_000;
+const AUTO_AHEAD_COIN_MS = 15 * 60_000;
+const AUTO_AHEAD_SCAN_MS = 5 * 60_000; // it reads the scouts' list itself at most this often (an agent that looks reads it anyway)
+const AUTO_AHEAD_NEED_MS = AUTO_PRICE_WAIT_MS + 1_000; // it starts a measurement only when this much of the watch is left: the longest it waits for one, and a little
+// The promise's answer, or null when it has not come within `ms`.
+function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  if (!Number.isFinite(ms)) return p;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<null>((ok) => { timer = setTimeout(() => ok(null), Math.max(0, ms)); })]).finally(() => clearTimeout(timer));
+}
+function aheadStep(by?: number) {
+  const a = acct();
+  const left = () => (by === undefined ? Infinity : by - Date.now());
+  if (!AUTO_AHEAD || a.ahead || pricingNow > 0 || aheadNow > 0 || Date.now() < (a.aheadPauseUntil ?? 0) || left() < AUTO_AHEAD_NEED_MS) return;
+  // Whom it works for: the running auto-pick agents that keep to a cost line. It prices for the
+  // one with the most money (a measurement for a large trade also answers for a smaller one).
+  let funds = 0, max = 0, strict = true, minQuality = 100;
+  const held = new Set<string>();
+  for (const id of runningIds()) withBot(id, () => {
+    const cfg = state.bot.config;
+    if (cfg?.mint) held.add(cfg.mint);
+    if (!cfg || !isAutoAgent(cfg) || !(autoCostMax(cfg) > 0)) return;
+    const f = Math.floor(agentFunds(cfg) * 100) / 100;
+    if (f > funds) { funds = f; max = autoCostMax(cfg); }
+    strict &&= !!cfg.autoStrict;
+    minQuality = Math.min(minQuality, cfg.minQuality ?? QUALITY_MIN);
+  });
+  if (!(funds >= 10)) return;
+  for (const p of a.state.positions) if (p.tokenMint) held.add(p.tokenMint);
+  const work = (async () => {
+    try {
+      let scan = recentScan(AUTO_AHEAD_SCAN_MS);
+      if (!scan) {
+        if (Date.now() - (a.aheadScanAt ?? 0) < AUTO_AHEAD_SCAN_MS) return;
+        a.aheadScanAt = Date.now();
+        scan = await within(scanAgents().catch(() => null), left() - AUTO_AHEAD_NEED_MS);
+      }
+      if (!scan?.coins.length || left() < AUTO_AHEAD_NEED_MS) return;
+      const now = Date.now(), resting = state.bot.autoSkip ?? {};
+      const failed = (a.aheadSkip ??= new Map<string, number>());
+      for (const [m, until] of failed) if (until <= now) failed.delete(m);
+      const free = autoCandidates(scan, { autoStrict: strict, minQuality }).slice(0, AUTO_AHEAD).filter((c) => !held.has(c.mint) && !((resting[c.mint] ?? 0) > now));
+      const verdicts = vet(free, { funds, max, now, keepMs: AUTO_COST_KEEP_MS, freshMs: AUTO_AHEAD_FRESH_MS, curveOf: (m) => knownCurve(m, 0, state.bot.autoCost?.[m]) });
+      // What is known to be too expensive is on the step's record, whoever measured it.
+      for (const v of verdicts) if (v.state === "dear" && v.pct !== null) ruledOutForCost(v.symbol, v.mint, v.pct, funds, max);
+      // Its next coin: first one that nobody has priced (an agent may need it next), then one whose
+      // measurement has grown old.
+      const due = verdicts.filter((v) => v.stale && !failed.has(v.mint));
+      const next = due.find((v) => v.state === "unpriced") ?? due[0];
+      if (!next || pricingNow > 0 || aheadNow > 0) return;
+      const got = await priceCoin(next.mint, free.find((c) => c.mint === next.mint)?.liquidity ?? 0, funds, Math.min(AUTO_PRICE_WAIT_MS, left()), true);
+      // Did a fresh measurement come of it? (When Jupiter does not answer, an older measurement of
+      // the coin may be handed back in its place: that is not one.)
+      const fresh = typeof got === "number" && !needsPricing(knownCurve(next.mint, 0, state.bot.autoCost?.[next.mint]), funds, Date.now(), AUTO_AHEAD_FRESH_MS);
+      if (typeof got !== "number" || !fresh) {
+        a.aheadPauseUntil = Date.now() + AUTO_AHEAD_PAUSE_MS;
+        failed.set(next.mint, Date.now() + AUTO_AHEAD_COIN_MS);
+      } else if (got > max) ruledOutForCost(next.symbol, next.mint, got, funds, max);
+    } catch (e) {
+      console.error("[quality] working ahead:", e);
+    }
+  })();
+  // (Cleared only once the round is over AND after it is noted here: a round with nothing to do
+  // is over before this line is reached, and must not leave the note standing.)
+  a.ahead = work;
+  const steps = (a.steps ??= new Set());
+  steps.add(work);
+  void work.finally(() => {
+    steps.delete(work);
+    if (a.ahead === work) a.ahead = null;
+  });
+}
+
 // One check of an auto-pick agent that holds no trade. true = it has no coin (nothing more to do now).
 async function autoStep(cfg: BotConfig): Promise<boolean> {
   const now = Date.now();
@@ -2439,7 +2584,7 @@ async function autoStep(cfg: BotConfig): Promise<boolean> {
         if (tooDear && found.none && !found.failed && !found.more) {
           // Too expensive, and no coin it can take instead: it lets the coin go and waits, at no AI
           // cost, rather than keep asking its AI about a coin whose trades start too far behind.
-          log(`Auto-pick: left ${cfg.symbol}: ${tooDear}. No other coin is free for it right now.`, "info", { act: "left", coin: cfg.symbol, why: `the cost: trading its ${usd0(own!.funds)} there costs ${pct1(own!.pct)}, it accepts ${own!.max}%; no other coin is free` });
+          log(`Auto-pick: left ${cfg.symbol}: ${tooDear}. No other coin is free for it right now.`, "info", { act: "left", coin: cfg.symbol, by: "cost", why: `the cost: trading its ${usd0(own!.funds)} there costs ${pct1(own!.pct)}, it accepts ${own!.max}%; no other coin is free` });
           autoRelease(cfg);
           autoNote(found.none, found.key, found.why);
           return true;
@@ -2760,12 +2905,16 @@ function noteKey(pos: Position, gainPct: number) {
 
 // Every running agent is checked at the same time, so one agent waiting for its AI (10-30 s)
 // never delays the price checks, stops and exits of the others.
-export async function tick(persist = true) {
+// aheadBy = when the watch that runs this check ends, for the quality step (see aheadStep).
+export async function tick(persist = true, aheadBy?: number) {
   const a = acct();
   const all = Promise.allSettled(runningIds().map((id) => withBot(id, () => tickBot(persist))));
   const steps = (a.steps ??= new Set());
   steps.add(all);
   void all.finally(() => steps.delete(all));
+  // The quality step prices the next coin of the agents' list, if there is one to price. It is
+  // never waited for here, and nothing that goes wrong in it may disturb the agents' checks.
+  try { aheadStep(aheadBy); } catch (e) { console.error("[quality] working ahead:", e); }
   // The 5-second loop doesn't wait for an agent that is waiting on its AI: that step finishes on
   // its own (it can't start twice), and the next round checks everyone else on time.
   await Promise.race([all, new Promise((r) => setTimeout(r, 4_000))]);
@@ -3154,7 +3303,7 @@ async function tickBot(persist: boolean) {
       if (isAutoAgent(cfg)) {
         const own = ownCost(cfg), limit = costLimit(cfg);
         if (own && limit > 0 && own.pct > limit) {
-          if (hasLiveOrder(cfg)) log(`Its order on ${cfg.symbol} is dropped: buying and selling its ${usd0(own.funds)} there costs about ${pct1(own.pct)}, more than the ${own.max}% it accepts. It looks for another coin.`, "info", { act: "filtered", coin: cfg.symbol, why: `its order is dropped: trading its ${usd0(own.funds)} there costs ${pct1(own.pct)}, it accepts ${own.max}%` });
+          if (hasLiveOrder(cfg)) log(`Its order on ${cfg.symbol} is dropped: buying and selling its ${usd0(own.funds)} there costs about ${pct1(own.pct)}, more than the ${own.max}% it accepts. It looks for another coin.`, "info", { act: "filtered", coin: cfg.symbol, by: "cost", why: `its order is dropped: trading its ${usd0(own.funds)} there costs ${pct1(own.pct)}, it accepts ${own.max}%` });
           if (state.lastSignal) { state.lastSignal = null; acct().dirty = true; }
           return;
         }
@@ -3174,7 +3323,7 @@ async function tickBot(persist: boolean) {
           rememberCost(cfg.mint, state.bot.costCurve);
           const limit = costLimit(cfg);
           if (limit > 0 && ac.fullPct > limit) {
-            log(`The AI was not asked after all (no AI tokens spent): buying and selling its ${usd0(ac.funds)} on ${cfg.symbol} costs about ${pct1(ac.fullPct)} now, more than the ${autoCostMax(cfg)}% it accepts. It looks for another coin.`, "info", { act: "filtered", coin: cfg.symbol, why: `the cost: trading its ${usd0(ac.funds)} there costs ${pct1(ac.fullPct)} now, it accepts ${autoCostMax(cfg)}%` });
+            log(`The AI was not asked after all (no AI tokens spent): buying and selling its ${usd0(ac.funds)} on ${cfg.symbol} costs about ${pct1(ac.fullPct)} now, more than the ${autoCostMax(cfg)}% it accepts. It looks for another coin.`, "info", { act: "filtered", coin: cfg.symbol, by: "cost", why: `the cost: trading its ${usd0(ac.funds)} there costs ${pct1(ac.fullPct)} now, it accepts ${autoCostMax(cfg)}%` });
             state.lastSignal = null;
             acct().dirty = true;
             return;
@@ -3183,7 +3332,7 @@ async function tickBot(persist: boolean) {
         const { consensus, results } = await runAnalysis(cfg.chain, cfg.pool, cfg.tf, { forBot: true, ...(isCoinAgent(cfg) ? { agentBrief: await agentBrief(cfg, why, ac), ...(ac ? { cost: ac } : {}) } : {}) });
         for (const f of results) if (!f.ok) log(`The AI failed: ${f.error}`, "bad");
         // (once an hour for each coin: an auto-pick agent may be on several quiet coins in an hour)
-        if (state.lastSignal?.gate) noteOnce(`gate:numbers:${cfg.pool}:${Math.floor(Date.now() / 3_600_000)}`, `${cfg.symbol}: ${consensus.note} It looks again every 5 minutes, or at once on a real move.`, "bad", { act: "filtered", coin: cfg.symbol, why: shortWhy(`the numbers: ${state.lastSignal.gate.reasons.join("; ").replace(/^the numbers give /, "")}`) });
+        if (state.lastSignal?.gate) noteOnce(`gate:numbers:${cfg.pool}:${Math.floor(Date.now() / 3_600_000)}`, `${cfg.symbol}: ${consensus.note} It looks again every 5 minutes, or at once on a real move.`, "bad", { act: "filtered", coin: cfg.symbol, by: "numbers", why: shortWhy(`the numbers: ${state.lastSignal.gate.reasons.join("; ").replace(/^the numbers give /, "")}`) });
         else log(`Plan: ${consensus.stance.replace(/_/g, " ")} (${consensus.confidence}% sure). ${consensus.note}`, "info", planDecision(cfg, consensus, results));
         if (isCoinAgent(cfg) && !state.lastSignal?.gate) {
           const ok = results.find((x) => x.ok);
@@ -3432,7 +3581,7 @@ export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dash
       // Reload first, so a Stop or manual trade from the dashboard is never overwritten.
       await sync();
       if (!botOn() && !hasProtected()) break;
-      if (botOn()) await tick(false); // saves only if something happened
+      if (botOn()) await tick(false, end); // saves only if something happened
       await guardProtected();
       ticks++;
       await flush();
@@ -3446,7 +3595,7 @@ export async function watch(maxMs: number, by: "scheduler" | "dashboard" = "dash
       await settleSteps();
       await settleReviews();
       if (!state.positions.some((p) => profitInbox.has(p.id))) break;
-      await tick(false);
+      await tick(false, 0); // (the window is over: the quality step starts nothing now)
     }
     await settleSteps();
     await flush();

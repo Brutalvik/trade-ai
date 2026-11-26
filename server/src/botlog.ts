@@ -24,7 +24,8 @@ const store = createStore();
 //   wait      an auto-pick agent has no coin it can take
 //   lock      a trade reached its minimum profit    start / stop = the agent itself
 export type DecisionAct = "enter" | "exit" | "skip" | "filtered" | "order" | "pick" | "left" | "wait" | "lock" | "start" | "stop";
-export type Decision = { act: DecisionAct; coin?: string; why: string; usd?: number; of?: number; pnl?: number; pct?: number };
+// by = for a coin that was ruled out or let go: which check did it (the scouts, the numbers, the cost of trading).
+export type Decision = { act: DecisionAct; coin?: string; why: string; by?: "scouts" | "numbers" | "cost"; usd?: number; of?: number; pnl?: number; pct?: number };
 export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad"; d?: Decision };
 
 // A reason short enough for one line: single spaces, no full stop at the end, cut at `max`.

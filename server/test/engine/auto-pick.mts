@@ -10,6 +10,14 @@
 //           coin is free, and stays where it is if none is
 //   nolist  the scouts' list stops answering: an agent whose trade has just closed carries on
 //           with the coin it has
+//   ahead   the quality step prices the first coins of the agents' list ahead of them, one at a
+//           time: the next agent finds its coin's cost waiting and takes it at once; what is ruled
+//           out is written once for the whole account; when Jupiter does not answer the step
+//           asks once and stands back, and the coin it could not price waits longer than the rest
+//   fresh   a measurement older than three quarters of an hour is taken again by the step; when
+//           Jupiter does not answer then, it asks once and stands back, older measurement or not
+//   window  as deployed (the scheduler's calls, no loop of the engine's own): the step starts no
+//           measurement that could outlast the watch that runs it, so a watch never runs long
 //   cost    a coin that is too expensive for an agent's money is passed over: a $1,000 agent takes
 //           the best coin it can afford, a $300 agent can afford one the $1,000 agent cannot, an
 //           agent with nothing affordable waits at no AI cost, and an agent whose coin is (or
@@ -20,9 +28,16 @@ import os from "node:os";
 import path from "node:path";
 
 const SC = process.env.SC ?? "rotate";
+// Scenario "cost" is about the agents' own measuring, which is what remains when the quality step
+// does not work ahead (its switch, AUTO_AHEAD=0): so there the step is switched off. Scenarios
+// "ahead" and "fresh" are about the step. Everywhere else Jupiter gives no quotes at all.
+if (SC === "cost") process.env.AUTO_AHEAD = "0";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trading-rust-test-"));
 process.chdir(dir);
 delete process.env.VERCEL;
+// Scenario "window" runs as deployed: the engine starts no timer, the test makes the scheduler's
+// calls (engine.watch), and the account is kept in the (fake) Supabase store.
+if (SC === "window") { process.env.VERCEL = "1"; process.env.STORE = "supabase"; }
 for (const k of Object.keys(process.env)) if (/REST_API_|REDIS|SUPABASE/.test(k)) delete process.env[k];
 if (process.env.STORE === "supabase") await (await import(new URL("../pg-fake.mts", import.meta.url).href)).fakeSupabase();
 process.env.ANTHROPIC_API_KEY = "fake";
@@ -57,7 +72,10 @@ const staysOut = new Set<string>(); // coins the AI says to stay out of
 let listsDown = false; // the scouts' lists come back empty (as when the data source does not answer)
 // Jupiter answers quotes only in scenario "cost". Elsewhere it does not, so nothing can be
 // measured, and an agent then never passes over a coin for its cost (as before that rule).
-let jupiterUp = false, quotes = 0;
+let jupiterUp = false, quotes = 0; // quotes = the quotes Jupiter answered
+const quoteTried: string[] = []; // every quote asked of it, answered or not
+let quoteDelayMs = 0; // how long Jupiter takes to answer a quote (a slow Jupiter)
+const triesOf = (symbol: string) => quoteTried.filter((u) => u.includes(`${symbol}Mint1111pump`)).length;
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const json = (v: unknown) => new Response(JSON.stringify(v), { headers: { "content-type": "application/json" } });
 const realFetch = globalThis.fetch;
@@ -81,6 +99,8 @@ globalThis.fetch = (async (input: any, init?: any) => {
     return json({ id: `m${aiCalls}`, type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify(out) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
   }
   if (url.includes("api.jup.ag/swap/")) {
+    quoteTried.push(url);
+    if (quoteDelayMs) await new Promise((r) => setTimeout(r, quoteDelayMs));
     if (!jupiterUp) return new Response("{}", { status: 503 }); // no Jupiter quotes: costs come from the fake pool's depth
     // A plain pool with `side` dollars on each side and a 0.3% fee per swap (raw amounts, 6 decimals both ways).
     const u = new URL(url);
@@ -131,7 +151,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
 }) as typeof fetch;
 
 const engine = await import(new URL("../../src/engine.ts", import.meta.url).href);
-const { scoreCoin } = await import(new URL("../../src/agents.ts", import.meta.url).href);
+const { scoreCoin, scanAgents } = await import(new URL("../../src/agents.ts", import.meta.url).href);
 await engine.sync();
 engine.reset(10_000);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -291,6 +311,138 @@ if (SC === "nolist") {
   expect("when the list is back it takes the best coin that is free", on(r2.started[0]), "QBBB");
 }
 
+if (SC === "ahead") {
+  // Jupiter answers. Six coins in the scouts' order; a round trip of $1,000 costs about 0.8% on
+  // four of them and 3.8% on QTWO and QFOR. Every agent's AI says to stay out, so the agents sit
+  // on their coins with no trade and the list stays as it is.
+  jupiterUp = true;
+  const spec: [string, number, number][] = [["QONE", 95, 1_000_000], ["QTWO", 90, 60_000], ["QTRE", 85, 1_000_000], ["QFOR", 80, 60_000], ["QFIV", 75, 1_000_000], ["QSIX", 70, 1_000_000]];
+  for (const [sym, organic, side] of spec) { coins.push(coin(sym, { organic, side })); staysOut.add(sym); }
+  const st = () => engine.getState() as any;
+  const priced = () => Object.keys(st().bot.autoCost ?? {}).map((m) => coins.find((c) => c.mint === m)?.symbol).sort();
+  const stepSaid = () => (st().stepLog ?? []).filter((l: any) => l.d).map((l: any) => `${l.d.coin} ${l.d.by}: ${l.d.why}`).sort();
+  const waited = (id: string) => agent(id).bot.log.filter((l: any) => l.d?.act === "wait").length;
+
+  // One agent. It takes the first coin; the step measures the rest of the list.
+  const [a1] = engine.startAutoAgents(base, [1000], false, 10).started;
+  await until("the agent takes the first coin; meanwhile the quality step prices the other five, one after another", () => on(a1) === "QONE" && priced().length === 6, 200);
+  expect("the agent is on the first coin, and never had to stop to find out what the coins cost", [on(a1), waited(a1)], ["QONE", 0]);
+  expect("every coin of the list is priced, each measured once (four quotes a coin)", [priced(), quotes], [["QFIV", "QFOR", "QONE", "QSIX", "QTRE", "QTWO"], 24]);
+  expect("the two coins that are too expensive are on the quality check's record, once each",
+    stepSaid(), ["QFOR cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%", "QTWO cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%"]);
+  check("the quality check's lines are its own: they are in no agent's log", !agent(a1).bot.log.some((l: any) => l.d?.act === "filtered"), agent(a1).bot.log.map((l: any) => l.d?.act).filter(Boolean));
+
+  // A second agent finds everything priced.
+  const q = quotes, t1 = realNow();
+  const [a2] = engine.startAutoAgents(base, [1000], false, 10).started;
+  await until("a second agent takes the next coin it can afford", () => on(a2) === "QTRE", 60);
+  check("...within a few seconds of starting", realNow() - t1 < 15_000, `${Math.round((realNow() - t1) / 1000)} s`);
+  expect("the second agent takes its coin at once: it never has to find out what the coins cost, and nothing is measured again", [on(a2), waited(a2), quotes - q], ["QTRE", 0, 0]);
+  check("its log says what its coin costs and what it passed over, from the step's measurements",
+    /Auto-pick: chose QTRE \(the scouts' score \d+ of 100, passes every scout check\)\. Buying and selling its \$1,000 there costs about 0\.8%\. It passed over QTWO \(3\.8%\), higher on the list: more than the 1\.5% it accepts\./.test(logOf(a2)), logOf(a2).split("\n").find((l: string) => l.startsWith("Auto-pick: chose")));
+  expect("a coin already on the record is not written again when another agent passes it over", stepSaid().length, 2);
+
+  // A third, with $300: the same measurements answer for its smaller trades.
+  const [a3] = engine.startAutoAgents(base, [300], false, 10).started;
+  await until("an agent with $300 takes a coin", () => !!on(a3), 60);
+  expect("the measurements taken for $1,000 answer for $300 too: no new quotes, and it takes the next coin it can afford", [on(a3), quotes - q, waited(a3)], ["QFIV", 0, 0]);
+  expect("what is too expensive for $300 is written for $300",
+    stepSaid(), ["QFOR cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%", "QFOR cost: the cost: trading $300 there costs 1.6%, the line is 1.5%", "QTWO cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%", "QTWO cost: the cost: trading $300 there costs 1.6%, the line is 1.5%"]);
+
+  // Jupiter stops answering, and a new coin is listed: the step asks once and stands back.
+  jupiterUp = false;
+  coins.push(coin("QNEW", { organic: 60, side: 1_000_000 }));
+  staysOut.add("QNEW");
+  offset += 5.5 * 60_000; console.log("   ...Jupiter stops answering, a new coin is listed; clock +5.5 min");
+  await sleep(22_000); showLogs();
+  expect("when Jupiter does not answer, the step asks once about the new coin and then leaves it alone (it does not keep knocking)", [triesOf("QNEW"), priced().includes("QNEW")], [1, false]);
+  expect("no agent was moved or stopped by that", [on(a1), on(a2), on(a3)], ["QONE", "QTRE", "QFIV"]);
+
+  // Jupiter answers again, and one more coin is listed. The agents are stopped and a new one is
+  // started, so that none has sat long enough to move on by itself.
+  jupiterUp = true;
+  coins.push(coin("QNXT", { organic: 55, side: 1_000_000 }));
+  staysOut.add("QNXT");
+  for (const id of [a1, a2, a3]) engine.stopBot("test: next part", id);
+  const [a4] = engine.startAutoAgents(base, [1000], false, 10).started;
+  await until("a new agent takes the first coin, whose cost is still known", () => on(a4) === "QONE", 60);
+  offset += 5.2 * 60_000; console.log("   ...Jupiter answers again, one more coin is listed; clock +5.2 min");
+  await until("the step goes back to work and prices the coin listed since", () => priced().includes("QNXT"), 120);
+  await sleep(12_000); showLogs();
+  expect("after standing back five minutes the step is at work again; the coin it could not price waits a quarter of an hour, so that the others are not held up by it", [priced().includes("QNXT"), priced().includes("QNEW"), triesOf("QNEW")], [true, false, 1]);
+  check("the agent sitting on its coin was not disturbed", on(a4) === "QONE" && agent(a4).bot.running, on(a4));
+  offset += 10.5 * 60_000; console.log("   ...clock +10.5 min");
+  await until("a quarter of an hour after it could not be priced, the step prices that coin too", () => priced().includes("QNEW"), 120);
+  expect("the coin that could not be priced gets its turn again", [priced().includes("QNEW"), agent(a4).bot.running], [true, true]);
+}
+
+if (SC === "fresh") {
+  // Jupiter answers. One coin the agent can afford and two it cannot (a round trip of $1,000 costs
+  // about 3.8% there). Its AI says to stay out, so it sits on its coin with no trade; and with no
+  // other coin it can afford, it stays there however long that lasts.
+  jupiterUp = true;
+  coins.push(coin("QHOME", { organic: 95, side: 1_000_000 }), coin("QDRA", { organic: 85, side: 60_000 }), coin("QDRB", { organic: 75, side: 60_000 }));
+  for (const c of coins) staysOut.add(c.symbol);
+  const st = () => engine.getState() as any;
+  const measuredAt = (sym: string): number => st().bot.autoCost?.[bySymbol(sym).mint]?.at ?? 0;
+  const stepSaid = () => (st().stepLog ?? []).filter((l: any) => l.d).map((l: any) => `${l.d.coin} ${l.d.by}: ${l.d.why}`).sort();
+
+  const [a1] = engine.startAutoAgents(base, [1000], false, 10).started;
+  await until("the agent takes the one coin it can afford, and the step prices the other two", () => on(a1) === "QHOME" && measuredAt("QDRA") > 0 && measuredAt("QDRB") > 0, 120);
+  expect("the two coins that are too expensive are on the quality check's record", stepSaid(), ["QDRA cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%", "QDRB cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%"]);
+
+  // Three quarters of an hour later the step measures them again.
+  offset += 46 * 60_000; console.log("   ...clock +46 min");
+  const jumped = Date.now();
+  await until("the step measures both coins again", () => measuredAt("QDRA") >= jumped && measuredAt("QDRB") >= jumped, 120);
+  expect("a measurement older than 45 minutes is taken again, so that an agent that needs the coin finds a recent one", [measuredAt("QDRA") >= jumped, measuredAt("QDRB") >= jumped], [true, true]);
+  expect("the agent stayed where it was (the other two are still too expensive for it), and within the hour nothing is written twice", [on(a1), agent(a1).bot.running, stepSaid().length], ["QHOME", true, 2]);
+
+  // Another three quarters of an hour later Jupiter does not answer.
+  jupiterUp = false;
+  const tries = [triesOf("QDRA"), triesOf("QDRB")];
+  offset += 46 * 60_000; console.log("   ...Jupiter stops answering; clock +46 min");
+  await sleep(25_000); showLogs();
+  expect("when Jupiter does not answer, the step asks once and stands back, although it still holds the older measurement of that coin", [triesOf("QDRA") - tries[0], triesOf("QDRB") - tries[1]], [1, 0]);
+  expect("the agent is not disturbed by that", [on(a1), agent(a1).bot.running], ["QHOME", true]);
+  expect("an hour on, what is still too expensive is written again: once an hour, from what is known", stepSaid().length, 4);
+}
+
+if (SC === "window") {
+  // As deployed the engine has no loop of its own: a scheduler calls once a minute, and each call
+  // watches for under a minute (here the test makes those calls). The next call must find the
+  // watch over, so nothing the quality step starts may outlast the watch that started it.
+  jupiterUp = true;
+  coins.push(coin("QHOME", { organic: 95 }), coin("QTWO", { organic: 85 }));
+  for (const c of coins) staysOut.add(c.symbol);
+  const st = () => engine.getState() as any;
+  const priced = () => Object.keys(st().bot.autoCost ?? {}).map((m) => coins.find((c) => c.mint === m)?.symbol).sort();
+  const [a1] = engine.startAutoAgents(base, [1000], false, 10).started;
+  for (let n = 0; n < 8 && !(on(a1) === "QHOME" && agent(a1).lastSignal?.consensus.stance === "AVOID" && priced().length === 2); n++) { await engine.watch(30_000); showLogs(); }
+  expect("run by the scheduler's calls alone: the agent has its coin, its AI has answered, and the step has priced the other coin", [on(a1), agent(a1).lastSignal?.consensus.stance, priced()], ["QHOME", "AVOID", ["QHOME", "QTWO"]]);
+
+  // A coin appears on the scouts' list 22 seconds into a 40-second watch, and Jupiter is slow:
+  // a measurement started now could not be over when the watch is.
+  coins.push(coin("QLATE", { organic: 75 }));
+  staysOut.add("QLATE");
+  refreshLists();
+  quoteDelayMs = 6_000;
+  const t = realNow();
+  const running = engine.watch(40_000);
+  await sleep(22_000);
+  await scanAgents(); // (the list is read, as it is whenever the app is open: the new coin is on it now)
+  const r = await running;
+  const took = realNow() - t;
+  showLogs();
+  check("the watch ran its checks to its end", r.ticks >= 6 && took >= 38_000, [r, `${(took / 1000).toFixed(1)} s`]);
+  expect("with too little of the watch left for a measurement, the step starts none: the coin is left for the next watch", triesOf("QLATE"), 0);
+  check("so the watch is over when it should be, and the scheduler's next call can start the next one", took < 47_000, `${(took / 1000).toFixed(1)} s`);
+  // The next watch has the time.
+  quoteDelayMs = 0;
+  await engine.watch(40_000); showLogs();
+  expect("the next watch prices the new coin, measured once", [priced().includes("QLATE"), triesOf("QLATE")], [true, 4]);
+}
+
 if (SC === "cost") {
   // Jupiter answers here, so what a coin costs to trade is measured. A round trip of $1,000 costs
   // about 3.8% on QDEAR, 1.7% on QMIDD and 0.8% on QCHEP; of $300, about 1.6% on QDEAR and 0.9% on
@@ -311,6 +463,11 @@ if (SC === "cost") {
   check("its card says what it is doing, and that it costs no AI tokens",
     /^it is finding out what the free coins on the list cost to trade with its \$1,000: 2 so far are too expensive\. Too expensive means that buying and selling there would cost more than 1\.5% of the trade \(QDEAR, QMIDD\)\. It goes on in half a minute, at no AI cost$/.test(noteOf(a1)), noteOf(a1));
   expect("one look measures two coins at most (four quotes each), so pricing the list never holds up the agents' own looks", [on(a1), quotes], ["", 8]);
+  const stepLines = (): any[] => ((engine.getState() as any).stepLog ?? []).filter((l: any) => l.d);
+  const stepSaid = () => stepLines().map((l: any) => `${l.d.act} ${l.d.coin} by ${l.d.by}: ${l.d.why}`).sort();
+  expect("the two coins it passed over are written as the quality check's findings, once each, with who ruled them out",
+    stepSaid(), ["filtered QDEAR by cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%", "filtered QMIDD by cost: the cost: trading $1,000 there costs 1.7%, the line is 1.5%"]);
+  check("...in the quality check's own lines, not in the agent's log", !agent(a1).bot.log.some((l: any) => l.d?.act === "filtered") && /^Quality check: QDEAR is passed over for an agent with \$1,000: buying and selling there costs about 3\.8%, more than the 1\.5% it accepts\.$/.test(stepLines().find((l: any) => l.d.coin === "QDEAR")?.msg ?? ""), stepLines().map((l: any) => l.msg));
   offset += 31_000; console.log("   ...clock +31 s");
   await until("half a minute later it measures the third coin, can afford it, takes it and buys", () => !!holding(a1), 150);
   expect("the $1,000 agent passes over the two coins higher on the list and takes the best one it can afford", on(a1), "QCHEP");
@@ -333,6 +490,8 @@ if (SC === "cost") {
     /Auto-pick: chose QMIDD \(the scouts' score \d+ of 100, passes every scout check\)\. Buying and selling its \$300 there costs about 0\.9%\. It passed over QDEAR \(1\.6%\), higher on the list: more than the 1\.5% it accepts\. Its AI reads the charts now\./.test(logOf(a2)), autoLine(a2, /^Auto-pick: chose/));
   check("it bought with its whole budget at the cost measured for $300", Math.abs(holding(a2).costUsd - 300) < 0.01 && Math.abs(holding(a2).costPct - 0.94) < 0.06, [holding(a2)?.costUsd, holding(a2)?.costPct]);
   expect("what one agent measured the next one reads: no new quotes", quotes, 12);
+  expect("for the $300 agent the quality check writes its own finding (the coin costs it less, and still too much); what was written for $1,000 is not written again",
+    stepSaid(), ["filtered QDEAR by cost: the cost: trading $1,000 there costs 3.8%, the line is 1.5%", "filtered QDEAR by cost: the cost: trading $300 there costs 1.6%, the line is 1.5%", "filtered QMIDD by cost: the cost: trading $1,000 there costs 1.7%, the line is 1.5%"]);
 
   // Two more $1,000 agents: nothing is left that they can afford, so they wait.
   const [w1, w2] = engine.startAutoAgents(base, [1000, 1000], false, 10).started;
@@ -344,6 +503,7 @@ if (SC === "cost") {
   check("waiting with no coin it can afford is kept as a decision, in a few words", decided(w1, "wait").some((d: any) => d.why === "no coin free: 2 with your other agents, 1 too expensive for its $1,000 (QDEAR)"), decided(w1, "wait"));
   check("their budgets stay set aside for them", Math.abs((engine.getState() as any).locked - 2000) < 0.01, (engine.getState() as any).locked);
   expect("...and they measured nothing again", quotes, 12);
+  expect("two more agents passing the same coin over write nothing new: it is said once an hour for the account", stepSaid().length, 3);
 
   // A coin they can afford appears. Its AI will say to stay out, so the agent that takes it sits there with no order.
   staysOut.add("QNEWW");
@@ -387,13 +547,13 @@ if (SC === "cost") {
   await until("at its next look the cost is measured, and its AI is not asked", () => /The AI was not asked after all/.test(logOf(mover)), 120);
   check("its log says why the AI was not asked, and that no AI tokens were spent", /The AI was not asked after all \(no AI tokens spent\): buying and selling its \$1,000 on QNEWW costs about 4\.4% now, more than the 1\.5% it accepts\. It looks for another coin\./.test(logOf(mover)), autoLine(mover, /not asked after all/));
   expect("its AI was not asked about the coin once it was clearly too expensive", (plansFor.QNEWW ?? 0) - asked, 0);
-  check("its AI staying out, and the coin being ruled out for its cost, are kept as decisions", decided(mover, "skip", "QNEWW").length >= 1 && decided(mover, "filtered", "QNEWW").some((d: any) => d.why === "the cost: trading its $1,000 there costs 4.4% now, it accepts 1.5%"), [decided(mover, "skip"), decided(mover, "filtered")]);
+  check("its AI staying out, and the coin being ruled out for its cost, are kept as decisions", decided(mover, "skip", "QNEWW").length >= 1 && decided(mover, "filtered", "QNEWW").some((d: any) => d.by === "cost" && d.why === "the cost: trading its $1,000 there costs 4.4% now, it accepts 1.5%"), [decided(mover, "skip"), decided(mover, "filtered")]);
   refreshLists();
   await until("it leaves the coin", () => on(mover) === "", 90);
   expect("an agent whose coin becomes clearly too expensive for its money leaves it, and waits for one it can afford", [on(mover), agent(mover).bot.running, holding(mover) ?? null], ["", true, null]);
   check("its log says why", /Auto-pick: left QNEWW: buying and selling its \$1,000 on QNEWW costs about 4\.4%, more than the 1\.5% it accepts\. No other coin is free for it right now\./.test(logOf(mover)), autoLine(mover, /^Auto-pick: left/));
   check("the coin is not put to rest for the account's other agents: one with less money may afford it", !((engine.getState() as any).bot.autoSkip ?? {})[bySymbol("QNEWW").mint], (engine.getState() as any).bot.autoSkip);
-  check("leaving the coin is kept as a decision", decided(mover, "left", "QNEWW").some((d: any) => d.why === "the cost: trading its $1,000 there costs 4.4%, it accepts 1.5%; no other coin is free"), decided(mover, "left"));
+  check("leaving the coin is kept as a decision", decided(mover, "left", "QNEWW").some((d: any) => d.by === "cost" && d.why === "the cost: trading its $1,000 there costs 4.4%, it accepts 1.5%; no other coin is free"), decided(mover, "left"));
   check("what was measured is kept with the account for all its agents", ["QDEAR", "QNEWW"].every((sym) => (engine.getState() as any).bot.autoCost?.[bySymbol(sym).mint]?.source === "jupiter"), Object.keys((engine.getState() as any).bot.autoCost ?? {}));
 
   // Agents that were started before this rule existed sit on whatever was best, whatever it cost.
