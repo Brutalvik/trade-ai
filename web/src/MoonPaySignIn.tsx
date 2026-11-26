@@ -12,17 +12,14 @@ import { Avatar, MoonPaySigner, MoonPayUI, ProfileModal, SetupProfileModal, SIGN
 
 const METHODS: ("email" | "google" | "apple")[] = ["email", "google", "apple"];
 const UI = { AccountButton: (p: AccountButtonProps) => <MoonPayAccountButton {...p} /> };
-// How MoonPay's sign-in window looks (MoonPay takes this from the code, not its dashboard): dark,
-// the app's cyan, large corners, the app's font, and the logo (public/logo.svg, served by this site
-// at /logo.svg; on the live site https://trade-ai-rust.vercel.app/logo.svg).
+// How MoonPay's sign-in window looks (MoonPay takes this from the code, not its dashboard): the
+// owner's settings, with the accent in the logo's middle blue (the app's button colour, #00AEF0).
 const APPEARANCE = {
   displayMode: "dark" as const,
-  accentColor: "#00e5ff",
+  accentColor: "#00AEF0",
   borderRadius: "lg" as const,
-  fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif',
-  logo: { src: `${window.location.origin}/logo.svg`, srcDark: `${window.location.origin}/logo.svg`, height: 44, align: "center" as const },
-  loginHeaderTitle: "Sign in to TRADING//RUST",
-  loginHeaderDescription: "Your account, with your own MoonPay wallet",
+  logo: "https://trade-ai-rust.vercel.app/logo.svg",
+  loginHeaderTitle: "Sign up with Trading//Rust",
 };
 
 export function MoonPayRoot({ publishableKey, children }: { publishableKey: string; children: ReactNode }) {
