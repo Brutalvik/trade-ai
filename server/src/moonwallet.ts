@@ -28,8 +28,14 @@ export function moonxConfig() {
   const issuer = (process.env.MOONX_ISSUER?.trim() || "https://x-api.moonpay.com").replace(/\/+$/, "");
   const off = (reason: string) => ({ on: false, mode: null as "sandbox" | "live" | null, reason, publishableKey: "", appId: "", issuer });
   if (!publishableKey) return off("MoonPay wallets are not set up (no MOONX_PUBLISHABLE_KEY).");
-  const mode = publishableKey.startsWith("moon_pk_test_") ? "sandbox" : publishableKey.startsWith("moon_pk_live_") ? "live" : null;
-  if (!mode) return off("MOONX_PUBLISHABLE_KEY must be MoonPay's wallet key (moon_pk_test_... or moon_pk_live_...).");
+  // MoonPay's wallet keys start with moon_pk_ (its own kit checks no more than that). One marked
+  // moon_pk_live_ is live; any other is treated as a test key. The common mix-ups are named
+  // precisely, and the value itself is never shown.
+  if (/^["']|["']$/.test(publishableKey)) return off("MOONX_PUBLISHABLE_KEY has quotes around it in Vercel: remove them.");
+  if (publishableKey.startsWith("moon_sk_") || publishableKey.startsWith("sk_")) return off("MOONX_PUBLISHABLE_KEY holds a SECRET key: delete it from Vercel, roll that key in MoonPay's dashboard, and use the publishable key (moon_pk_...) instead.");
+  if (publishableKey.startsWith("pk_")) return off("MOONX_PUBLISHABLE_KEY holds MoonPay's buying key (pk_...): use the wallet app's publishable key (moon_pk_...), from the Embedded Wallets dashboard, Developer, API Keys.");
+  if (!publishableKey.startsWith("moon_pk_")) return off("MOONX_PUBLISHABLE_KEY is not a MoonPay wallet key: it should start with moon_pk_ (Embedded Wallets dashboard, Developer, API Keys).");
+  const mode = publishableKey.startsWith("moon_pk_live_") ? "live" : "sandbox";
   if (!/^[A-Za-z0-9_-]{3,80}$/.test(appId)) return off("MOONX_APP_ID (the wallet app's id, from its dashboard) is not set.");
   if (mode === "live" && process.env.MOONPAY_LIVE?.trim().toLowerCase() !== "yes") return off("Live wallet keys are set, but MOONPAY_LIVE=yes is not.");
   return { on: true, mode, reason: null as string | null, publishableKey, appId, issuer };

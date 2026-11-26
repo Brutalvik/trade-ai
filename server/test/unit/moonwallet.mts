@@ -14,10 +14,17 @@ const mw = await import(new URL("../../src/moonwallet.ts", import.meta.url).href
 
 // ---------- settings ----------
 expect("without keys, wallets are off and say so", [mw.moonxConfig().on, mw.moonxConfig().reason], [false, "MoonPay wallets are not set up (no MOONX_PUBLISHABLE_KEY)."]);
+const keyReason = (key: string) => { process.env.MOONX_PUBLISHABLE_KEY = key; return mw.moonxConfig().reason; };
+expect("a key that is not a MoonPay wallet key is named precisely, and never shown", [keyReason("sk_test_SECRETVALUE"), keyReason("moon_sk_test_SECRETVALUE"), keyReason("pk_test_BUYINGVALUE"), keyReason('"moon_pk_QUOTEDVALUE"'), keyReason("ODDVALUE123")].map((r) => [r?.split(":")[0], /VALUE/.test(r ?? "")]), [
+  ["MOONX_PUBLISHABLE_KEY holds a SECRET key", false], ["MOONX_PUBLISHABLE_KEY holds a SECRET key", false], ["MOONX_PUBLISHABLE_KEY holds MoonPay's buying key (pk_...)", false],
+  ["MOONX_PUBLISHABLE_KEY has quotes around it in Vercel", false], ["MOONX_PUBLISHABLE_KEY is not a MoonPay wallet key", false],
+]);
 process.env.MOONX_PUBLISHABLE_KEY = "moon_pk_test_abc";
 expect("the app's id is needed too (it pins whose tokens count)", mw.moonxConfig().reason, "MOONX_APP_ID (the wallet app's id, from its dashboard) is not set.");
 process.env.MOONX_APP_ID = "app_trading_rust";
 expect("with both: on, in sandbox", [mw.moonxConfig().on, mw.moonxConfig().mode], [true, "sandbox"]);
+process.env.MOONX_PUBLISHABLE_KEY = "moon_pk_01a219b0abcdef";
+expect("a wallet key with no test or live mark (as MoonPay's dashboard may issue them) counts, as a test key", [mw.moonxConfig().on, mw.moonxConfig().mode], [true, "sandbox"]);
 process.env.MOONX_PUBLISHABLE_KEY = "moon_pk_live_abc";
 check("a live key alone does not switch them on", !mw.moonxConfig().on && /MOONPAY_LIVE=yes/.test(mw.moonxConfig().reason), mw.moonxConfig().reason);
 process.env.MOONX_PUBLISHABLE_KEY = "moon_pk_test_abc";
