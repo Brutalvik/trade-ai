@@ -665,6 +665,12 @@ function withLatest(prev: Candle[], latest: Candle[]): Candle[] {
   return out.length > MAX_CANDLES ? out.slice(out.length - MAX_CANDLES) : out;
 }
 const STANCE_LABEL = { BUY_NOW: "BUY NOW", WAIT_FOR_TRIGGER: "WAITING", AVOID: "AVOID" } as const;
+// The plan's headline, worded as in the demo: what it waits for when it waits.
+function stanceText(sig: { stance?: keyof typeof STANCE_LABEL; orders?: { kind: string; warning?: string }[] }) {
+  if (sig.stance !== "WAIT_FOR_TRIGGER") return STANCE_LABEL[sig.stance ?? "AVOID"];
+  const kind = (sig.orders?.find((o) => !o.warning) ?? sig.orders?.[0])?.kind;
+  return kind === "buy_dip" ? "WAIT FOR DIP" : kind === "buy_breakout" ? "WAIT FOR BREAKOUT" : "WAITING";
+}
 
 // waitForHold: the bot waits for Claude's hold time before buying (off by default: buys instantly).
 export function describeOrder(o: CheckedOrder, waitForHold = false) {
@@ -680,10 +686,10 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
   if (o.prediction) {
     const what = o.kind === "buy_dip" ? `a dip to ${fmtPrice(o.triggerPrice)}` : o.kind === "buy_breakout" ? `a breakout above ${fmtPrice(o.triggerPrice)}` : `buying now, up to ${fmtPrice(o.triggerPrice)}`;
     return (
-      <div className={`order ${o.warning ? "risky" : ""}`}>
+      <div className={`demo-order ${o.warning ? "risky" : ""}`}>
         <b>{o.warning ? `Not an order: ${what}` : describeOrder(o, waitForHold)}</b>
-        <span className="tiny">
-          <b className={o.warning ? "down" : "up"}>{Math.round(o.prediction.pWin)}% chance of reaching +5% after fees</b> · needs {Math.ceil(o.prediction.needPct)}% to be worth buying
+        <span className="small">
+          <span className={o.warning ? "down" : "up"}>{Math.round(o.prediction.pWin)}% chance of reaching +5% after fees</span> · needs {Math.ceil(o.prediction.needPct)}% to be worth buying
         </span>
         <span className="muted tiny">
           Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · reaching +5% is worth about +{o.prediction.winNetPct.toFixed(1)}%, missing costs about {o.prediction.lossPct.toFixed(1)}% · max {Math.round(o.maxHoldMinutes)} min
@@ -693,14 +699,14 @@ function OrderCard({ o, minWin, waitForHold }: { o: CheckedOrder; minWin?: numbe
     );
   }
   return (
-    <div className={`order ${below ? "dim" : ""} ${o.warning ? "risky" : ""}`}>
+    <div className={`demo-order ${below ? "dim" : ""} ${o.warning ? "risky" : ""}`}>
       <b>{describeOrder(o, waitForHold)}</b>
-      <span className="tiny">
-        <b className={below ? "down" : "up"}>{o.winChancePct}% win chance</b> <PredictionInfo pct={o.winChancePct} /> · expected {o.evPct >= 0 ? "+" : ""}
+      <span className="small">
+        <span className={below ? "down" : "up"}>{o.winChancePct}% win chance</span> <PredictionInfo pct={o.winChancePct} /> · expected {o.evPct >= 0 ? "+" : ""}
         {o.evPct.toFixed(1)}% per trade after fees{below ? ` · below your ${minWin}% minimum, won't be used` : ""}
       </span>
       <span className="muted tiny">
-        Exit below <span className="down">{fmtPrice(o.stopLoss)}</span> · from <span className="up">{fmtPrice(o.target)}</span> it rides the trend · +{o.netRewardPct.toFixed(1)}% after fees vs {o.netRiskPct.toFixed(1)}% risk · max {Math.round(o.maxHoldMinutes)} min
+        Exit below {fmtPrice(o.stopLoss)} · target {fmtPrice(o.target)}, then it rides the trend · max {Math.round(o.maxHoldMinutes)} min
       </span>
       {o.warning && <span className="order-warning">⚠ Risky: {o.warning.replace(/^Fails the fee\/risk check: /, "it ")}</span>}
     </div>
@@ -889,12 +895,12 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="why-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h2 id="why-title">Why the AI says {STANCE_LABEL[sig.stance ?? "AVOID"]}</h2>
+              <h2 id="why-title">Why the AI says {stanceText(sig)}</h2>
               <button className="modal-close" onClick={() => setInfoOpen(false)} aria-label="Close" title="Close">✕</button>
             </div>
             <div className="modal-body why-body">
               <div className="why-kind">
-                <span className={`tag ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>{STANCE_LABEL[sig.stance ?? "AVOID"]} · {sig.confidence}%</span>
+                <span className={`tag ${sig.stance === "AVOID" ? "sell" : "buy"}`}>{stanceText(sig)} · {sig.confidence}%</span>
                 {explain.kind && <span className={`tag ${explain.kind.tone}`}>{explain.kind.label}</span>}
                 {explain.risk && <span className={`risk-tag ${String(explain.risk).toLowerCase()}`}>Risk: {explain.risk}</span>}
               </div>
@@ -909,34 +915,37 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
       {!hasAI && <p className="muted small">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> to enable AI analysis.</p>}
       {sig ? (
         <>
-          {analyzedAt && (
-            <p className="muted tiny">
-              {loading ? "The AI is making a new plan…" : botOnThisCoin ? `The agent's own plan, made ${fmtAgo(analyzedAt)}. It looks again by itself.` : `Analyzed ${fmtAgo(analyzedAt)} · kept until you press Analyze again${stale ? ` (re-checking: ${stale})` : ", or until it can no longer play out"}`}
-            </p>
-          )}
-          <div className={`verdict ${sig.stance === "BUY_NOW" ? "buy" : sig.stance === "AVOID" ? "sell" : "hold"}`}>
-            <span>{STANCE_LABEL[sig.stance ?? "AVOID"]}</span>
-            <div className="conf"><div style={{ width: `${sig.confidence}%` }} /></div>
-            <small className="conf-line">{sig.confidence}% confidence <PredictionInfo pct={sig.confidence} /></small>
+          <p className="muted small">
+            {loading
+              ? "The AI is making a new plan…"
+              : botOnThisCoin
+                ? `The agent's own plan for ${pair?.symbol ?? "this coin"}${analyzedAt ? `, made ${fmtAgo(analyzedAt)}` : ""}. It buys on its own the moment an order triggers, and looks again by itself.`
+                : `The AI's plan for ${pair?.symbol ?? "this coin"}${analyzedAt ? `, made ${fmtAgo(analyzedAt)}` : ""}. Nothing is bought unless you buy, or start an agent.`}
+          </p>
+          <div className={`demo-card sig-card ${sig.stance === "AVOID" ? "avoid" : ""}`}>
+            <div className="demo-stance">
+              <b className={sig.stance === "AVOID" ? "down" : "up"}>{stanceText(sig)}</b>
+              <span className="muted small conf-line">{sig.confidence}% confidence <PredictionInfo pct={sig.confidence} /></span>
+            </div>
+            {sig.stance === "AVOID" && sig.orders?.length > 0 && (
+              sig.orders.some((o) => o.prediction)
+                ? <div className="avoid-setup">No buy order right now. These are the AI's best levels, but the odds at them aren't good enough yet. If the price reaches one, the agent looks again straight away; otherwise every 5 minutes.</div>
+                : <div className="avoid-setup">⚠ Risky setup: the AI advises against trading now. These are its best levels if you trade anyway.</div>
+            )}
+            {sig.orders?.map((o, i) => (
+              <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
+            ))}
+            {sig.orders?.length > 0 && (
+              <p className="muted tiny sig-foot">
+                Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then the AI makes a new one{botOnThisCoin ? "" : stale ? ` (re-checking: ${stale})` : ""}. A prediction, not a promise.
+              </p>
+            )}
           </div>
           {sig.orders?.length > 0 && (
-            <div className="orders">
-              {sig.stance === "AVOID" ? (
-                sig.orders.some((o) => o.prediction)
-                  ? <div className="avoid-setup">No buy order right now. These are the AI's best levels, but the odds at them aren't good enough yet. If the price reaches one, the agent looks again straight away; otherwise every 5 minutes.</div>
-                  : <div className="avoid-setup">⚠ Risky setup: the AI advises against trading now. These are its best levels if you trade anyway.</div>
-              ) : (
-                <div className="label-sm">{botOnThisCoin ? "The agent's orders: it buys on its own the moment one triggers" : "The AI's suggested orders (nothing is bought unless you buy, or start an agent)"}</div>
-              )}
-              {sig.orders.map((o, i) => (
-                <OrderCard key={i} o={o} minWin={botMinWin} waitForHold={botWaitForHold} />
-              ))}
+            <>
               <PatternChips patterns={props.patterns} />
               <MaCrossChips items={props.maCross} />
-              <div className="muted tiny">
-                Plan cancels{sig.cancelBelow > 0 ? ` below ${fmtPrice(sig.cancelBelow)}` : ""}{sig.cancelAbove > 0 ? `${sig.cancelBelow > 0 ? "," : ""} above ${fmtPrice(sig.cancelAbove)}` : ""}{sig.cancelBelow > 0 || sig.cancelAbove > 0 ? " or" : ""} at {fmtTime(sig.expiresAt)}; then the AI makes a new one.
-              </div>
-            </div>
+            </>
           )}
           {explain.kind && (
             <div className="why-kind">
@@ -949,7 +958,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
               <details key={r.model} className="model">
                 <summary>
                   <span className="info-chip">ⓘ Info</span>
-                  {r.ok ? <span className={`tag ${r.signal.stance === "BUY_NOW" ? "buy" : r.signal.stance === "AVOID" ? "sell" : "hold"}`}>{STANCE_LABEL[r.signal.stance]} {r.signal.confidence}%</span> : <span className="tag sell">ERROR</span>}
+                  {r.ok ? <span className={`tag ${r.signal.stance === "AVOID" ? "sell" : "buy"}`}>{stanceText(r.signal)} {r.signal.confidence}%</span> : <span className="tag sell">ERROR</span>}
                 </summary>
                 {r.ok ? <p className="small">{aiText(r.signal.reasoning)} <span className="muted">Risk: {r.signal.riskLevel}. {(r.ms / 1000).toFixed(1)}s</span></p> : <p className="small down">{r.error}</p>}
               </details>

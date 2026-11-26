@@ -889,6 +889,13 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .demo-card { margin: 10px 0 12px; padding: 12px; border-radius: 12px; border: 1px dashed rgba(255, 255, 255, 0.18); background: rgba(0, 0, 0, 0.2); }
 .demo-stance { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; font-family: Orbitron, sans-serif; letter-spacing: 1px; }
 .demo-order { display: flex; flex-direction: column; gap: 3px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); font-size: 12.5px; }
+/* The real AI plan uses the demo's card (App.tsx SignalPanel). */
+.sig-card .demo-order + .demo-order { margin-top: 8px; }
+.sig-card .sig-foot { margin: 10px 0 0; }
+.sig-card.avoid { border-color: rgba(255, 61, 113, 0.35); }
+.demo-order.dim { opacity: 0.65; }
+.demo-order.risky { border-color: rgba(255, 61, 113, 0.45); }
+.demo-order .warn-btn { vertical-align: middle; }
 .ladder-toggle { margin: 0 0 0 auto; align-self: center; white-space: nowrap; }
 
 /* Delete drawings window */
@@ -1089,7 +1096,10 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 /* AI Signal: small by default (the full plan opens with the arrow in its title) */
 .signal-panel.small { padding: 10px 12px; }
 .signal-panel.small .panel-title { margin-bottom: 6px; }
-.signal-panel.small > *:not(.panel-title):not(.verdict) { display: none; }
+.signal-panel.small > *:not(.panel-title):not(.verdict):not(.sig-card) { display: none; }
+/* Small: the plan's card with its headline and first order only. */
+.signal-panel.small .sig-card { margin: 0; }
+.signal-panel.small .sig-card .demo-order ~ .demo-order, .signal-panel.small .sig-card .sig-foot, .signal-panel.small .sig-card .avoid-setup { display: none; }
 .signal-panel.small .verdict { margin-bottom: 0; padding: 8px 10px; }
 .signal-panel.small .verdict .big, .signal-panel.small .verdict b { font-size: 18px; }
 .info-btn.size-btn { font-size: 10px; }
