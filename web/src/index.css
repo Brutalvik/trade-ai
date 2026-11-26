@@ -1286,6 +1286,41 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .log-range .chip { cursor: pointer; }
 .log .log-day { position: sticky; top: 0; z-index: 1; padding: 5px 0 4px; margin-top: 4px; background: var(--panel-solid, #0b1120); color: var(--cyan); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
 .log .log-older { align-self: flex-start; margin: 6px 0 2px; cursor: pointer; }
+/* The Pipeline tab: six steps, each saying what it did. --s is the step's own colour (R, G, B).
+   (The steps' classes are s-scan, s-check...: plain "check" and "log" are other things in this file.) */
+.pipe { display: flex; flex-direction: column; gap: 10px; }
+.pipe-flow { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
+.pipe-flow i { color: var(--muted); font-style: normal; }
+.pipe-node, .pipe-step { --s: 0, 229, 255; }
+.pipe-node.s-scan, .pipe-step.s-scan { --s: 255, 200, 87; }
+.pipe-node.s-check, .pipe-step.s-check { --s: 255, 61, 113; }
+.pipe-node.s-ai, .pipe-step.s-ai { --s: 0, 229, 255; }
+.pipe-node.s-size, .pipe-step.s-size { --s: 167, 139, 250; }
+.pipe-node.s-exec, .pipe-step.s-exec { --s: 0, 245, 160; }
+.pipe-node.s-log, .pipe-step.s-log { --s: 255, 159, 67; }
+.pipe-node { padding: 2px 7px; border-radius: 6px; border: 1px dashed var(--border); color: var(--muted); }
+.pipe-node.on { color: rgb(var(--s)); border-color: rgba(var(--s), 0.7); background: rgba(var(--s), 0.12); }
+/* Two steps a row in the card under the chart, three or six when there is room (the card can fill the window). */
+.pipe { container-type: inline-size; }
+.pipe-steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+@container (min-width: 760px) { .pipe-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container (min-width: 1500px) { .pipe-steps { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@container (max-width: 460px) { .pipe-steps { grid-template-columns: minmax(0, 1fr); } }
+.pipe-step { border: 1px solid var(--border); border-top: 2px solid rgba(var(--s), 0.65); border-radius: 12px; padding: 10px 12px 11px; background: rgba(255, 255, 255, 0.02); display: flex; flex-direction: column; gap: 4px; min-width: 0; transition: background-color 0.4s, box-shadow 0.4s, border-color 0.4s; }
+.pipe-step.on { border-color: rgba(var(--s), 0.5); border-top-color: rgb(var(--s)); background: rgba(var(--s), 0.07); box-shadow: 0 0 18px rgba(var(--s), 0.14); }
+.pipe-head { display: flex; align-items: center; gap: 7px; }
+.pipe-head b { color: rgb(var(--s)); font-size: 12.5px; letter-spacing: 0.07em; text-transform: uppercase; }
+.pipe-head em { margin-left: auto; font-style: normal; font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; padding: 1px 6px; border-radius: 6px; border: 1px dashed currentColor; color: var(--muted); }
+.pipe-step.on .pipe-head em { color: rgb(var(--s)); }
+.pipe-dot { width: 8px; height: 8px; border-radius: 50%; background: rgb(var(--s)); opacity: 0.4; flex: none; }
+.pipe-step.on .pipe-dot { opacity: 1; box-shadow: 0 0 8px rgb(var(--s)); }
+.pipe-role { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+.pipe-rule { color: rgb(var(--s)); font-size: 11.5px; font-weight: 600; line-height: 1.35; }
+.pipe-fig { margin-top: 4px; font-family: "JetBrains Mono", monospace; font-size: 20px; font-weight: 700; line-height: 1.15; color: var(--text); font-variant-numeric: tabular-nums; }
+.pipe-cap { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+.pipe-last { margin-top: 5px; padding-top: 6px; border-top: 1px dashed rgba(255, 255, 255, 0.09); font-size: 11.5px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+.pipe-note { margin: 0; }
+.panel.bottom.maximized .pipe { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
 /* The one-line view ("Decisions"): time, what was decided, the coin, the size or the result; the reason under it. */
 .log.decisions { gap: 0; max-height: 440px; }
 .log .dec { color: var(--text); display: grid; grid-template-columns: max-content 96px minmax(0, 1fr) auto; column-gap: 10px; row-gap: 1px; align-items: baseline; padding: 6px 6px 7px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); border-left: 2px solid transparent; }

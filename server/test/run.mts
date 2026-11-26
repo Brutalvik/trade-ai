@@ -31,6 +31,7 @@ const UNIT: Job[] = [
   { name: "indicators", file: "unit/indicators.mts", what: "MACD and Bollinger Bands as the AI is given them, and the strategy playbook the planners are sent" },
   { name: "agent-log", file: "unit/agent-log.mts", what: "the agents' log is kept for a week: written with each save, read in pages (today, the last 7 days), older lines cleared by the archive function; what a line decided is kept with it" },
   { name: "decisions", file: "unit/decisions.mts", what: "the one-line view of the log: one row per decision, repeats folded, the size or the result at the right, the sum above" },
+  { name: "pipeline", file: "unit/pipeline.mts", what: "the Pipeline tab: six steps (scan, check, AI, size, execute, log), each with what it did, worked out from the decisions kept with the log" },
   { name: "user-prefs", file: "unit/user-prefs.mts", what: "a part of the app a user hides in Settings stays hidden on every sign-in: the choice is saved on the account" },
   { name: "tab-title", file: "unit/tab-title.mts", what: "the browser tab: T//R and the account's profit or loss, green or red icon" },
   { name: "trade-tone", file: "unit/trade-tone.mts", what: "an agent's card in a trade takes the colour of the profit or loss at its top right" },

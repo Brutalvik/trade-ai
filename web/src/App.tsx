@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type LogLine, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
@@ -15,6 +15,8 @@ import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playSoundPreview, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
 import { ACT_HINT, ACT_LABEL, decisionRows, figureOf, summaryText, toneOf } from "./decisions";
+import { LOG_DAY, logId, useAgentLog } from "./agentLog";
+import { Pipeline } from "./Pipeline";
 import { MaCrossChips } from "./MaCross";
 import { pnlText, showTab, tabTone } from "./tabTitle";
 
@@ -106,7 +108,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<SavedAnalysis | null>(() => { const p = savedUi().pair; return (p && savedAnalysis(p.pool)) || null; });
   const gotAnalysis = useCallback((a: Analysis) => setAnalysis(saveAnalysis(a.pair.pool, a)), []);
   const [toast, setToast] = useState<{ msg: string; bad?: boolean } | null>(null);
-  const [tab, setTab] = useState<"positions" | "trades" | "log">(() => { const t = savedUi().tab; return t === "trades" || t === "log" ? t : "positions"; });
+  const [tab, setTab] = useState<"positions" | "trades" | "log" | "pipeline">(() => { const t = savedUi().tab; return t === "trades" || t === "log" || t === "pipeline" ? t : "positions"; });
   useEffect(() => saveUi({ pair: pair ?? undefined, tf, tab }), [pair, tf, tab]);
   useEffect(() => { if (state) saveState(state); }, [state]);
   // Chart maximize: fills the window; Esc (or the button) brings it back.
@@ -459,9 +461,9 @@ export default function App() {
 
         <section className={`panel bottom ${bottomMax ? "maximized" : ""}`}>
           <div className="tabs">
-            {(["positions", "trades", "log"] as const).map((t) => (
-              <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : "Agent log"}
+            {(["positions", "trades", "log", "pipeline"] as const).map((t) => (
+              <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)} title={t === "pipeline" ? "The steps every trade goes through, and what each one did" : undefined}>
+                {t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : t === "log" ? "Agent log" : "Pipeline"}
               </button>
             ))}
             <span className="tabs-right">
@@ -488,6 +490,7 @@ export default function App() {
           )}
           {tab === "trades" && (me?.tradeMode === "real" ? <RealTrades notify={notify} /> : <Trades state={state} notify={notify} />)}
           {tab === "log" && <BotLog state={state} />}
+          {tab === "pipeline" && <Pipeline state={state} onOpenLog={() => setTab("log")} />}
         </section>
       </main>
 
@@ -1610,75 +1613,18 @@ function Trades({ state, notify }: { state: AppState | null; notify: (m: string,
 }
 
 // The agents' log. Today's lines by default; "Last 7 days" reaches back a week (older lines are
-// not kept). The newest lines come with the account every few seconds; the rest of the stretch is
-// read from the week's log on the server when this tab is opened, once a minute, and on "older".
+// not kept). How the lines are read is in agentLog.ts (the Pipeline tab reads them the same way).
 // It opens on "Decisions": one short line for each thing an agent decided (decisions.ts), made to
 // be read in the morning. "Everything" is every line, as the log always was.
-const LOG_DAY = 86_400_000;
-const logId = (l: LogLine) => `${l.t}|${l.bot}|${l.msg}`;
 function BotLog({ state }: { state: AppState | null }) {
-  const { me } = useAccess();
   const [range, setRange] = useState<"today" | "week">("today");
   const [view, setView] = useState<"decisions" | "all">(() => (savedUi().logView === "all" ? "all" : "decisions"));
   const decisions = view === "decisions";
   useEffect(() => saveUi({ logView: view }), [view]);
-  const [kept, setKept] = useState<LogLine[]>([]);
-  const [more, setMore] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const bots = allBots(state);
+  const { lines, more, busy, err, older, bots, midnight } = useAgentLog(state, range, decisions);
   const many = bots.length > 1;
-  const midnight = new Date().setHours(0, 0, 0, 0);
-  const from = midnight - (range === "week" ? 6 * LOG_DAY : 0);
-  const merge = (lines: LogLine[]) => setKept((old) => {
-    const seen = new Set(old.map(logId));
-    return [...old, ...lines.filter((l) => !seen.has(logId(l)))];
-  });
-  useEffect(() => {
-    if (!me) return setKept([]);
-    let off = false;
-    setKept([]);
-    setMore(false);
-    const load = (first: boolean) => {
-      if (first) setBusy(true);
-      api.botLog(from, Date.now(), 500, decisions)
-        .then((r) => {
-          if (off) return;
-          merge(r.lines);
-          if (first) setMore(r.more);
-          setErr("");
-        })
-        .catch((e) => !off && setErr(e.message))
-        .finally(() => !off && first && setBusy(false));
-    };
-    load(true);
-    const id = window.setInterval(() => load(false), 60_000);
-    return () => {
-      off = true;
-      window.clearInterval(id);
-    };
-  }, [me?.username, from, decisions]); // eslint-disable-line react-hooks/exhaustive-deps
-  const live: LogLine[] = bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id })));
-  // One copy of each line. Where the server sent a line's decision and the account's own copy
-  // has none (a buy or sale from before decisions were kept with the lines), the server's is used.
-  const byId = new Map<string, LogLine>();
-  for (const l of live) byId.set(logId(l), l);
-  for (const l of kept) { const mine = byId.get(logId(l)); if (!mine || (!mine.d && l.d)) byId.set(logId(l), l); }
-  const lines = [...byId.values()].filter((l) => l.t >= from && (!decisions || l.d)).sort((a, b) => b.t - a.t);
   const rows = decisions ? decisionRows(lines) : [];
   const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const older = () => {
-    const oldest = kept.reduce((m, l) => Math.min(m, l.t), Date.now());
-    setBusy(true);
-    api.botLog(from, oldest, 500, decisions)
-      .then((r) => {
-        merge(r.lines);
-        setMore(r.more);
-        setErr("");
-      })
-      .catch((e) => setErr(e.message))
-      .finally(() => setBusy(false));
-  };
   const dayName = (t: number) => (t >= midnight ? "Today" : t >= midnight - LOG_DAY ? "Yesterday" : new Date(t).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" }));
   let lastDay = "";
   return (
