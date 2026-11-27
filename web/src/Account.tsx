@@ -1,17 +1,27 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
-import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtPrice, fmtUsd, refillText, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type BillingStatus, type Trade, type RealTrade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
+import { api, fmtPrice, fmtUsd, refillText, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type BillingStatus, type EmbeddedPay, type Trade, type RealTrade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 import { openSubscriptionTerms } from "./Footer";
 
 // ---------- Shared modal ----------
 
-export function Modal({ title, onClose, children, foot, narrow, wide }: { title: string; onClose: () => void; children: ReactNode; foot?: ReactNode; narrow?: boolean; wide?: boolean }) {
+// Windows open that only their X or Cancel may close (a payment in progress): while one is open,
+// Escape closes no window at all (not the one under it either).
+let lockedOpen = 0;
+export function Modal({ title, onClose, children, foot, narrow, wide, locked }: { title: string; onClose: () => void; children: ReactNode; foot?: ReactNode; narrow?: boolean; wide?: boolean; locked?: boolean }) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    if (!locked) return;
+    lockedOpen++;
+    return () => {
+      lockedOpen--;
+    };
+  }, [locked]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !locked && lockedOpen === 0 && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, locked]);
   return createPortal(
     <div className="modal-backdrop">
       <div className={`modal ${narrow ? "narrow" : ""} ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
@@ -593,27 +603,33 @@ function PackRow({ extras, on, busy, onPick }: { extras: PlanExtras; on: boolean
   );
 }
 // Buying a pack: the Subscription Terms first, then Stripe's own page.
-function PackConfirm({ pack, termsVersion, onClose }: { pack: Pack; termsVersion: string; onClose: () => void }) {
+function PackConfirm({ pack, bill, onClose, onPaid }: { pack: Pack; bill: BillingStatus; onClose: () => void; onPaid?: () => void }) {
   const [terms, setTerms] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [pay, setPay] = useState<EmbeddedPay | null>(null);
   const buy = async () => {
     setBusy(true);
     setErr("");
     try {
-      window.location.href = (await api.billingPack({ pack: pack.id, terms: termsVersion })).url;
+      const r = await api.billingPack({ pack: pack.id, terms: bill.termsVersion, embedded: !!bill.publishableKey });
+      if ("clientSecret" in r) {
+        setPay(r);
+        setBusy(false);
+      } else window.location.href = r.url;
     } catch (e: any) {
       setErr(e.message);
       setBusy(false);
     }
   };
+  if (pay) return <CheckoutModal pay={pay} what={`${fmtTokens(pack.tokens)} AI tokens`} onClose={() => setPay(null)} onPaid={() => { onClose(); onPaid?.(); }} />;
   return (
     <Modal title={`Buy ${fmtTokens(pack.tokens)} AI tokens`} onClose={onClose} narrow foot={<>
       <button className="btn ghost" onClick={onClose}>Back</button>
       <button className="btn buy" disabled={!terms || busy} onClick={() => void buy()}>{busy ? "Opening…" : "Continue to payment"}</button>
     </>}>
       <ul className="small deposit-notes">
-        <li>${pack.priceUsd}, paid once on Stripe's secure page (tax is added where it applies). The tokens are added as soon as Stripe confirms the payment.</li>
+        <li>${pack.priceUsd}, paid once {bill.publishableKey ? "right here, in a secure form run by Stripe" : "on Stripe's secure page"} (tax is added where it applies). The tokens are added as soon as Stripe confirms the payment.</li>
         <li>They are used after your monthly allowance runs out, and never expire.</li>
       </ul>
       <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Subscription Terms</button>.</span></label>
@@ -649,7 +665,88 @@ export function TopUpModal({ onClose }: { onClose: () => void }) {
         {extras ? <PackRow extras={extras} on={on} busy={false} onPick={setPack} /> : <p className="muted small">Loading the packs…</p>}
       </div>
       <p className="muted tiny plans-foot">{on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD; tax is added where it applies.</> : <>Online payment is being set up.</>}</p>
-      {pack && bill && <PackConfirm pack={pack} termsVersion={bill.termsVersion} onClose={() => setPack(null)} />}
+      {pack && bill && <PackConfirm pack={pack} bill={bill} onClose={() => setPack(null)} onPaid={onClose} />}
+    </Modal>
+  );
+}
+
+// Paying inside the app's own window: Stripe's embedded checkout form (Stripe holds the card details;
+// the app never sees them, and Stripe adds the sales tax). Only its X or Cancel close it, never
+// Escape, so a payment in progress is not lost by a stray key. When Stripe says it is paid, the server
+// is asked to apply it at once (the webhook does too) and the window says what was bought.
+// Stripe allows one embedded form on a page at a time: each waits for the one before it to be gone
+// (a window closed a moment ago, or React running a window's setup twice while developing).
+let embedQueue: Promise<unknown> = Promise.resolve();
+function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what: string; onClose: () => void; onPaid: () => void }) {
+  const { reloadMe } = useAccess();
+  const box = useRef<HTMLDivElement>(null);
+  const form = useRef<{ destroy: () => void } | null>(null); // Stripe's form, gone the moment it is paid (only the app's own screen after that)
+  const [state, setState] = useState<"loading" | "ready" | "failed" | "done">("loading");
+  const [said, setSaid] = useState<{ title: string; text: string }>({ title: "Payment received", text: "Applying it to your account…" });
+  useEffect(() => {
+    let gone = false;
+    const job = embedQueue.then(async () => {
+      if (gone) return;
+      try {
+        const { loadStripe } = await import("@stripe/stripe-js");
+        const stripe = await loadStripe(pay.publishableKey);
+        if (!stripe) throw new Error("Stripe did not load");
+        const f = await stripe.createEmbeddedCheckoutPage({
+          fetchClientSecret: async () => pay.clientSecret,
+          onComplete: () => {
+            form.current?.destroy();
+            form.current = null;
+            setState("done");
+            api.billingConfirm(pay.sessionId)
+              .then((b) => {
+                const renews = b.subscription?.periodEnd ? new Date(b.subscription.periodEnd).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }) : "";
+                setSaid(b.paid?.kind === "pack"
+                  ? { title: `${b.paid.tokens ? fmtTokens(b.paid.tokens) : "Your"} AI tokens added`, text: "They're used after your monthly allowance runs out, and they never expire." }
+                  : { title: `You're on ${planName(b.subscription?.plan ?? undefined)}`, text: `Your plan is active now${renews ? ` and renews on ${renews}` : ""}.` });
+              })
+              .catch(() => setSaid({ title: "Payment received", text: "It can take a moment to show in your account." }))
+              .finally(() => reloadMe?.());
+          },
+        });
+        if (gone) return f.destroy();
+        form.current = f;
+        if (box.current) f.mount(box.current);
+        setState("ready");
+      } catch (e) {
+        console.error("[checkout] the payment form did not load:", e);
+        if (!gone) setState("failed");
+      }
+    });
+    embedQueue = job.catch(() => {});
+    return () => {
+      gone = true;
+      form.current?.destroy();
+      form.current = null;
+    };
+  }, [pay.clientSecret]); // eslint-disable-line react-hooks/exhaustive-deps
+  const done = state === "done";
+  const close = () => (done ? onPaid() : onClose());
+  return (
+    <Modal title={done ? "Payment received" : `Checkout · ${what}`} onClose={close} wide={!done} locked foot={done
+      ? <button className="btn buy" onClick={close}>Done</button>
+      : <button className="btn ghost" onClick={close}>Cancel</button>}>
+      {done ? (
+        <div key="paid" className="paid" role="status">
+          <svg className="paid-check" viewBox="0 0 52 52" aria-hidden="true">
+            <circle className="paid-ring" cx="26" cy="26" r="24" />
+            <path className="paid-tick" d="M15 27l7 7 15-16" />
+          </svg>
+          <h3 className="paid-title">{said.title}</h3>
+          <p className="paid-text">{said.text}</p>
+        </div>
+      ) : (
+        <>
+          {state === "loading" && <p className="muted small">Loading the secure payment form…</p>}
+          {state === "failed" && <p className="down small" role="alert">The payment form did not load. Check your connection and try again.</p>}
+          <div key="form" ref={box} className="stripe-embed" />
+          <p className="muted tiny checkout-note">Card details go to Stripe, our payment processor; this app never sees them.</p>
+        </>
+      )}
     </Modal>
   );
 }
@@ -665,6 +762,7 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
   const [yearly, setYearly] = useState(false);
   const [pick, setPick] = useState<{ kind: "plan"; plan: PlanInfo } | { kind: "cancel" } | null>(null);
   const [pack, setPack] = useState<Pack | null>(null);
+  const [pay, setPay] = useState<(EmbeddedPay & { what: string }) | null>(null); // a new plan, paid in the app's window
   const [terms, setTerms] = useState(false);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
@@ -693,7 +791,8 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
   };
   const go = (url: string) => { window.location.href = url; };
   const confirmPlan = (p: PlanInfo) => run("plan", async () => {
-    const r = await api.billingCheckout({ plan: p.id, interval: yearly ? "year" : "month", terms: bill!.termsVersion });
+    const r = await api.billingCheckout({ plan: p.id, interval: yearly ? "year" : "month", terms: bill!.termsVersion, embedded: !!bill!.publishableKey });
+    if ("clientSecret" in r) return setPay({ ...r, what: `${p.name} (${yearly ? "yearly" : "monthly"})` });
     if ("url" in r) return go(r.url);
     setBill(r.status);
     setPick(null);
@@ -787,7 +886,7 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
                 {sub ? (rankOf(pick.plan.id) < rankOf(current)
                   ? <li>{planName(current)} stays until {until(sub.periodEnd)}; then {pick.plan.name} starts at the new price.</li>
                   : <li>It starts now. Your card is charged the difference for the rest of this period.</li>)
-                  : <li>You pay on Stripe's secure page. This app never sees your card.</li>}
+                  : <li>You pay {bill?.publishableKey ? "right here, in a secure form run by Stripe" : "on Stripe's secure page"}. This app never sees your card.</li>}
                 <li>It renews automatically every {yearly ? "year" : "month"} until you cancel. Cancel any time: the plan stays until the end of the period paid.</li>
               </ul>
             </>
@@ -796,7 +895,8 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
           {err && <p className="down small" role="alert">{err}</p>}
         </Modal>
       )}
-      {pack && bill && <PackConfirm pack={pack} termsVersion={bill.termsVersion} onClose={() => setPack(null)} />}
+      {pack && bill && <PackConfirm pack={pack} bill={bill} onClose={() => setPack(null)} />}
+      {pay && <CheckoutModal pay={pay} what={pay.what} onClose={() => setPay(null)} onPaid={() => { setPay(null); setPick(null); void api.billing().then(setBill).catch(() => {}); }} />}
     </Modal>
   );
 }

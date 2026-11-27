@@ -159,8 +159,11 @@ export function refillText(u: Usage, short = false): string {
 export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number; analyses: number; note?: string }[]; yearlyMonthsPaid: number; appTokensPerClaudeToken: number };
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[]; features: string[]; popular?: boolean }; // freeTrades -1 = unlimited
 // Paying for plans by card (server/src/billing.ts, Stripe).
+// A payment made in Stripe's form inside the app's own window (the server's embedded_page session).
+export type EmbeddedPay = { clientSecret: string; sessionId: string; publishableKey: string };
 export type BillingStatus = {
   on: boolean; mode: "test" | "live" | null; reason: string | null; termsVersion: string; plan: PlanId;
+  publishableKey?: string | null; // set: customers pay in Stripe's form inside the app (else on Stripe's page)
   subscription: { plan: PlanId | null; interval: "month" | "year" | null; status: string | null; periodEnd: number | null; cancelAtPeriodEnd: boolean; keep: { plan: PlanId; until: number } | null } | null;
   canManage: boolean;
 };
@@ -302,8 +305,8 @@ export const api = {
   realTrades: (limit = 50) => req<RealTrade[]>(`/real/trades?limit=${limit}`),
   autopilot: () => req<AutopilotStatus>("/autopilot"),
   billing: () => req<BillingStatus>("/billing"),
-  billingCheckout: (b: { plan: PlanId; interval: "month" | "year"; terms: string }) => req<{ url: string } | { changed: true; status: BillingStatus }>("/billing/checkout", b),
-  billingPack: (b: { pack: string; terms: string }) => req<{ url: string }>("/billing/pack", b),
+  billingCheckout: (b: { plan: PlanId; interval: "month" | "year"; terms: string; embedded?: boolean }) => req<{ url: string } | EmbeddedPay | { changed: true; status: BillingStatus }>("/billing/checkout", b),
+  billingPack: (b: { pack: string; terms: string; embedded?: boolean }) => req<{ url: string } | EmbeddedPay>("/billing/pack", b),
   billingCancel: () => req<BillingStatus>("/billing/cancel", {}),
   billingResume: () => req<BillingStatus>("/billing/resume", {}),
   billingPortal: () => req<{ url: string }>("/billing/portal", {}),

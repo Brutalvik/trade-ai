@@ -47,7 +47,8 @@ globalThis.fetch = (async (input: any, init?: any) => {
   }
   if (p === "/v1/customers") { const c = { id: nid("cus"), email: q.get("email"), metadata: { user: q.get("metadata[user]") } }; customers.push(c); return out(c); }
   if (p === "/v1/checkout/sessions" && init?.method === "POST") {
-    const s = { id: nid("cs"), url: `https://checkout.stripe.test/${n}`, mode: q.get("mode"), customer: q.get("customer"), client_reference_id: q.get("client_reference_id"), price: q.get("line_items[0][price]"), payment_status: "unpaid", subscription: null as string | null,
+    const embedded = q.get("ui_mode") === "embedded_page";
+    const s = { id: nid("cs"), url: embedded ? null : `https://checkout.stripe.test/${n}`, client_secret: embedded ? `cs_secret_${n}` : null, ui_mode: q.get("ui_mode") ?? "hosted_page", return_url: q.get("return_url"), redirect_on_completion: q.get("redirect_on_completion"), success_url: q.get("success_url"), mode: q.get("mode"), customer: q.get("customer"), client_reference_id: q.get("client_reference_id"), price: q.get("line_items[0][price]"), payment_status: "unpaid", subscription: null as string | null,
       metadata: { user: q.get("metadata[user]"), kind: q.get("metadata[kind]"), pack: q.get("metadata[pack]") ?? undefined, plan: q.get("metadata[plan]") ?? undefined }, subMeta: { user: q.get("subscription_data[metadata][user]") } };
     sessions.set(s.id, s);
     return out(s);
@@ -225,5 +226,20 @@ const al2 = await allowance.allowanceOf("dora", Date.now() + 31 * DAY);
 expect("paid: the new month's allowance starts (all of it)", [al2.id !== al.id, (await store.kvGet(`usage:dora:${al2.id}`)) ?? 0], [true, 0]);
 await billing.cancel("dora");
 expect("renewal cancelled: what is left lasts until the plan ends, then it does not start again", (await allowance.allowanceOf("dora", Date.now() + 31 * DAY)).why, "ends");
+
+// ---------- Paying in the app's own window (Stripe's embedded form) ----------
+expect("without the publishable key, customers pay on Stripe's page (asked for the form or not)", [billing.publishableKey(), "url" in (await billing.buyPack("ada", { pack: "pack2m", terms: T, embedded: true }))], [null, true]);
+process.env.STRIPE_PUBLISHABLE_KEY = "pk_live_wrongmode";
+expect("...a publishable key of the other mode (live with a test secret key) is not used", billing.publishableKey(), null);
+process.env.STRIPE_PUBLISHABLE_KEY = "pk_test_app";
+expect("with it, the app's status gives it to the browser (it is public by design)", (await billing.status("ada")).publishableKey, "pk_test_app");
+const emb = await billing.buyPack("ada", { pack: "pack2m", terms: T, embedded: true });
+const es = [...sessions.values()].at(-1);
+expect("a pack paid in the app's window: Stripe's embedded form, finished in the app (it leaves only if the payment method needs it)", [emb.clientSecret, emb.sessionId, emb.publishableKey, es.ui_mode, es.redirect_on_completion, /billing=done&session_id=\{CHECKOUT_SESSION_ID\}$/.test(es.return_url), es.success_url], [es.client_secret, es.id, "pk_test_app", "embedded_page", "if_required", true, null]);
+await store.kvSet("user:erin", { username: "erin", firstName: "Erin", lastName: "E", email: "erin@example.test", salt: "", hash: "", passVer: 1, createdAt: Date.now(), avatarUrl: null });
+const ep = await billing.checkout("erin", { plan: "starter", interval: "year", terms: T, embedded: true });
+expect("...a new plan too", ["clientSecret" in ep, [...sessions.values()].at(-1).ui_mode], [true, "embedded_page"]);
+expect("...and Stripe's page still when the app does not ask for the form", "url" in (await billing.buyPack("ada", { pack: "pack2m", terms: T })), true);
+delete process.env.STRIPE_PUBLISHABLE_KEY;
 
 finish();

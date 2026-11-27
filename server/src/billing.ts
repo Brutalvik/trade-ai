@@ -23,7 +23,9 @@
 // https://trade-ai-rust.vercel.app: where Stripe sends customers back), STRIPE_TAX_CODE (the
 // products' tax category, default txcd_10103000 "Software as a service, personal use": Stripe's
 // Managed Payments, on by default on new accounts, needs one to work out sales tax),
-// STRIPE_API_VERSION (default the version this was tested against, below).
+// STRIPE_API_VERSION (default the version this was tested against, below), STRIPE_PUBLISHABLE_KEY
+// (pk_test_... / pk_live_..., the same mode as the secret key: with it, customers pay in Stripe's
+// form inside the app's own window; without it, on Stripe's own page).
 import crypto from "node:crypto";
 import { createStore } from "./store.js";
 import { PLAN_ORDER, PLANS, TOKEN_PACKS, YEARLY_MONTHS_PAID, planOf, type PlanId } from "./plans.js";
@@ -48,6 +50,24 @@ export function billingConfig(): { on: boolean; mode: "test" | "live" | null; re
   if (mode === "live" && process.env.STRIPE_LIVE?.trim().toLowerCase() !== "yes") return off("A live Stripe key is set, but STRIPE_LIVE=yes is not: real cards are charged only with both.");
   return { on: true, mode, reason: null };
 }
+// The publishable key for Stripe's form inside the app (public by design), when it is set and of the
+// same mode as the secret key; null = customers pay on Stripe's own page instead.
+export function publishableKey(): string | null {
+  const c = billingConfig();
+  const pk = process.env.STRIPE_PUBLISHABLE_KEY?.trim() ?? "";
+  return c.on && pk.startsWith(`pk_${c.mode}_`) ? pk : null;
+}
+// Where the customer pays. In the app's window: Stripe's embedded form (ui_mode embedded_page; it
+// finishes there and leaves the app only for a payment method that needs it). Else Stripe's page.
+// (Managed Payments, on by default, allows only these two: no form of the app's own.)
+type Paid = { url: string } | { clientSecret: string; sessionId: string; publishableKey: string };
+function surface(embedded: unknown) {
+  const back = `${appUrl()}/app?billing=done&session_id={CHECKOUT_SESSION_ID}`;
+  return embedded && publishableKey()
+    ? { ui_mode: "embedded_page", return_url: back, redirect_on_completion: "if_required" }
+    : { success_url: back, cancel_url: `${appUrl()}/app?billing=cancelled` };
+}
+const paidAt = (s: any): Paid => (s.client_secret && !s.url ? { clientSecret: String(s.client_secret), sessionId: String(s.id), publishableKey: publishableKey()! } : { url: String(s.url) });
 const appUrl = () => (process.env.APP_URL?.trim() || "https://trade-ai-rust.vercel.app").replace(/\/+$/, "");
 
 // ---------- Stripe's API (form-encoded, over HTTPS) ----------
@@ -175,7 +195,7 @@ async function acceptTerms(user: string, terms: unknown, what: string) {
   await audit(user, "billing.terms", `Accepted the Subscription Terms (${TERMS_VERSION}) before ${what}`, { version: TERMS_VERSION });
 }
 // A new subscription: Stripe's own payment page (the browser goes there).
-export async function checkout(user: string, body: any): Promise<{ url: string } | { changed: true; status: Awaited<ReturnType<typeof status>> }> {
+export async function checkout(user: string, body: any): Promise<Paid | { changed: true; status: Awaited<ReturnType<typeof status>> }> {
   const { plan, interval } = checkPlan(body?.plan, body?.interval);
   const r = await record(user);
   if (r.subscriptionId && r.status && ACTIVE.has(r.status)) return { changed: true, status: await change(user, { plan, interval }) };
@@ -184,16 +204,15 @@ export async function checkout(user: string, body: any): Promise<{ url: string }
   const s = await stripe("POST", "/checkout/sessions", {
     mode: "subscription", customer: cust, client_reference_id: user.toLowerCase(),
     line_items: [{ price, quantity: 1 }],
-    success_url: `${appUrl()}/app?billing=done&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${appUrl()}/app?billing=cancelled`,
+    ...surface(body?.embedded),
     metadata: { user: user.toLowerCase(), kind: "plan", plan, interval },
     subscription_data: { metadata: { user: user.toLowerCase(), plan, interval } },
     allow_promotion_codes: true,
   });
-  return { url: String(s.url) };
+  return paidAt(s);
 }
 // An AI token pack: paid once on Stripe's page; the tokens are added when Stripe says it is paid.
-export async function buyPack(user: string, body: any): Promise<{ url: string }> {
+export async function buyPack(user: string, body: any): Promise<Paid> {
   const pack = TOKEN_PACKS.find((k) => k.id === String(body?.pack ?? ""));
   if (!pack) throw new Error("Choose a token pack.");
   await acceptTerms(user, body?.terms, `buying ${pack.tokens.toLocaleString()} AI tokens`);
@@ -201,11 +220,10 @@ export async function buyPack(user: string, body: any): Promise<{ url: string }>
   const s = await stripe("POST", "/checkout/sessions", {
     mode: "payment", customer: cust, client_reference_id: user.toLowerCase(),
     line_items: [{ price, quantity: 1 }],
-    success_url: `${appUrl()}/app?billing=done&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${appUrl()}/app?billing=cancelled`,
+    ...surface(body?.embedded),
     metadata: { user: user.toLowerCase(), kind: "pack", pack: pack.id, tokens: String(pack.tokens) },
   });
-  return { url: String(s.url) };
+  return paidAt(s);
 }
 // Another plan or period for a running subscription: up now (Stripe charges the difference), down at
 // the end of the period already paid (the plan paid for stays until then).
@@ -388,7 +406,7 @@ export async function status(user: string) {
   const c = billingConfig();
   const r = await record(user);
   return {
-    on: c.on, mode: c.mode, reason: c.reason, termsVersion: TERMS_VERSION,
+    on: c.on, mode: c.mode, reason: c.reason, termsVersion: TERMS_VERSION, publishableKey: publishableKey(),
     plan: (await auth.planOfUser(user)) ?? "free",
     subscription: r.subscriptionId ? { plan: r.plan ?? null, interval: r.interval ?? null, status: r.status ?? null, periodEnd: r.periodEnd ?? null, cancelAtPeriodEnd: !!r.cancelAtPeriodEnd, keep: r.keep && r.keep.until > Date.now() ? r.keep : null } : null,
     canManage: !!r.customerId,
