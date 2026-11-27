@@ -249,6 +249,12 @@ app.post("/api/autopilot/revoke", ap((a) => autopilot.revoke(a.key, { plan: a.pl
 app.post("/api/autopilot/limits", ap((a, req) => autopilot.setLimits(a.key, req.body ?? {})));
 app.post("/api/autopilot/start", ap((a) => autopilot.start(a.key, { plan: a.plan, role: a.role }, a.user)));
 app.post("/api/autopilot/stop", ap((a) => autopilot.stop(a.key, "Stopped by you", { plan: a.plan, role: a.role })));
+// Its agent's own account and log, read-only: Real mode's Agent log and Pipeline tabs (never the paper account's).
+app.get("/api/autopilot/state", ap((a) => autopilot.agentState(a.key, { plan: a.plan, role: a.role })));
+app.get("/api/autopilot/log", ap(async (a, req) => {
+  const now = Date.now();
+  return logHistory(autopilot.agentAccount(a.key), num(req.query.from, now - 86_400_000), num(req.query.to, now), num(req.query.limit, 500), now, req.query.only === "decisions");
+}));
 
 // Real trades from the user's own wallet (Jupiter): quote -> user signs in the browser -> execute.
 // The wallet they trade from: their MoonPay wallet on file (MoonPay wallets on). The server decides;

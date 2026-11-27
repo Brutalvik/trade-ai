@@ -66,6 +66,15 @@ const dayKey = (k: string, d = today()) => `autopilot-day:${k}:${d}`;
 const KEYS = "autopilot-accounts"; // customers who ever switched it on (the scheduler looks at these)
 
 const shadow = (owner: string) => `${owner.toLowerCase()}${engine.REAL_SUFFIX}`;
+export const agentAccount = shadow;
+// Its agent's account as the app shows an account (Real mode's Agent log and Pipeline tabs read it).
+export async function agentState(owner: string, access: { plan: PlanId; role: Role }) {
+  return engine.withAccount(shadow(owner), async () => {
+    await engine.ensureMigrated();
+    await engine.sync();
+    return engine.getState();
+  }, access);
+}
 async function settings(owner: string): Promise<Settings> {
   return (await store().kvGet<Settings>(settingsKey(owner))) ?? { on: false, limits: { ...DEFAULT_LIMITS } };
 }

@@ -157,6 +157,8 @@ const started = await ap.start("ada", access, { tradeMode: "real" });
 expect("started: its agent runs in an account of its own (never the paper account)", [started.on, started.agent.running], [true, true]);
 const paper = await engine.withAccount("ada", async () => { await engine.sync(); const s = engine.getState(); return [s.bot.running, (s.bots ?? []).some((b: any) => b.bot.running)]; });
 expect("...the paper account's agents are untouched", paper, [false, false]);
+const agentView = await ap.agentState("ada", access);
+expect("its agent's own account, as Real mode's Agent log and Pipeline tabs read it: its agent running there", [agentView.bot.running || (agentView.bots ?? []).some((b: any) => b.bot.running), ap.agentAccount("Ada")], [true, "ada~real"]);
 
 // ---------- the agent's trades, copied ----------
 const shadow = "ada~real";

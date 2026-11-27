@@ -20,7 +20,7 @@ import { STEP_BOT } from "./api";
 import { Pipeline } from "./Pipeline";
 import { MaCrossChips } from "./MaCross";
 import { pnlText, showTab, tabTone } from "./tabTitle";
-import { AutopilotPanel } from "./Autopilot";
+import { AutopilotPanel, useAutopilotAgent } from "./Autopilot";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -508,8 +508,8 @@ export default function App() {
             </>
           ))}
           {tab === "trades" && (me?.tradeMode === "real" ? <RealTrades notify={notify} /> : <Trades state={state} notify={notify} />)}
-          {tab === "log" && (me?.tradeMode === "real" ? <EmptyState title="No auto-pilot activity yet" line="The real-money auto-pilot's decisions show here once it is on. Your paper agents' log stays in Paper mode." /> : <BotLog state={state} />)}
-          {tab === "pipeline" && (me?.tradeMode === "real" ? <EmptyState title="No real trades in the pipeline" line="Each step of a real auto-pilot trade shows here once it is on. Your paper pipeline stays in Paper mode." /> : <Pipeline state={state} onOpenLog={() => setTab("log")} />)}
+          {tab === "log" && (me?.tradeMode === "real" ? <RealAgentTab kind="log" onOpenLog={() => setTab("log")} /> : <BotLog state={state} />)}
+          {tab === "pipeline" && (me?.tradeMode === "real" ? <RealAgentTab kind="pipeline" onOpenLog={() => setTab("log")} /> : <Pipeline state={state} onOpenLog={() => setTab("log")} />)}
         </section>
       </main>
 
@@ -1646,12 +1646,12 @@ function Trades({ state, notify }: { state: AppState | null; notify: (m: string,
 // not kept). How the lines are read is in agentLog.ts (the Pipeline tab reads them the same way).
 // It opens on "Decisions": one short line for each thing an agent decided (decisions.ts), made to
 // be read in the morning. "Everything" is every line, as the log always was.
-function BotLog({ state }: { state: AppState | null }) {
+function BotLog({ state, real = false }: { state: AppState | null; real?: boolean }) {
   const [range, setRange] = useState<"today" | "week">("today");
   const [view, setView] = useState<"decisions" | "all">(() => (savedUi().logView === "all" ? "all" : "decisions"));
   const decisions = view === "decisions";
   useEffect(() => saveUi({ logView: view }), [view]);
-  const { lines, more, busy, err, older, bots, midnight } = useAgentLog(state, range, decisions);
+  const { lines, more, busy, err, older, bots, midnight } = useAgentLog(state, range, decisions, real);
   const many = bots.length > 1;
   const rows = decisions ? decisionRows(lines) : [];
   const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -1759,6 +1759,13 @@ function EmptyState({ title, line }: { title: string; line: string }) {
       <span>{line}</span>
     </div>
   );
+}
+// Real mode's Agent log and Pipeline: the real auto-pilot's own agent (its own account, never the
+// paper one), once it has run; until then the placeholders.
+function RealAgentTab({ kind, onOpenLog }: { kind: "log" | "pipeline"; onOpenLog: () => void }) {
+  const agent = useAutopilotAgent();
+  if (!agent) return kind === "log" ? <EmptyState title="No auto-pilot activity yet" line="The real-money auto-pilot's decisions show here once it is on. Your paper agents' log stays in Paper mode." /> : <EmptyState title="No real trades in the pipeline" line="Each step of a real auto-pilot trade shows here once it is on. Your paper pipeline stays in Paper mode." />;
+  return kind === "log" ? <BotLog state={agent} real /> : <Pipeline state={agent} onOpenLog={onOpenLog} real />;
 }
 // Real mode's positions: the coins held in the account's own Solana wallet (not SOL or USDC, which
 // pay for trades), read from the blockchain. Nothing here comes from the paper account.

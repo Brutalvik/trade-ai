@@ -2,11 +2,28 @@
 // per trade, inside the limits they set (server/src/autopilot.ts). Self-contained: it loads its own
 // status and asks MoonPay's kit (through AutopilotGrantContext) for the signing permission.
 import { useContext, useEffect, useState } from "react";
-import { api, fmtUsd, type AutopilotLimits, type AutopilotStatus } from "./api";
+import { allBots, api, fmtUsd, type AppState, type AutopilotLimits, type AutopilotStatus } from "./api";
 import { Modal, useAccess } from "./Account";
 import { AutopilotGrantContext } from "./autopilotGrant";
 
 type Notify = (m: string, bad?: boolean) => void;
+
+// The real auto-pilot's agent account (its state, with its agent's newest log lines), read every
+// 5 s while a tab shows it; null until it has ever run (nothing to show yet).
+export function useAutopilotAgent(): AppState | null {
+  const [st, setSt] = useState<AppState | null>(null);
+  useEffect(() => {
+    let off = false;
+    const load = () => api.autopilotState().then((s) => !off && setSt(s)).catch(() => {});
+    void load();
+    const id = setInterval(load, 5_000);
+    return () => {
+      off = true;
+      clearInterval(id);
+    };
+  }, []);
+  return st && allBots(st).some((b) => b.bot.config || b.bot.log.length) ? st : null;
+}
 const day = (ms: number) => new Date(ms).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
 const signed = (n: number) => `${n > 0 ? "+" : n < 0 ? "-" : ""}${fmtUsd(Math.abs(n))}`;
 
@@ -109,6 +126,7 @@ export function AutopilotPanel({ notify, onPaper }: { notify: Notify; onPaper: (
           <p className="muted tiny">Allowed for your wallet {st.allowed.address.slice(0, 4)}…{st.allowed.address.slice(-4)} until {day(st.allowed.expiresAt)} · <button className="link-btn tiny" onClick={() => void revoke()} disabled={!!busy}>Withdraw permission</button></p>
         </>
       )}
+      <button className="btn ghost wide ap-paper" onClick={onPaper} disabled={!!busy}>Switch to Paper Mode</button>
       {consent && <ConsentModal st={st} notify={notify} onClose={() => setConsent(false)} onDone={(s) => { setSt(s); setConsent(false); }} />}
       {editing && <LimitsModal limits={L} max={st.maxPerTradeUsd} onClose={() => setEditing(false)} onSaved={(s) => { setSt(s); setEditing(false); notify("Limits saved"); }} />}
     </section>

@@ -566,6 +566,7 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .real-notice p { margin: 0 0 8px; font-size: 13px; color: #c6d2f0; }
 /* Real mode's Auto-pilot card (Autopilot.tsx) */
 .autopilot .real-notice-head .ap-chip { margin-left: auto; }
+.autopilot .ap-paper { margin-top: 10px; }
 .ap-chip { font-family: Inter, system-ui, sans-serif; font-size: 10.5px; letter-spacing: 0.4px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
 .ap-chip.up { color: var(--up); } .ap-chip.amber { color: var(--amber); }
 .ap-status p { margin: 0 0 6px; }

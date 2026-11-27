@@ -262,6 +262,8 @@ export const api = {
   autopilotLimits: (l: AutopilotLimits) => req<AutopilotStatus>("/autopilot/limits", l),
   autopilotStart: () => req<AutopilotStatus>("/autopilot/start", {}),
   autopilotStop: () => req<AutopilotStatus>("/autopilot/stop", {}),
+  autopilotState: () => req<AppState>("/autopilot/state"),
+  autopilotLog: (from: number, to: number, limit = 500, decisions = false) => req<{ lines: LogLine[]; more: boolean }>(`/autopilot/log?from=${Math.floor(from)}&to=${Math.floor(to)}&limit=${limit}${decisions ? "&only=decisions" : ""}`),
   list: (kind: ListKind) => req<{ kind: ListKind; coins: ListCoin[] }>(`/lists/${kind}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
   // before = unix seconds: the page of candles just older than that (for scrolling back in time).

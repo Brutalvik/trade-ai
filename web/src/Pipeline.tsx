@@ -23,9 +23,10 @@ const STEP: Record<TraceKey, { bar: string; card: string; idle: string }> = {
 };
 const KEYS: TraceKey[] = ["scan", "check", "ai", "size", "exec", "log"];
 
-export function Pipeline({ state, onOpenLog }: { state: AppState | null; onOpenLog: () => void }) {
+// real = the real auto-pilot's own agent (Real mode), else the paper account's agents.
+export function Pipeline({ state, onOpenLog, real = false }: { state: AppState | null; onOpenLog: () => void; real?: boolean }) {
   const [range, setRange] = useState<"today" | "week">("today");
-  const { lines, more, busy, err, bots, midnight } = useAgentLog(state, range, true);
+  const { lines, more, busy, err, bots, midnight } = useAgentLog(state, range, true, real);
   const [scan, setScan] = useState<Scan | null>(null);
   useEffect(() => {
     let off = false;

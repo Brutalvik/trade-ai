@@ -10,7 +10,9 @@ import { allBots, api, STEP_BOT, type AppState, type LogLine } from "./api";
 export const LOG_DAY = 86_400_000;
 export const logId = (l: LogLine) => `${l.t}|${l.bot}|${l.msg}`;
 
-export function useAgentLog(state: AppState | null, range: "today" | "week", decisions: boolean) {
+// real = the real auto-pilot's own agent (its account's log), else the paper account's agents.
+export function useAgentLog(state: AppState | null, range: "today" | "week", decisions: boolean, real = false) {
+  const read = real ? api.autopilotLog : api.botLog;
   const { me } = useAccess();
   const [kept, setKept] = useState<LogLine[]>([]);
   const [more, setMore] = useState(false);
@@ -30,7 +32,7 @@ export function useAgentLog(state: AppState | null, range: "today" | "week", dec
     setMore(false);
     const load = (first: boolean) => {
       if (first) setBusy(true);
-      api.botLog(from, Date.now(), 500, decisions)
+      read(from, Date.now(), 500, decisions)
         .then((r) => {
           if (off) return;
           merge(r.lines);
@@ -46,7 +48,7 @@ export function useAgentLog(state: AppState | null, range: "today" | "week", dec
       off = true;
       window.clearInterval(id);
     };
-  }, [me?.username, from, decisions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [me?.username, from, decisions, real]); // eslint-disable-line react-hooks/exhaustive-deps
   // (the agents' own lines, and those of the quality step, which is no one agent)
   const live: LogLine[] = [...bots.flatMap((b) => b.bot.log.map((l) => ({ ...l, bot: b.id }))), ...(state?.stepLog ?? []).map((l) => ({ ...l, bot: STEP_BOT }))];
   // One copy of each line. Where the server sent a line's decision and the account's own copy
@@ -58,7 +60,7 @@ export function useAgentLog(state: AppState | null, range: "today" | "week", dec
   const older = () => {
     const oldest = kept.reduce((m, l) => Math.min(m, l.t), Date.now());
     setBusy(true);
-    api.botLog(from, oldest, 500, decisions)
+    read(from, oldest, 500, decisions)
       .then((r) => {
         merge(r.lines);
         setMore(r.more);
