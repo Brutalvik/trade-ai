@@ -261,5 +261,11 @@ billing.__forgetTaxForTests();
 expect("...STRIPE_TAX=off turns it off here at once", await billing.taxActive(), false);
 delete process.env.STRIPE_TAX;
 delete process.env.STRIPE_PUBLISHABLE_KEY;
+billing.__forgetTaxForTests();
+await billing.buyPack("ada", { pack: "pack2m", terms: T });
+const page = [...sessions.values()].at(-1);
+expect("Stripe's own page (no publishable key) works the same way: Managed Payments off, Stripe Tax by the address", [page.ui_mode, page.managed, page.automatic_tax.enabled], ["hosted_page", "false", true]);
+delete process.env.STRIPE_TAX;
+delete process.env.STRIPE_PUBLISHABLE_KEY;
 
 finish();

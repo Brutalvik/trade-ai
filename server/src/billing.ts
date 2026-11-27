@@ -65,17 +65,15 @@ export function publishableKey(): string | null {
 // address and the tax registrations are set, Stripe dashboard, Settings, Tax), every in-app payment
 // has automatic tax, worked out from the customer's billing address (in Canada, by province: GST,
 // HST, PST, QST, as far as the business is registered for them); the form asks for the address.
-// Before that, no tax is added. Without the publishable key: Stripe's own page, as before.
+// Before that, no tax is added. Without the publishable key: Stripe's own page, with the same tax
+// model (Managed Payments off there too: the business is the seller of every payment, one way).
 type Paid = { url: string } | { clientSecret: string; sessionId: string; publishableKey: string; tax: boolean };
 async function surface(inApp: unknown) {
   const back = `${appUrl()}/app?billing=done&session_id={CHECKOUT_SESSION_ID}`;
-  if (!(inApp && publishableKey())) return { success_url: back, cancel_url: `${appUrl()}/app?billing=cancelled` };
-  const tax = await taxActive();
-  return {
-    ui_mode: "elements", return_url: back, managed_payments: { enabled: false },
-    // (Stripe keeps the address on the customer, so renewals are taxed for the same place.)
-    ...(tax ? { automatic_tax: { enabled: true }, customer_update: { address: "auto", name: "auto" } } : {}),
-  };
+  // (Stripe keeps the address on the customer, so renewals are taxed for the same place.)
+  const taxed = (await taxActive()) ? { automatic_tax: { enabled: true }, customer_update: { address: "auto", name: "auto" } } : {};
+  if (!(inApp && publishableKey())) return { success_url: back, cancel_url: `${appUrl()}/app?billing=cancelled`, managed_payments: { enabled: false }, ...taxed };
+  return { ui_mode: "elements", return_url: back, managed_payments: { enabled: false }, ...taxed };
 }
 const paidAt = (s: any): Paid => (s.client_secret && !s.url ? { clientSecret: String(s.client_secret), sessionId: String(s.id), publishableKey: publishableKey()!, tax: !!s.automatic_tax?.enabled } : { url: String(s.url) });
 // Whether Stripe Tax is active in the account (asked at most every 10 minutes; STRIPE_TAX=off turns
