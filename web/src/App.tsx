@@ -1146,8 +1146,8 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   // The amount is typed in the shown currency (curSymbol); the paper account keeps dollars.
   const buyNow = () => pair && run(() => api.buy(pair.chain, pair.pool, toUsd(Number(usd))), `Bought ${fmtMoney(Number(usd))} of ${pair.symbol} (paper)`);
   const sellNow = (f: number) => pair && pos && run(() => api.sell(pair.chain, pair.pool, pos.id, f), `Sold ${f * 100}% of ${pair.symbol} (paper)`);
-  const limitBuy = () => pair && run(() => api.placeOrder({ side: "BUY", chain: pair.chain, pool: pair.pool, symbol: pair.symbol, price: lp, usd: toUsd(Number(usd)) }), `Limit buy set: ${fmtMoney(Number(usd))} of ${pair.symbol} at ${fmtPrice(lp)}`);
-  const limitSell = () => pos && run(() => api.placeOrder({ side: "SELL", positionId: pos.id, price: lp, fraction: sellShare }), `Limit sell set: ${sellShare * 100}% of ${pos.symbol} at ${fmtPrice(lp)}`);
+  const limitBuy = () => pair && run(() => api.placeOrder({ side: "BUY", chain: pair.chain, pool: pair.pool, symbol: pair.symbol, price: lp, usd: toUsd(Number(usd)) }), `Limit buy set: ${fmtMoney(Number(usd))} of ${pair.symbol} at ${fmtPrice(lp)} or lower`);
+  const limitSell = () => pos && run(() => api.placeOrder({ side: "SELL", positionId: pos.id, price: lp, fraction: sellShare }), `Limit sell set: ${sellShare * 100}% of ${pos.symbol} at ${fmtPrice(lp)} or higher`);
   const cancel = (id: string) => run(() => api.cancelOrder(id), "Order cancelled");
 
   const priceBox = (
@@ -1329,8 +1329,8 @@ const LINE_HELP: Record<string, string> = {
   "DIP (NOT USED)": "The AI's level for buying a dip. It did not pass the check on its odds, so nothing is bought at this line.",
   "BREAKOUT (NOT USED)": "The AI's level for buying a breakout. It did not pass the check on its odds, so nothing is bought at this line.",
   "BUY NOW (NOT USED)": "The AI's price for buying right away. It did not pass the check on its odds, so nothing is bought at this line.",
-  "LIMIT BUY": "Your limit buy: fills automatically if the price falls to this line.",
-  "LIMIT SELL": "Your limit sell: fills automatically if the price rises to this line.",
+  "LIMIT BUY": "Your limit buy: fills automatically once the price is at this line or lower (at the lower price).",
+  "LIMIT SELL": "Your limit sell: fills automatically once the price is at this line or higher (at the higher price).",
 };
 
 function OpenOrders({ state, notify, refresh }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void }) {

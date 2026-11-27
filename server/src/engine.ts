@@ -168,8 +168,10 @@ export type BotConfig = {
 // true = it keeps trading round after round until you stop it.
 export type Settings = { feePct: number; slippagePct: number; continuous?: boolean };
 
-// A limit order you set by hand: buy when the price falls to `price`, or sell (part of)
-// a manual position when it rises to `price`. Checked every 5 seconds, even with the bot off.
+// A limit order you set by hand: buy once the price is at `price` or lower, or sell (part of) a
+// manual position once it is at `price` or higher, also when the price jumps past it between two
+// checks, and at the better market price. Checked every 5 seconds, even with the bot off
+// (test/unit/limit-orders.mts).
 export type LimitOrder = {
   id: string;
   side: "BUY" | "SELL";
@@ -3850,7 +3852,7 @@ export function placeOrder(body: { side?: string; chain?: string; pool?: string;
   }
   state.orders.push(o);
   rec("order.place", `Limit ${side === "BUY" ? `buy $${o.usd!.toFixed(2)}` : `sell ${Math.round(o.fraction! * 100)}%`} of ${o.symbol} at ${fmt(price)}`, { ...o });
-  log(`Limit ${side === "BUY" ? `buy: $${o.usd!.toFixed(2)} of ${o.symbol} if it falls to ${fmt(price)}` : `sell: ${Math.round(o.fraction! * 100)}% of ${o.symbol} if it rises to ${fmt(price)}`}.`);
+  log(`Limit ${side === "BUY" ? `buy: $${o.usd!.toFixed(2)} of ${o.symbol} once the price is at ${fmt(price)} or lower` : `sell: ${Math.round(o.fraction! * 100)}% of ${o.symbol} once the price is at ${fmt(price)} or higher`}.`);
   save();
   return o;
 }
