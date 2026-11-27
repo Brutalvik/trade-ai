@@ -1015,6 +1015,41 @@ export function sell(positionId: string, price: number, fraction: number, reason
   return t;
 }
 
+// The real auto-pilot could not make this agent buy with real money (no money in the wallet, a
+// limit, a swap that did not go through): the buy is taken back in the auto-pilot's own account,
+// at what it paid, with no profit or loss, so Real mode never shows a trade that was not made. Its
+// SELL is not copied (nothing real was bought) and not counted into the agents' hours.
+export function voidBuy(positionId: string, usd: number, why: string) {
+  if (!acct().loaded) return null;
+  const p = state.positions.find((x) => x.id === positionId && x.source === "bot");
+  if (!p || !(p.qty > 0)) return null;
+  const bought = state.trades.find((t) => t.side === "BUY" && t.pool === p.pool && t.source === "bot" && (t.botId ?? "1") === (p.botId ?? "1") && Math.abs(t.usd - usd) < 0.005);
+  const whole = p.costUsd <= usd + 0.005 || !bought;
+  const qty = whole ? p.qty : Math.min(p.qty, bought.qty);
+  const back = whole ? p.costUsd : Math.min(p.costUsd, usd);
+  state.cash += back;
+  if (whole) {
+    state.positions = state.positions.filter((x) => x.id !== p.id);
+    acct().backupSince?.delete(p.id);
+    state.orders = (state.orders ?? []).filter((o) => o.positionId !== p.id);
+  } else {
+    // It added to a trade bought before: only what this buy added is taken back.
+    p.entryPrice = (p.entryPrice * p.qty - bought.price * qty) / (p.qty - qty);
+    p.qty -= qty;
+    p.costUsd -= back;
+  }
+  const botId = p.botId ?? "1";
+  const reason = `Not bought with real money: ${why}`;
+  const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: back / qty, qty, usd: back, feeUsd: 0, pnlUsd: 0, platformFeeUsd: 0, reason, source: "bot", botId, hr: 1 };
+  state.trades.unshift(t);
+  recTrade(t);
+  withBot(botId, () => log(`${p.symbol}: ${reason}. Its buy is taken back (no profit or loss).`, "bad"));
+  if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES;
+  recordEquity();
+  save();
+  return t;
+}
+
 export function updateSettings(s: Partial<Settings>) {
   const next = { ...state.settings };
   if (s.feePct !== undefined) next.feePct = Number(s.feePct);

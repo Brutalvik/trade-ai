@@ -60,6 +60,15 @@ async function balanceRaw(owner: string, mint: string): Promise<{ raw: bigint; d
   return { raw, decimals: decimals >= 0 ? decimals : await tokenDecimals(mint) };
 }
 
+// What the wallet can pay for a buy with, in dollars: its SOL (less the 0.01 SOL always kept for
+// network fees) and its USDC. The real auto-pilot checks it before it starts and before each buy.
+export async function spendableUsd(owner: string): Promise<{ sol: number; usdc: number }> {
+  const [sol, usdc, px] = await Promise.all([balanceRaw(owner, WSOL), balanceRaw(owner, USDC), prices([WSOL])]);
+  const solPx = px.get(WSOL)?.priceUsd ?? null;
+  if (!solPx) throw new Error("No SOL price right now. Try again in a moment.");
+  return { sol: ui(sol.raw > SOL_RESERVE ? sol.raw - SOL_RESERVE : 0n, 9) * solPx, usdc: ui(usdc.raw, 6) };
+}
+
 const decCache = new Map<string, number>([[WSOL, 9], [USDC, 6]]);
 async function tokenDecimals(mint: string) {
   const hit = decCache.get(mint);

@@ -25,9 +25,10 @@ const ADDR = toB58(walletPub);
 const MINT = toB58(crypto.randomBytes(32)), WSOL = "So11111111111111111111111111111111111111112";
 
 // ---------- a pretend Solana node, DexScreener and Jupiter ----------
-let lamports = 10n * 1_000_000_000n, tokens = 0n; // the wallet's SOL and coin
+let lamports = 10n * 1_000_000_000n, tokens = 0n, usdc = 0n; // the wallet's SOL, coin and USDC
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 let sellPx = 0.01; // the coin's price when it is sold (bought at 0.01; SOL at $100)
-const orders = new Map<string, { side: "BUY" | "SELL"; inAmount: bigint; outAmount: bigint; message: Buffer }>();
+const orders = new Map<string, { side: "BUY" | "SELL"; inMint: string; inAmount: bigint; outAmount: bigint; message: Buffer }>();
 let jupFails = false, executed = 0, nOrder = 0;
 // An unsigned transaction with the wallet as its only signer (a v0 message).
 function unsignedTx(taker: Buffer) {
@@ -40,7 +41,10 @@ globalThis.fetch = (async (input: any, init?: any) => {
   if (u.host === "rpc.fake.test") {
     const b = JSON.parse(String(init?.body ?? "{}"));
     if (b.method === "getBalance") return Response.json({ jsonrpc: "2.0", id: b.id, result: { value: Number(lamports) } });
-    if (b.method === "getTokenAccountsByOwner") return Response.json({ jsonrpc: "2.0", id: b.id, result: { value: tokens > 0n ? [{ account: { data: { parsed: { info: { tokenAmount: { amount: tokens.toString(), decimals: 6 } } } } } }] : [] } });
+    if (b.method === "getTokenAccountsByOwner") {
+      const held = b.params?.[1]?.mint === USDC_MINT ? usdc : b.params?.[1]?.mint === MINT ? tokens : 0n;
+      return Response.json({ jsonrpc: "2.0", id: b.id, result: { value: held > 0n ? [{ account: { data: { parsed: { info: { tokenAmount: { amount: held.toString(), decimals: 6 } } } } } }] : [] } });
+    }
     if (b.method === "getTokenSupply") return Response.json({ jsonrpc: "2.0", id: b.id, result: { value: { decimals: 6 } } });
     return Response.json({ jsonrpc: "2.0", id: b.id, result: null });
   }
@@ -54,7 +58,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
     const out = side === "BUY" ? (amount * 100n * 1_000_000n) / (1_000_000_000n) * 100n : BigInt(Math.floor((Number(amount) / 1e6) * sellPx / 100 * 1e9));
     const { tx, message } = unsignedTx(Buffer.from(walletPub));
     const requestId = `rq${++nOrder}`;
-    orders.set(requestId, { side, inAmount: amount, outAmount: out, message });
+    orders.set(requestId, { side, inMint: q.get("inputMint")!, inAmount: amount, outAmount: out, message });
     return Response.json({ transaction: tx.toString("base64"), requestId, inAmount: amount.toString(), outAmount: out.toString() });
   }
   if (u.host === "jup.fake.test" && u.pathname.endsWith("/execute")) {
@@ -66,7 +70,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
     if (!good) return Response.json({ status: "Failed", error: "bad signature" }, { status: 400 });
     if (jupFails) return Response.json({ status: "Failed", error: "slippage exceeded" });
     executed++;
-    if (o!.side === "BUY") { lamports -= o!.inAmount; tokens += o!.outAmount; } else { tokens -= o!.inAmount; lamports += o!.outAmount; }
+    if (o!.side === "BUY") { if (o!.inMint === USDC_MINT) usdc -= o!.inAmount; else lamports -= o!.inAmount; tokens += o!.outAmount; } else { tokens -= o!.inAmount; lamports += o!.outAmount; }
     return Response.json({ status: "Success", signature: `sig${executed}`, inputAmountResult: o!.inAmount.toString(), outputAmountResult: o!.outAmount.toString() });
   }
   if (u.host === "x-api.moonpay.com" && u.pathname === "/v0/sdk/auth/users/public/me") {
@@ -154,6 +158,12 @@ ap.__setSignerForTests(async (p: any) => {
 expect("not in Paper mode", await fail(ap.start("ada", access, { tradeMode: "paper" })), "Switch to Real in your profile first.");
 const noPick = await ap.start("ada", { plan: "free", role: "user" }, { tradeMode: "real" }).then(() => null, (e: any) => e);
 expect("not on a plan without auto-pick agents: an upgrade is asked for (the app opens its Plans window), naming the plan that has them", [noPick?.upgrade, noPick?.need, /AI Pro/.test(noPick?.message ?? "")], [true, "pro", true]);
+lamports = 5_000_000n; // 0.005 SOL: less than the 0.01 SOL always kept for network fees
+expect("not with no money in the wallet: it says so, before its agent decides anything", /no SOL or USDC to trade with/.test(await fail(ap.start("ada", access, { tradeMode: "real" }))), true);
+usdc = 20_000_000n;
+expect("...USDC is money too", (await ap.start("ada", access, { tradeMode: "real" })).on, true);
+await ap.stop("ada", "Stopped by you", access);
+lamports = 10n * 1_000_000_000n, usdc = 0n;
 const started = await ap.start("ada", access, { tradeMode: "real" });
 expect("started: its agent runs in an account of its own (never the paper account)", [started.on, started.agent.running], [true, true]);
 const paper = await engine.withAccount("ada", async () => { await engine.sync(); const s = engine.getState(); return [s.bot.running, (s.bots ?? []).some((b: any) => b.bot.running)]; });
@@ -175,6 +185,10 @@ const t2 = await ap.onAgentTrade(shadow, ev("BUY", "pos2"));
 expect("a buy is cut to what is left of the day's total ($30 - $25 = $5)", t2?.usd, 5);
 const t3 = await ap.onAgentTrade(shadow, ev("BUY", "pos3"));
 expect("once the day's total is spent, its agent's buys are not copied", [t3, executed], [null, 2]);
+await ap.__idleForTests();
+st = await ap.status("ada");
+expect("...and, holding nothing else, it pauses for the rest of the day", [st.paused, /spending limit/.test(st.stopReason ?? ""), st.agent.running], [true, true, false]);
+await ap.start("ada", access, { tradeMode: "real" }); // (the test goes on today)
 
 // Sales: the same share of what the auto-pilot bought, at a lower price (a loss).
 sellPx = 0.008;
@@ -197,6 +211,7 @@ for (let i = 0; i < 30 && (await ap.status("ada")).agent.running; i++) await new
 expect("...and its agent stops", (await ap.status("ada")).agent.running, false);
 const afterPause = await ap.onAgentTrade(shadow, ev("BUY", "pos4"));
 expect("...no buy is copied while it is paused", [afterPause, executed], [null, 5]);
+await ap.__idleForTests();
 expect("...and it cannot be started again today", /Paused for today/.test(await fail(ap.start("ada", access, { tradeMode: "real" }))), true);
 
 // A new day: the pause ends on the scheduler's next minute.
@@ -211,7 +226,10 @@ expect("the next day it starts again by itself", [st.on, st.paused, st.agent.run
 await store.kvSet(`autopilot-day:ada:${today}`, { spent: 0, pnl: 0, sigs: 7, buys: 0, sells: 0 });
 const noRoom = await ap.onAgentTrade(shadow, ev("BUY", "pos5"));
 expect("with one signature left, no buy is made (its sale would have none)", [noRoom, executed], [null, 5]);
+await ap.__idleForTests();
+expect("...and it pauses for the day", (await ap.status("ada")).paused, true);
 await store.kvSet(`autopilot-day:ada:${today}`, { spent: 0, pnl: 0, sigs: 0, buys: 0, sells: 0 });
+await ap.start("ada", access, { tradeMode: "real" });
 
 // A buy that fails, then its sale.
 sellPx = 0.01;
@@ -247,8 +265,32 @@ st = await ap.status("ada");
 expect("when MoonPay no longer holds the permission, it says to allow it again", [st.allowed, /allow automatic trading again/.test(st.allowProblem ?? "")], [null, true]);
 signMode = "ok";
 
-// Stopping sells what it holds; withdrawing forgets the key.
+// The wallet's money: a buy is never more than it can pay, and with none it stops.
 await store.kvSet("autopilot-signer:ada", { ...(await store.kvGet("autopilot-signer:ada")), dead: undefined });
+await store.kvSet(`autopilot-day:ada:${today}`, { spent: 0, pnl: 0, sigs: 0, buys: 0, sells: 0 });
+await ap.start("ada", access, { tradeMode: "real" });
+const fullSol = lamports;
+lamports = 130_000_000n; // 0.13 SOL = $13, of which $12 can be spent
+const small = await ap.onAgentTrade(shadow, ev("BUY", "posS"));
+expect("a buy is never more than the wallet can pay: $12 of SOL to spend, so $11.76 (2% kept back for price moves)", [small?.status, small?.usd], ["Success", 11.76]);
+lamports = 1_000_000n;
+usdc = 30_000_000n; // $30 of USDC
+const byUsdc = await ap.onAgentTrade(shadow, ev("BUY", "posU"));
+expect("...with no SOL left but USDC, it pays with USDC", [byUsdc?.status, byUsdc?.pay, byUsdc?.usd], ["Success", "USDC", 25]);
+usdc = 0n;
+const bx = { chain: "solana", symbol: "COIN", priceUsd: 0.01, dex: "x", url: "", liquidityUsd: 1e6, volume24h: 0, change24h: 0 } as any;
+const cashBefore = await engine.withAccount(shadow, async () => { await engine.sync(); return engine.getState().cash; });
+await engine.withAccount(shadow, async () => { engine.buy({ ...bx, pool: "poolB" }, 25, "bot", "test", { botId: "1", tokenMint: MINT }); await engine.settleSteps(); });
+await ap.__idleForTests();
+const broke = await engine.withAccount(shadow, async () => { const s = engine.getState(); return { cash: s.cash, open: s.positions.filter((p: any) => p.source === "bot").length, last: s.trades[0], log: s.bot.log.map((l: any) => l.msg).join(" | ") }; });
+expect("no money in the wallet: its agent's buy is not made for real, and is taken back at what it paid (no profit or loss), saying why", [broke.open, Math.abs(broke.cash - cashBefore) < 1e-6, broke.last.side, broke.last.pnlUsd, /^Not bought with real money: your Solana wallet has no SOL or USDC/.test(broke.last.reason), /taken back/.test(broke.log)], [0, true, "SELL", 0, true, true]);
+st = await ap.status("ada");
+expect("...holding nothing else for its agent, the auto-pilot stops, saying the wallet has no money", [st.on, st.agent.running, /no SOL or USDC to trade with/.test(st.stopReason ?? "")], [false, false, true]);
+for (const id of ["posS", "posU"]) await ap.onAgentTrade(shadow, ev("SELL", id, { closed: true })); // (those two were bought for real)
+lamports = fullSol;
+
+// Stopping sells what it holds; withdrawing forgets the key.
+await store.kvSet(`autopilot-day:ada:${today}`, { spent: 0, pnl: 0, sigs: 0, buys: 0, sells: 0 });
 await ap.start("ada", access, { tradeMode: "real" }).catch(() => null);
 const p10 = await engine.withAccount(shadow, async () => {
   await engine.sync();
@@ -273,4 +315,18 @@ await engine.withAccount("ada", async () => {
   await engine.settleSteps();
 });
 expect("a paper account's agent trading is never copied with real money", paperCopied, false);
+
+// Its agent adding to a trade it holds, and that buy not made for real: only what it added is taken back.
+engine.onRealTrade(null);
+const part = await engine.withAccount(shadow, async () => {
+  await engine.sync();
+  engine.buy({ ...bx, pool: "poolA", priceUsd: 0.01 }, 20, "bot", "test", { botId: "1", tokenMint: MINT });
+  const p = engine.getState().positions.find((x: any) => x.pool === "poolA");
+  const [qty, entry] = [p.qty, p.entryPrice];
+  engine.buy({ ...bx, pool: "poolA", priceUsd: 0.02 }, 10, "bot", "test", { botId: "1", tokenMint: MINT });
+  engine.voidBuy(p.id, 10, "test");
+  const q = engine.getState().positions.find((x: any) => x.pool === "poolA");
+  return [Math.abs(q.qty - qty) < 1e-9, Math.abs(q.entryPrice - entry) < 1e-12, Math.abs(q.costUsd - 20) < 1e-9];
+});
+expect("an agent adding to a trade, that buy not made for real: only what it added is taken back (amount, entry price, cost)", part, [true, true, true]);
 finish();

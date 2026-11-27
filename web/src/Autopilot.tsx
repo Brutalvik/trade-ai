@@ -2,7 +2,7 @@
 // per trade, inside the limits they set (server/src/autopilot.ts). Self-contained: it loads its own
 // status and asks MoonPay's kit (through AutopilotGrantContext) for the signing permission.
 import { useContext, useEffect, useState } from "react";
-import { allBots, api, fmtUsd, type AppState, type AutopilotLimits, type AutopilotStatus } from "./api";
+import { allBots, api, curSymbol, fmtUsd, fromUsd, toUsd, type AppState, type AutopilotLimits, type AutopilotStatus } from "./api";
 import { Modal, useAccess } from "./Account";
 import { AutopilotGrantContext } from "./autopilotGrant";
 
@@ -133,27 +133,50 @@ export function AutopilotPanel({ notify, onPaper }: { notify: Notify; onPaper: (
   );
 }
 
+// The limits are kept in dollars (the server's), shown and typed in the person's currency. A
+// field keeps what was typed; only a field that was changed is converted back.
 function LimitsFields({ value, max, onChange }: { value: AutopilotLimits; max: number; onChange: (l: AutopilotLimits) => void }) {
+  const shown = (usd: number) => String(Math.round(fromUsd(usd) * 100) / 100);
+  const [text, setText] = useState(() => ({ perTradeUsd: shown(value.perTradeUsd), dailySpendUsd: shown(value.dailySpendUsd), dailyLossUsd: shown(value.dailyLossUsd) }));
   const f = (k: keyof AutopilotLimits, label: string, hint: string) => (
     <label>
       {label}
-      <span className="ap-money">$<input inputMode="decimal" value={String(value[k])} onChange={(e) => onChange({ ...value, [k]: Number(e.target.value.replace(/[^0-9.]/g, "")) || 0 })} /></span>
+      <span className="ap-money">{curSymbol()}<input inputMode="decimal" value={text[k]} onChange={(e) => {
+        const t = e.target.value.replace(/[^0-9.]/g, "");
+        setText({ ...text, [k]: t });
+        onChange({ ...value, [k]: toUsd(Number(t) || 0) });
+      }} /></span>
       <small>{hint}</small>
     </label>
   );
   return (
     <div className="ap-limits auth-form">
-      {f("perTradeUsd", "Per trade", `$10 to $${max}`)}
+      {f("perTradeUsd", "Per trade", `${fmtUsd(10)} to ${fmtUsd(max)}`)}
       {f("dailySpendUsd", "Spent per day, at most", "No new buys once it is reached")}
       {f("dailyLossUsd", "Pause for the day after losing", "It stops buying until the next day (UTC)")}
     </div>
   );
 }
 
+// The server's limit rules (autopilot.ts checkLimits), with their amounts in the person's currency.
+function limitsProblem(l: AutopilotLimits, max: number): string | null {
+  if (!(l.perTradeUsd >= 10)) return `The amount per trade must be at least ${fmtUsd(10)}.`;
+  if (l.perTradeUsd > max) return `The amount per trade can be at most ${fmtUsd(max)} while real trading is new.`;
+  if (!(l.dailySpendUsd >= l.perTradeUsd)) return "The day's total must be at least one trade's amount.";
+  if (l.dailySpendUsd > 10_000) return `The day's total can be at most ${fmtUsd(10_000)}.`;
+  if (!(l.dailyLossUsd >= 1)) return `The loss that pauses it must be at least ${fmtUsd(1)}.`;
+  if (l.dailyLossUsd > l.dailySpendUsd) return "The loss that pauses it can't be more than the day's total.";
+  return null;
+}
+
 function LimitsModal({ limits, max, onClose, onSaved }: { limits: AutopilotLimits; max: number; onClose: () => void; onSaved: (s: AutopilotStatus) => void }) {
   const [l, setL] = useState(limits);
   const [err, setErr] = useState("");
-  const save = () => api.autopilotLimits(l).then(onSaved).catch((e) => setErr(e.message));
+  const save = () => {
+    const bad = limitsProblem(l, max);
+    if (bad) return setErr(bad);
+    return api.autopilotLimits(l).then(onSaved).catch((e) => setErr(e.message));
+  };
   return (
     <Modal title="Auto-pilot limits" onClose={onClose} narrow foot={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn buy" onClick={() => void save()}>Save</button></>}>
       <LimitsFields value={l} max={max} onChange={setL} />
@@ -176,6 +199,8 @@ function ConsentModal({ st, notify, onClose, onDone }: { st: AutopilotStatus; no
       grant.signIn();
       return setErr("Sign in with MoonPay (your email) in the window that opened, then press Allow again.");
     }
+    const bad = limitsProblem(l, st.maxPerTradeUsd);
+    if (bad) return setErr(bad);
     setBusy(true);
     try {
       await api.autopilotLimits(l);

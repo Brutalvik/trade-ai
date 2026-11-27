@@ -269,6 +269,10 @@ export async function start(owner: string, access: Access, user: { tradeMode?: s
   if (user.tradeMode !== "real") throw new Error("Switch to Real in your profile first.");
   const signer = await usableSigner(owner);
   if (!signer) throw new Error("Allow automatic trading first.");
+  // Nothing to trade with, no start (its agent would decide on trades that could not be made).
+  const money = await live.spendableUsd(signer.address).catch(() => null);
+  if (!money) throw new Error("Couldn't check your wallet's balance just now. Try again in a moment.");
+  if (Math.max(money.sol, money.usdc) < MIN_BUY_USD) throw new Error(`${cap(NO_MONEY)}. Add money to it first, then start the auto-pilot.`);
   const s = await settings(owner);
   const d = await day(owner);
   if (d.pnl <= -s.limits.dailyLossUsd) throw new Error(`Paused for today: it lost $${(-d.pnl).toFixed(2)}, your limit is $${s.limits.dailyLossUsd}. It can start again tomorrow (UTC).`);
@@ -282,6 +286,17 @@ export async function start(owner: string, access: Access, user: { tradeMode?: s
 // Stops its agent; what it holds is sold first (its agent's trades are closed, which sells them for
 // real). keepOn = a pause for the day (it starts again the next day).
 export async function stop(owner: string, reason = "Stopped by you", access?: Access, keepOn = false) {
+  await haltAgent(owner, reason, access);
+  const s = await settings(owner);
+  if (s.on || keepOn) {
+    Object.assign(s, keepOn ? { pausedDay: today(), stopReason: reason } : { on: false, stoppedAt: Date.now(), stopReason: reason, pausedDay: undefined });
+    await putSettings(owner, s);
+    await audit(owner, keepOn ? "autopilot.pause" : "autopilot.stop", `Real auto-pilot ${keepOn ? "paused for today" : "stopped"}: ${reason}`, { reason });
+  }
+  return status(owner);
+}
+// Its agent's part of a stop: its trades are closed (which sells them for real), then it stops.
+async function haltAgent(owner: string, reason: string, access?: Access) {
   const acc = access ?? (await accessOf(owner));
   await engine.withAccount(shadow(owner), async () => {
     await engine.ensureMigrated();
@@ -292,13 +307,6 @@ export async function stop(owner: string, reason = "Stopped by you", access?: Ac
     await engine.settleSteps(); // the sales above, for real
     await engine.flush();
   }, acc);
-  const s = await settings(owner);
-  if (s.on || keepOn) {
-    Object.assign(s, keepOn ? { pausedDay: today(), stopReason: reason } : { on: false, stoppedAt: Date.now(), stopReason: reason, pausedDay: undefined });
-    await putSettings(owner, s);
-    await audit(owner, keepOn ? "autopilot.pause" : "autopilot.stop", `Real auto-pilot ${keepOn ? "paused for today" : "stopped"}: ${reason}`, { reason });
-  }
-  return status(owner);
 }
 async function usableSigner(owner: string): Promise<Signer | null> {
   const s = await store().kvGet<Signer>(signerKey(owner));
@@ -306,6 +314,20 @@ async function usableSigner(owner: string): Promise<Signer | null> {
 }
 
 // ---------- Copying the agent's trades ----------
+const MIN_BUY_USD = 1; // the smallest real buy (live.ts)
+const NO_MONEY = "your Solana wallet has no SOL or USDC to trade with (0.01 SOL is always kept for network fees)";
+const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
+// Stops and pauses decided while a trade is being copied run on their own: a stop waits for the
+// trades in flight, the one being copied among them. (Tests wait for them with __idleForTests.)
+const background = new Set<Promise<unknown>>();
+function inBackground(p: Promise<unknown>) {
+  const job = p.catch((e) => console.error("[autopilot]", e?.message ?? e));
+  background.add(job);
+  void job.finally(() => background.delete(job));
+}
+export async function __idleForTests() {
+  while (background.size) await Promise.allSettled([...background]);
+}
 const chains = new Map<string, Promise<unknown>>();
 // One customer's real trades go out one after another (a sale never overtakes its buy).
 function queue<T>(owner: string, job: () => Promise<T>): Promise<T> {
@@ -337,33 +359,62 @@ export async function onAgentTrade(shadowKey: string, ev: engine.MirrorEvent) {
 async function copyBuy(owner: string, ev: engine.MirrorEvent) {
   const s = await settings(owner);
   const h = await holdings(owner);
-  const skip = async (why: string) => {
-    h[ev.positionId] = { positionId: ev.positionId, mint: ev.mint ?? "", symbol: ev.symbol, raw: "0", costUsd: 0, at: Date.now(), status: "failed", error: why };
-    await putHoldings(owner, h);
+  // Not bought for real: its agent's buy is taken back too (Real mode shows only trades made with
+  // real money). Then, once its agent holds nothing else (a stop sells what it holds, and that was
+  // bought for real): "pause" = paused for the rest of the day, "stop" = stopped. "halt" = it is not
+  // running, so its agent is stopped.
+  const skip = async (why: string, then?: "pause" | "stop" | "halt", reason = cap(why)) => {
+    if (h[ev.positionId]?.status !== "open") {
+      h[ev.positionId] = { positionId: ev.positionId, mint: ev.mint ?? "", symbol: ev.symbol, raw: "0", costUsd: 0, at: Date.now(), status: "failed", error: why };
+      await putHoldings(owner, h);
+    } // (else this buy added to a trade bought for real before: that one stays)
     await note(owner, `skipped buying ${ev.symbol}: ${why}`, { positionId: ev.positionId });
+    const holds = await engine.withAccount(shadow(owner), async () => {
+      engine.voidBuy(ev.positionId, ev.usd, why);
+      await engine.flush();
+      return engine.getState().positions.filter((p) => p.source === "bot").length;
+    }).catch((e) => { console.error("[autopilot] taking back a buy:", e?.message ?? e); return 1; });
+    if (then === "halt") inBackground(haltAgent(owner, reason));
+    else if (then && holds === 0 && s.on) {
+      // Written at once (no buy is copied from here on); its agent is stopped on its own.
+      const pause = then === "pause";
+      await putSettings(owner, pause ? { ...s, pausedDay: today(), stopReason: reason } : { ...s, on: false, stoppedAt: Date.now(), stopReason: reason, pausedDay: undefined });
+      await audit(owner, pause ? "autopilot.pause" : "autopilot.stop", `Real auto-pilot ${pause ? "paused for today" : "stopped"}: ${reason}`, { reason });
+      inBackground(haltAgent(owner, reason));
+    }
     return null;
   };
-  if (!autopilotConfig().on) return skip(autopilotConfig().reason!);
-  if (!s.on || s.pausedDay === today()) return skip("it is not running");
+  if (!autopilotConfig().on) return skip(autopilotConfig().reason!, "stop");
+  if (!s.on || s.pausedDay === today()) return skip("it is not running", "halt");
   if (ev.chain !== "solana" || !ev.mint || !moonwallet.ADDRESS.solana.test(ev.mint)) return skip("only Solana coins are traded");
   const user = await store().kvGet<{ tradeMode?: string }>(`user:${owner}`);
-  if (user?.tradeMode !== "real") return skip("your account is in Paper mode");
+  if (user?.tradeMode !== "real") return skip("your account is in Paper mode", "stop");
   const signer = await usableSigner(owner);
   const wallet = await moonwallet.myWallet(owner);
-  if (!signer || !wallet || signer.address !== wallet.address) return skip("automatic trading is not allowed (or the permission ended)");
-  if (signer.expiresAt < Date.now() + 3_600_000) return skip("the permission ends within the hour: allow it again to keep trading");
+  if (!signer || !wallet || signer.address !== wallet.address) return skip("automatic trading is not allowed (or the permission ended)", "stop");
+  if (signer.expiresAt < Date.now() + 3_600_000) return skip("the permission ends within the hour: allow it again to keep trading", "stop");
   const d = await day(owner);
-  if (d.pnl <= -s.limits.dailyLossUsd) return skip(`today's loss limit ($${s.limits.dailyLossUsd}) is reached`);
-  if (d.sigs + 2 > dailySignatures()) return skip(`MoonPay's ${dailySignatures()} signatures for today are used up (a buy keeps one for its sale)`);
-  const usd = Math.floor(Math.min(s.limits.perTradeUsd, s.limits.dailySpendUsd - d.spent, ev.usd) * 100) / 100;
-  if (!(usd >= 1)) return skip(`today's spending limit ($${s.limits.dailySpendUsd}) is used up`);
+  if (d.pnl <= -s.limits.dailyLossUsd) return skip(`today's loss limit ($${s.limits.dailyLossUsd}) is reached`, "pause");
+  if (d.sigs + 2 > dailySignatures()) return skip(`MoonPay's ${dailySignatures()} signatures for today are used up (a buy keeps one for its sale)`, "pause");
+  let usd = Math.floor(Math.min(s.limits.perTradeUsd, s.limits.dailySpendUsd - d.spent, ev.usd) * 100) / 100;
+  if (!(usd >= MIN_BUY_USD)) return skip(`today's spending limit ($${s.limits.dailySpendUsd}) is used up`, "pause");
+  // What the wallet holds: a buy is never more than it can pay (2% kept back for price moves), and
+  // it pays with SOL, else USDC. (Balance unknown: the quote checks it.)
+  let pay: live.Pay | null = null;
+  const money = await live.spendableUsd(wallet.address).catch(() => null);
+  if (money) {
+    const room = (x: number) => Math.floor(x * 0.98 * 100) / 100;
+    if (Math.max(room(money.sol), room(money.usdc)) < MIN_BUY_USD) return skip(NO_MONEY, "stop", `${cap(NO_MONEY)}. Add money to it, then start it again.`);
+    usd = Math.min(usd, Math.max(room(money.sol), room(money.usdc)));
+    pay = room(money.sol) >= usd ? "SOL" : "USDC";
+  }
   const u = await realUser(owner, wallet.address);
   try {
     let q: Awaited<ReturnType<typeof live.realQuote>>;
     try {
-      q = await live.realQuote(u, { side: "BUY", pay: "SOL", mint: ev.mint, symbol: ev.symbol, usd });
+      q = await live.realQuote(u, { side: "BUY", pay: pay ?? "SOL", mint: ev.mint, symbol: ev.symbol, usd });
     } catch (e: any) {
-      if (!/Not enough SOL/.test(String(e?.message))) throw e;
+      if (pay || !/Not enough SOL/.test(String(e?.message))) throw e;
       q = await live.realQuote(u, { side: "BUY", pay: "USDC", mint: ev.mint, symbol: ev.symbol, usd }); // pays with USDC when there is not enough SOL
     }
     const signed = await signWith(owner, signer, q.transaction, d);
@@ -372,7 +423,10 @@ async function copyBuy(owner: string, ev: engine.MirrorEvent) {
     const spent = t.usd ?? usd;
     Object.assign(d, { spent: d.spent + spent, buys: d.buys + 1 });
     await putDay(owner, d);
-    h[ev.positionId] = { positionId: ev.positionId, mint: ev.mint, symbol: ev.symbol, raw: t.outRaw, costUsd: spent, at: Date.now(), status: "open" };
+    const had = h[ev.positionId]?.status === "open" ? h[ev.positionId] : null; // (its agent added to a trade: both buys are held)
+    h[ev.positionId] = had
+      ? { ...had, raw: (BigInt(had.raw) + BigInt(t.outRaw)).toString(), costUsd: had.costUsd + spent }
+      : { positionId: ev.positionId, mint: ev.mint, symbol: ev.symbol, raw: t.outRaw, costUsd: spent, at: Date.now(), status: "open" };
     await putHoldings(owner, h);
     return t;
   } catch (e: any) {
@@ -431,7 +485,7 @@ async function sellHolding(owner: string, h: Record<string, Holding>, mine: Hold
       // stopped and what it still holds is sold (not awaited from inside its own queue).
       const why = `today's loss reached $${(-d.pnl).toFixed(2)} (your limit is $${s.limits.dailyLossUsd})`;
       await putSettings(owner, { ...s, pausedDay: today(), stopReason: why });
-      void stop(owner, why, undefined, true).catch((e) => console.error("[autopilot] pause:", e));
+      inBackground(stop(owner, why, undefined, true));
     }
     return t;
   } catch (e: any) {
