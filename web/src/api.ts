@@ -226,7 +226,12 @@ export const api = {
   buyLink: (id: string, transactionId: string) => req<{ ok: boolean; status: TxStatus | null }>("/moonpay/buy/link", { id, transactionId }),
   status: () => req<Status>("/status"),
   search: (q: string) => req<PairInfo[]>(`/search?q=${encodeURIComponent(q)}`),
-  realQuote: (b: { side: "BUY" | "SELL"; pay: "SOL" | "USDC"; mint: string; symbol: string; usd?: number; pct?: number }) => req<RealQuote>("/real/quote", b),
+  realQuote: (b: { side: "BUY" | "SELL"; pay: "SOL" | "USDC"; mint: string; symbol: string; usd?: number; pct?: number; slippageBps?: number }) => req<RealQuote>("/real/quote", b),
+  realFees: () => req<{ bps: number; note: string }>("/real/fees"),
+  sendSolanaQuote: (b: { mint: string; symbol?: string; to: string; amount: string }) => req<{ requestId: string; transaction: string; wallet: string; to: string; symbol: string; amount: number; networkFeeSol: number; createsAccount: boolean; expiresAt: number }>("/wallet/send/solana/quote", b),
+  sendSolanaExecute: (b: { requestId: string; signedTransaction: string }) => req<{ status: "completed" | "failed" | "pending"; signature: string | null; error: string | null }>("/wallet/send/solana/execute", b),
+  sendTronBuild: (b: { asset: "TRX" | "USDT"; to: string; amount: string }) => req<{ transaction: unknown; wallet: string; to: string; asset: string; amount: number }>("/wallet/send/tron/build", b),
+  sendRecord: (b: { chain: "ethereum" | "tron"; hash: string; chainId?: number; to?: string; amount?: number; asset?: string }) => req<{ recorded: boolean }>("/wallet/send/record", b),
   realExecute: (b: { requestId: string; signedTransaction: string }) => req<RealTrade>("/real/execute", b),
   // The wallet real trades come from (the MoonPay wallet on file) and its balances.
   realWallet: (fresh = false) => req<WalletView & { via: "moonpay" | null }>(`/real/wallet${fresh ? "?fresh=1" : ""}`),

@@ -2,7 +2,9 @@
 // Apple Pay on the app's own screen, and every real-money transaction in a table.
 // Everything shown comes from the server, which records only what MoonPay itself confirms: no
 // price, fee or "paid" is ever made up here.
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { MoonPaySigner } from "./Account";
+import { WalletActionsContext, type CashOutChain } from "./walletActions";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import { ChainLogo, type LogoId } from "./ChainLogo";
@@ -93,7 +95,7 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
   const left = of("ethereum");
   const right = (["solana", "bitcoin", "tron"] as WalletChain[]).map(of).filter((w): w is ChainWallet => !!w);
   const missing = WALLET_KINDS.filter((k) => !of(k));
-  const card = (w: ChainWallet) => <WalletCard key={w.chain} w={w} rows={bal?.balances[w.chain]} sandbox={sandbox} notify={notify} onDeposit={() => setDeposit(w)} />;
+  const card = (w: ChainWallet) => <WalletCard key={w.chain} w={w} rows={bal?.balances[w.chain]} sandbox={sandbox} notify={notify} onDeposit={() => setDeposit(w)} onSent={() => setTimeout(() => void loadBal(true), 3000)} />;
   const empty = bal !== null && bal.totalUsd === 0 && bal.complete;
   return (
     <div className="wallet-tab">
@@ -105,7 +107,7 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
         </div>
         <div className="wl-protect">
           <ShieldIcon />
-          <div>Protected by your email sign-in.<br />Read-only access — this app can never move your funds.</div>
+          <div>Protected by your email sign-in.<br />Only you can move your funds: you sign every transfer.</div>
         </div>
         <div className="wallet-actions">
           <button className="btn buy" onClick={toBuy}>Buy</button>
@@ -124,7 +126,21 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
 }
 // One wallet: its mark, name, short address (copy; QR opens Deposit), Deposit, and what it holds on
 // each network it works on.
-function WalletCard({ w, rows, sandbox, notify, onDeposit }: { w: ChainWallet; rows: BalanceRow[] | undefined; sandbox: boolean; notify: Notify; onDeposit: () => void }) {
+function WalletCard({ w, rows, sandbox, notify, onDeposit, onSent }: { w: ChainWallet; rows: BalanceRow[] | undefined; sandbox: boolean; notify: Notify; onDeposit: () => void; onSent: () => void }) {
+  const actions = useContext(WalletActionsContext);
+  const [sending, setSending] = useState(false);
+  // (Bitcoin: MoonPay's kit can't send or cash out from here yet.)
+  const canMove = w.chain !== "bitcoin";
+  const withdraw = async () => {
+    if (!actions) return notify("Wallets are not loaded in this browser. Reload the page.", true);
+    if (!actions.signedIn) { actions.signIn(); return notify("Sign in with your email in the window that opened, then press Withdraw again.", true); }
+    try {
+      await actions.cashOut(w.chain as CashOutChain, w.address);
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      notify(/not (enabled|configured|available)|offramp|off-ramp|cash.?out/i.test(msg) ? "Withdrawing to a bank isn't switched on for this app yet." : msg, true);
+    }
+  };
   const info = CHAIN_INFO[w.chain];
   const label = (r: BalanceRow) =>
     w.chain === "solana" ? (r.test || sandbox ? "Solana Devnet · Testnet" : "Solana Mainnet")
@@ -154,7 +170,11 @@ function WalletCard({ w, rows, sandbox, notify, onDeposit }: { w: ChainWallet; r
             <button onClick={onDeposit} title="Show the QR code" aria-label="Show the QR code"><QrIcon /></button>
           </span>
         </div>
-        <button className="btn ghost small wc-deposit" onClick={onDeposit}>Deposit</button>
+        <div className="wc-buttons">
+          <button className="btn ghost small wc-deposit" onClick={onDeposit}>Deposit</button>
+          {canMove && <button className="btn ghost small wc-deposit" onClick={() => setSending(true)}>Send</button>}
+          {canMove && <button className="btn ghost small wc-deposit" onClick={() => void withdraw()} title="Sell to your bank account or card">Withdraw</button>}
+        </div>
       </div>
       <div className="wc-rows">
         {rows === undefined ? <span className="muted tiny">Reading balances…</span> : <>
@@ -163,9 +183,188 @@ function WalletCard({ w, rows, sandbox, notify, onDeposit }: { w: ChainWallet; r
           {test.map(line)}
         </>}
       </div>
+      {sending && <SendModal w={w} rows={rows} sandbox={sandbox} onClose={() => setSending(false)} onSent={onSent} />}
     </div>
   );
 }
+// ---------- Sending to another wallet, and withdrawing ----------
+// The networks the Ethereum wallet can send its own coin on (the same as server/src/send.ts).
+const EVM_NETS = [
+  { chainId: 1, name: "Ethereum", symbol: "ETH", rpc: "https://ethereum-rpc.publicnode.com", explorer: "https://etherscan.io/tx/" },
+  { chainId: 56, name: "BNB Chain", symbol: "BNB", rpc: "https://bsc-rpc.publicnode.com", explorer: "https://bscscan.com/tx/" },
+  { chainId: 8453, name: "Base", symbol: "ETH", rpc: "https://base-rpc.publicnode.com", explorer: "https://basescan.org/tx/" },
+  { chainId: 137, name: "Polygon", symbol: "POL", rpc: "https://polygon-bor-rpc.publicnode.com", explorer: "https://polygonscan.com/tx/" },
+  { chainId: 42161, name: "Arbitrum", symbol: "ETH", rpc: "https://arbitrum-one-rpc.publicnode.com", explorer: "https://arbiscan.io/tx/" },
+  { chainId: 10, name: "Optimism", symbol: "ETH", rpc: "https://optimism-rpc.publicnode.com", explorer: "https://optimistic.etherscan.io/tx/" },
+  { chainId: 43114, name: "Avalanche", symbol: "AVAX", rpc: "https://avalanche-c-chain-rpc.publicnode.com", explorer: "https://snowtrace.io/tx/" },
+];
+const SEPOLIA = { chainId: 11155111, name: "Sepolia (test)", symbol: "ETH", rpc: "https://ethereum-sepolia-rpc.publicnode.com", explorer: "https://sepolia.etherscan.io/tx/" };
+const isAddress: Record<WalletChain, RegExp> = { solana: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/, ethereum: /^0x[0-9a-fA-F]{40}$/, bitcoin: /^(bc1|tb1|[13mn2])/, tron: /^T[1-9A-HJ-NP-Za-km-z]{33}$/ };
+// A decimal amount in a coin's smallest units, exactly (as the server reads it).
+function weiOf(amount: string, decimals: number): bigint {
+  const [w, f = ""] = amount.trim().split(".");
+  return BigInt(w || "0") * 10n ** BigInt(decimals) + BigInt((f + "0".repeat(decimals)).slice(0, decimals) || "0");
+}
+const b64ToBytes = (b: string) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
+const bytesToB64 = (u: Uint8Array) => {
+  let s = "";
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+
+type Asset = { id: string; symbol: string; balance: number | null; decimals: number; chainId?: number };
+function SendModal({ w, rows, sandbox, onClose, onSent }: { w: ChainWallet; rows: BalanceRow[] | undefined; sandbox: boolean; onClose: () => void; onSent: () => void }) {
+  const actions = useContext(WalletActionsContext);
+  const solSigner = useContext(MoonPaySigner);
+  const info = CHAIN_INFO[w.chain];
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [asset, setAsset] = useState("");
+  const [to, setTo] = useState("");
+  const [amount, setAmount] = useState("");
+  const [step, setStep] = useState<"form" | "review" | "sending" | "done">("form");
+  const [err, setErr] = useState("");
+  const [result, setResult] = useState<{ ok: boolean; text: string; link?: string } | null>(null);
+  const [solQuote, setSolQuote] = useState<Awaited<ReturnType<typeof api.sendSolanaQuote>> | null>(null);
+  useEffect(() => {
+    const bal = (net: string, sym: string) => rows?.find((r) => r.network === net && r.symbol === sym)?.amount ?? null;
+    if (w.chain === "solana") {
+      api.realWallet().then((v) => {
+        const list: Asset[] = v.holdings.filter((h) => h.amount > 0).map((h) => ({ id: h.symbol === "SOL" && h.mint.startsWith("So1111") ? "SOL" : h.mint, symbol: h.symbol, balance: h.amount, decimals: h.symbol === "SOL" ? 9 : 6 }));
+        if (!list.some((a) => a.id === "SOL")) list.unshift({ id: "SOL", symbol: "SOL", balance: 0, decimals: 9 });
+        setAssets(list);
+        setAsset("SOL");
+      }).catch(() => { setAssets([{ id: "SOL", symbol: "SOL", balance: null, decimals: 9 }]); setAsset("SOL"); });
+    } else if (w.chain === "ethereum") {
+      const nets = sandbox ? [...EVM_NETS, SEPOLIA] : EVM_NETS;
+      setAssets(nets.map((n) => ({ id: String(n.chainId), symbol: n.symbol, balance: bal(n.chainId === SEPOLIA.chainId ? "Ethereum test network (Sepolia)" : n.name, n.symbol), decimals: 18, chainId: n.chainId })));
+      setAsset("1");
+    } else if (w.chain === "tron") {
+      setAssets([{ id: "TRX", symbol: "TRX", balance: bal("Tron", "TRX"), decimals: 6 }, { id: "USDT", symbol: "USDT", balance: bal("Tron", "USDT"), decimals: 6 }]);
+      setAsset("TRX");
+    }
+  }, [w.chain]); // eslint-disable-line react-hooks/exhaustive-deps
+  const a = assets.find((x) => x.id === asset);
+  const net = w.chain === "ethereum" ? [...EVM_NETS, SEPOLIA].find((n) => String(n.chainId) === asset) : null;
+  const where = net ? net.name : info.networks;
+  const amountOk = /^\d+(\.\d+)?$/.test(amount.trim()) && Number(amount) > 0;
+  const tooMuch = a?.balance != null && amountOk && Number(amount) > a.balance;
+  const toOk = isAddress[w.chain].test(to.trim()) && to.trim() !== w.address;
+  const problem = !to ? "Enter the address to send to" : !toOk ? (to.trim() === w.address ? "That is this wallet's own address" : `That is not ${/^[AEIOU]/.test(where) ? "an" : "a"} ${where} address`) : !amountOk ? "Enter an amount" : tooMuch ? `You have ${a!.balance} ${a!.symbol}` : "";
+  const maxOf = () => {
+    if (a?.balance == null) return;
+    const keep = a.id === "SOL" ? 0.00001 : a.id === "TRX" ? 1.1 : w.chain === "ethereum" ? -1 : 0; // network fees
+    if (keep < 0) return;
+    setAmount(String(Math.max(0, Math.floor((a.balance - keep) * 10 ** Math.min(a.decimals, 9)) / 10 ** Math.min(a.decimals, 9))));
+  };
+
+  const review = async () => {
+    setErr("");
+    if (problem) return setErr(problem);
+    if (w.chain === "solana") {
+      try {
+        setSolQuote(await api.sendSolanaQuote({ mint: asset, symbol: a?.symbol, to: to.trim(), amount: amount.trim() }));
+      } catch (e: any) {
+        return setErr(e.message);
+      }
+    }
+    setStep("review");
+  };
+  const sendNow = async () => {
+    setErr("");
+    setStep("sending");
+    try {
+      if (w.chain === "solana") {
+        if (!solQuote) throw new Error("Review it again.");
+        if (!solSigner || !solSigner.addresses.includes(solQuote.wallet)) throw new Error("Sign in again (your email) to sign with your Solana wallet.");
+        const signed = await solSigner.sign(solQuote.wallet, b64ToBytes(solQuote.transaction));
+        const r = await api.sendSolanaExecute({ requestId: solQuote.requestId, signedTransaction: bytesToB64(signed) });
+        setResult({ ok: r.status !== "failed", text: r.status === "failed" ? `Not sent: ${r.error}` : r.status === "pending" ? "Sent. The network is still confirming it." : `Sent ${solQuote.amount} ${solQuote.symbol}.`, link: r.signature ? `https://solscan.io/tx/${r.signature}` : undefined });
+      } else if (w.chain === "ethereum") {
+        if (!actions) throw new Error("Wallets are not loaded in this browser. Reload the page.");
+        if (!actions.signedIn) { actions.signIn(); throw new Error("Sign in with your email in the window that opened, then send again."); }
+        const hash = await actions.sendEvm(w.address, { to: to.trim(), valueWei: weiOf(amount, 18).toString(), chainId: net!.chainId, rpcUrl: net!.rpc });
+        await api.sendRecord({ chain: "ethereum", chainId: net!.chainId, hash }).catch(() => null);
+        setResult({ ok: true, text: `Sent ${amount} ${net!.symbol} on ${net!.name}.`, link: net!.explorer + hash });
+      } else if (w.chain === "tron") {
+        if (!actions) throw new Error("Wallets are not loaded in this browser. Reload the page.");
+        if (!actions.signedIn) { actions.signIn(); throw new Error("Sign in with your email in the window that opened, then send again."); }
+        const b = await api.sendTronBuild({ asset: asset as "TRX" | "USDT", to: to.trim(), amount: amount.trim() });
+        const txid = await actions.sendTron(w.address, b.transaction);
+        await api.sendRecord({ chain: "tron", hash: txid, to: b.to, amount: b.amount, asset: b.asset }).catch(() => null);
+        setResult({ ok: true, text: `Sent ${b.amount} ${b.asset} on Tron.`, link: `https://tronscan.org/#/transaction/${txid}` });
+      }
+      setStep("done");
+      onSent();
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      setErr(/reject|cancel|denied|closed/i.test(msg) ? "You cancelled the signature. Nothing was sent." : msg);
+      setStep("review");
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop on-top">
+      <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="send-title">
+        <div className="modal-head">
+          <h2 id="send-title">Send from your {info.name} wallet</h2>
+          <button className="modal-close" onClick={onClose} aria-label="Close" title="Close">✕</button>
+        </div>
+        <div className="modal-body send-body">
+          {step === "form" && (
+            <>
+              <label className="send-field">{w.chain === "ethereum" ? "Network" : "Coin"}
+                <select value={asset} onChange={(e) => { setAsset(e.target.value); setErr(""); }}>
+                  {assets.map((x) => <option key={x.id} value={x.id}>{w.chain === "ethereum" ? `${EVM_NETS.concat(SEPOLIA).find((n) => String(n.chainId) === x.id)?.name} · ${x.symbol}` : x.symbol}{x.balance != null ? ` (${x.balance} available)` : ""}</option>)}
+                </select>
+              </label>
+              <label className="send-field">To address
+                <input value={to} onChange={(e) => { setTo(e.target.value); setErr(""); }} placeholder={w.chain === "ethereum" ? "0x…" : w.chain === "tron" ? "T…" : "Solana address"} spellCheck={false} autoComplete="off" />
+              </label>
+              <label className="send-field">Amount
+                <span className="send-amount">
+                  <input inputMode="decimal" value={amount} onChange={(e) => { setAmount(e.target.value.replace(/[^0-9.]/g, "")); setErr(""); }} placeholder="0.00" />
+                  <b>{a?.symbol}</b>
+                  {w.chain !== "ethereum" && a?.balance != null && <button className="link-btn tiny" onClick={maxOf}>Max</button>}
+                </span>
+              </label>
+              <ul className="small deposit-notes">
+                <li><b>Only to {/^[AEIOU]/.test(where) ? "an" : "a"} {where} address.</b> Sending to an address on another network can lose the money, and a transfer can't be undone.</li>
+                <li>A network fee is paid from this wallet{w.chain === "ethereum" ? ` in ${net?.symbol ?? "ETH"}` : w.chain === "tron" ? " in TRX" : " in SOL"}.</li>
+              </ul>
+              {err && <p className="down small" role="alert">{err}</p>}
+              <button className="btn buy wide" onClick={() => void review()} disabled={!!problem}>{problem || "Review"}</button>
+            </>
+          )}
+          {(step === "review" || step === "sending") && (
+            <>
+              <div className="real-review">
+                <div className="real-line"><span className="muted">Send</span><b>{w.chain === "solana" && solQuote ? `${solQuote.amount} ${solQuote.symbol}` : `${amount} ${a?.symbol}`}</b></div>
+                <div className="real-line"><span className="muted">On</span><span>{where}</span></div>
+                <div className="real-line"><span className="muted">To</span><span className="mono send-to">{to.trim()}</span></div>
+                {w.chain === "solana" && solQuote && <div className="real-line"><span className="muted">Network fee</span><span>~{solQuote.networkFeeSol.toFixed(6)} SOL{solQuote.createsAccount ? " (opens the receiver's account for this coin)" : ""}</span></div>}
+              </div>
+              <p className="muted tiny">Check the address: a transfer can't be undone. You sign it in the signing window.</p>
+              {err && <p className="down small" role="alert">{err}</p>}
+              <div className="row-btns">
+                <button className="btn ghost" onClick={() => { setStep("form"); setErr(""); }} disabled={step === "sending"}>Back</button>
+                <button className="btn sell" onClick={() => void sendNow()} disabled={step === "sending"}>{step === "sending" ? "Approve in the popup…" : "Send"}</button>
+              </div>
+            </>
+          )}
+          {step === "done" && result && (
+            <>
+              <p className={result.ok ? "up" : "down"}>{result.text}</p>
+              {result.link && <a href={result.link} target="_blank" rel="noopener noreferrer">View on the network ↗</a>}
+              <button className="btn ghost wide" onClick={onClose}>Close</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // Receiving crypto from an exchange or another wallet: the wallet's address, with a QR code, and the
 // networks it works on (sending on another network can lose the money).
 function DepositModal({ wallet, sandbox, onClose, notify }: { wallet: ChainWallet; sandbox: boolean; onClose: () => void; notify: Notify }) {
@@ -273,7 +472,7 @@ function BuyTab({ view, toWallet, toHistory }: { view: MoonWalletView | null; to
         </label>
         {payWith !== "card" && <p className="muted tiny">{payWith === "apple_pay" ? "Apple Pay works in Safari on iPhone and Mac. " : ""}It opens in MoonPay's own tab; this window shows how it is going.</p>}
         {amountProblem && <p className="down small">{amountProblem}</p>}
-        <p className="muted tiny">MoonPay shows the exact amount you get, its fee and the network fee before you pay. Nothing is charged until you confirm there.</p>
+        <p className="muted tiny">You see the exact amount you get before you pay, fees included. Nothing is charged until you confirm.</p>
         <button className="btn buy wide" disabled={busy || !!amountProblem || !amount || !fiat || !asset} onClick={() => void go()}>{busy ? "Preparing…" : "Continue to MoonPay"}</button>
         {msg && <p className={`small ${msg.bad ? "down" : "up"}`}>{msg.text}</p>}
       </div>
@@ -380,7 +579,9 @@ function TxDetail({ id, notify, sandbox }: { id: string; notify: Notify; sandbox
   if (err) return <p className="down small">{err}</p>;
   if (!d) return <p className="muted small">Loading…</p>;
   const t = d.tx, cur = t.fiatCurrency ?? "usd";
-  const fees: [string, number | null][] = [["MoonPay Fee", t.feeAmount], ["Network Fee", t.networkFeeAmount], ["Ecosystem Fee", t.extraFeeAmount]];
+  // One figure for all the fees of a purchase (they are already taken from what was received).
+  const parts = [t.feeAmount, t.networkFeeAmount, t.extraFeeAmount].filter((v): v is number => typeof v === "number");
+  const fees: [string, number | null][] = [["Fees", parts.length ? parts.reduce((a, b) => a + b, 0) : null]];
   const explorer = t.txHash ? explorerTx(t.network, t.txHash, sandbox) : null;
   return (
     <div className="mp-detail small">

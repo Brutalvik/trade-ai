@@ -15,6 +15,7 @@ import * as history from "./audit.js";
 import { logHistory } from "./botlog.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
+import * as send from "./send.js";
 import * as moonpay from "./moonpay.js";
 import * as moonwallet from "./moonwallet.js";
 import { balances as chainBalances, totalUsd as chainTotal } from "./chainbal.js";
@@ -244,6 +245,26 @@ app.get("/api/real/wallet", signedIn(async (req, res) => {
   } catch (e: any) {
     res.status(502).json({ error: e?.message ?? String(e), address: w.address, via: w.via });
   }
+}));
+// Sending crypto from the customer's own wallets (send.ts): built here, signed by them in the browser.
+const walletRoute = (fn: (a: Signed, req: Request) => Promise<unknown>) => signedIn(async (req, res) => {
+  try {
+    if (!moonwallet.moonxStatus().on) throw new Error("Wallets are not switched on.");
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await fn((await auth.requestAuth(req))!, req));
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message ?? String(e) });
+  }
+});
+app.post("/api/wallet/send/solana/quote", walletRoute((a, req) => send.solanaQuote(a.key, req.body)));
+app.post("/api/wallet/send/solana/execute", walletRoute((a, req) => send.solanaExecute(a.key, req.body)));
+app.post("/api/wallet/send/tron/build", walletRoute((a, req) => send.tronBuild(a.key, req.body)));
+app.post("/api/wallet/send/record", walletRoute((a, req) => send.recordSent(a.key, req.body)));
+// The platform fee the next real trade pays, from the customer's plan (shown before they review it).
+app.get("/api/real/fees", signedIn(async (req, res) => {
+  const a = (await auth.requestAuth(req))!;
+  res.setHeader("Cache-Control", "no-store");
+  res.json(await live.platformFee(a.key, a.plan));
 }));
 app.post("/api/real/quote", needs("trade.manual", async (req, res) => {
   try {

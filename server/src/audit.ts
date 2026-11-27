@@ -20,6 +20,8 @@ export type AuditType =
   | "order.cancel"
   | "trade.protect"
   | "trade.real" // a real swap from the user's own wallet (signature on-chain)
+  | "wallet.send" // crypto sent from the customer's own wallet to another address
+  | "wallet.send_failed"
   | "trade.real_failed"
   | "account.signup"
   | "account.signin"

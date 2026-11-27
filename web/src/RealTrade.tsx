@@ -17,6 +17,15 @@ const bytesToB64 = (u: Uint8Array) => {
 };
 export const solscanTx = (sig: string) => `https://solscan.io/tx/${sig}`;
 
+// Slippage: how far the price may move against you before the trade is refused. "Auto" lets
+// Jupiter set it from how volatile the coin is. Kept in this browser.
+const SLIP_KEY = "real-slippage-bps";
+const SLIPS = [50, 100, 300];
+const readSlip = (): number | "auto" => {
+  const v = Number(localStorage.getItem(SLIP_KEY));
+  return v >= 1 && v <= 1000 ? v : "auto";
+};
+
 export function RealTradePanel({ pair, notify }: { pair: PairInfo | null; notify: (m: string, bad?: boolean) => void }) {
   const moonpay = useContext(MoonPaySigner);
   if (!moonpay) return <RealShell><p className="muted small">Real trading needs MoonPay sign-in, which isn't switched on yet.</p></RealShell>;
@@ -46,6 +55,16 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
   const [done, setDone] = useState<RealTrade | null>(null);
   const [now, setNow] = useState(Date.now());
   const [maxUsd, setMaxUsd] = useState(100); // the server's per-trade cap (REAL_MAX_TRADE_USD)
+  const [slip, setSlipState] = useState<number | "auto">(readSlip);
+  const [custom, setCustom] = useState(() => (typeof readSlip() === "number" && !SLIPS.includes(readSlip() as number) ? String((readSlip() as number) / 100) : ""));
+  const [fee, setFee] = useState<{ bps: number; note: string } | null>(null);
+  const setSlip = (v: number | "auto") => {
+    setSlipState(v);
+    if (v === "auto") localStorage.removeItem(SLIP_KEY);
+    else localStorage.setItem(SLIP_KEY, String(v));
+  };
+  const loadFee = () => api.realFees().then(setFee).catch(() => setFee(null));
+  useEffect(() => { void loadFee(); }, [me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadWallet = (fresh = false) => api.realWallet(fresh).then(setWallet).catch(() => {});
   useEffect(() => { void loadWallet(); }, [me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -67,7 +86,8 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
     setDone(null);
     setBusy("quote");
     try {
-      const q = await api.realQuote(tab === "buy" ? { side: "BUY", pay, mint: pair.tokenAddress, symbol: pair.symbol, usd: Number(usd) } : { side: "SELL", pay, mint: pair.tokenAddress, symbol: pair.symbol, pct });
+      const slippage = slip === "auto" ? {} : { slippageBps: slip };
+      const q = await api.realQuote(tab === "buy" ? { side: "BUY", pay, mint: pair.tokenAddress, symbol: pair.symbol, usd: Number(usd), ...slippage } : { side: "SELL", pay, mint: pair.tokenAddress, symbol: pair.symbol, pct, ...slippage });
       setQuote(q);
       setMaxUsd(q.maxTradeUsd);
       setNow(Date.now());
@@ -94,6 +114,7 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
       if (t.status === "Success") notify(`${t.side === "BUY" ? "Bought" : "Sold"} ${fmtAmt(t.side === "BUY" ? t.outAmount : t.inAmount)} ${t.symbol}`);
       else notify(`Trade failed: ${t.error ?? "unknown error"}`, true);
       setTimeout(() => void loadWallet(true), 2500);
+      void loadFee(); // (a free trade of the month may have been used)
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       setErr(/reject|cancel|denied|closed/i.test(msg) ? "You cancelled the signature. Nothing was traded." : msg);
@@ -147,6 +168,22 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
               </div>
             </>
           )}
+          <div className="slip-row" role="radiogroup" aria-label="Max slippage">
+            <span className="muted tiny">Slippage</span>
+            <button role="radio" aria-checked={slip === "auto"} className={`chip ${slip === "auto" ? "on" : ""}`} onClick={() => { setSlip("auto"); setCustom(""); }} title="Jupiter sets it from how volatile the coin is">Auto</button>
+            {SLIPS.map((b) => <button key={b} role="radio" aria-checked={slip === b} className={`chip ${slip === b ? "on" : ""}`} onClick={() => { setSlip(b); setCustom(""); }}>{b / 100}%</button>)}
+            <span className={`slip-custom ${custom ? "on" : ""}`}>
+              <input inputMode="decimal" placeholder="Custom" value={custom} aria-label="Custom slippage in percent" onChange={(e) => {
+                const v = e.target.value.replace(/[^0-9.]/g, "").slice(0, 4);
+                setCustom(v);
+                const bps = Math.round(Number(v) * 100);
+                if (bps >= 1 && bps <= 1000) setSlip(bps);
+                else if (!v) setSlip("auto");
+              }} />%
+            </span>
+          </div>
+          {Number(custom) > 10 && <p className="down tiny">Slippage can be at most 10%.</p>}
+          <p className="muted tiny fee-line">Fee: {fee ? fee.note : "…"} · plus the Solana network fee.</p>
           {err && <p className="down small" role="alert">{err}</p>}
           <button className={`btn ${tab === "buy" ? "buy" : "sell"} wide`} disabled={!!busy || (tab === "sell" && !tokenH)} onClick={() => void review()}>
             {busy === "quote" ? "Getting a price…" : `Review ${tab === "buy" ? "buy" : "sell"}`}
@@ -159,8 +196,9 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
           <div className="real-line"><span className="muted">You get about</span><b className="up">{fmtAmt(quote.outAmount)} {quote.outSymbol}</b></div>
           {quote.usd != null && <div className="real-line"><span className="muted">Worth about</span><span>{fmtUsd(quote.usd)}</span></div>}
           <div className="real-line"><span className="muted">Price impact</span><span className={Math.abs(quote.priceImpactPct) > 3 ? "down" : ""}>{Math.abs(quote.priceImpactPct).toFixed(2)}%</span></div>
-          {quote.slippageBps != null && <div className="real-line"><span className="muted">Max slippage</span><span className={quote.slippageBps > 500 ? "amber" : ""} title="Jupiter sets this from how volatile the coin is">{(quote.slippageBps / 100).toFixed(1)}%</span></div>}
-          <div className="real-line"><span className="muted">Fees</span><span>Swap {(quote.swapFeeBps / 100).toFixed(2)}% · {quote.platformFee.note} · network ~{quote.networkFeeSol.toFixed(6)} SOL</span></div>
+          {quote.slippageBps != null && <div className="real-line"><span className="muted">Max slippage</span><span className={quote.slippageBps > 500 ? "amber" : ""} title={slip === "auto" ? "Jupiter set this from how volatile the coin is" : "Your slippage setting"}>{(quote.slippageBps / 100).toFixed(1)}%{slip === "auto" ? " (auto)" : ""}</span></div>}
+          <div className="real-line"><span className="muted">Fees</span><span title={`Route ${(quote.swapFeeBps / 100).toFixed(2)}% · ${quote.platformFee.note} · network ~${quote.networkFeeSol.toFixed(6)} SOL`}>{((quote.swapFeeBps + quote.platformFee.bps) / 100).toFixed(2)}% + network ~{quote.networkFeeSol.toFixed(6)} SOL</span></div>
+          <p className="muted tiny">{quote.platformFee.note}. Fees are included in what you get.</p>
           {Math.abs(quote.priceImpactPct) > 3 && <p className="down small">High price impact: this coin has little liquidity, so you get noticeably less than the chart price.</p>}
           {err && <p className="down small" role="alert">{err}</p>}
           {secondsLeft === 0 ? (

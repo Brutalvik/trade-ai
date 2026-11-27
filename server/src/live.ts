@@ -69,7 +69,7 @@ async function tokenDecimals(mint: string) {
 
 // The platform fee on a real trade (Jupiter referral fee: 50-255 bps, Jupiter keeps 20% of it).
 // Off until JUP_REFERRAL_ACCOUNT is set; plan allowances of free trades apply first.
-async function platformFee(key: string, plan: PlanId): Promise<{ bps: number; note: string }> {
+export async function platformFee(key: string, plan: PlanId): Promise<{ bps: number; note: string }> {
   const p = planOf(plan);
   if (p.feePct <= 0) return { bps: 0, note: `No platform fee on ${p.name}` };
   const used = (await store.kvGet<number>(`real-count:${key}:${month()}`)) ?? 0;

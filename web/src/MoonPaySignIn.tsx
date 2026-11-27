@@ -5,7 +5,10 @@
 // Loaded only when the server has MoonPay's wallet keys (appMain.tsx): MoonPay's kit is large.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MoonXProvider, useMoonX } from "@moon-x/react-sdk";
-import { useSignTransaction, useWallets } from "@moon-x/react-sdk/solana";
+import { useCashOutWallet as useSolanaCashOut, useSignTransaction, useWallets } from "@moon-x/react-sdk/solana";
+import { useCashOutWallet as useEvmCashOut, useSendTransaction as useEvmSend, useWallets as useEvmWallets } from "@moon-x/react-sdk/ethereum";
+import { useCashOutWallet as useTronCashOut, useSendTransaction as useTronSend, useWallets as useTronWallets } from "@moon-x/react-sdk/tron";
+import { WalletActionsContext, type WalletActions } from "./walletActions";
 import "@moon-x/react-sdk/style.css";
 import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, WALLET_KINDS, type User, type WalletChain } from "./api";
 import { Avatar, MoonPaySigner, MoonPayUI, ProfileModal, SetupProfileModal, SIGNIN_PENDING, type AccountButtonProps, type TxSigner } from "./Account";
@@ -38,13 +41,49 @@ export function MoonPayRoot({ publishableKey, children }: { publishableKey: stri
       }}
     >
       <SignerBridge>
-        <MoonPayUI.Provider value={UI}>{children}</MoonPayUI.Provider>
+        <ActionsBridge>
+          <MoonPayUI.Provider value={UI}>{children}</MoonPayUI.Provider>
+        </ActionsBridge>
       </SignerBridge>
     </MoonXProvider>
   );
 }
 
 // Lets the trade screen sign with the MoonPay wallet (only the one the server names for a trade).
+// Sending on Ethereum & EVM and Tron, and cashing out, for the wallet window (MoonPay.tsx). Each
+// transfer is signed by the person in MoonPay's own window; nothing is sent without them.
+function ActionsBridge({ children }: { children: ReactNode }) {
+  const mx = useMoonX();
+  const solCash = useSolanaCashOut(), evmCash = useEvmCashOut(), tronCash = useTronCashOut();
+  const { sendTransaction: evmSend } = useEvmSend();
+  const { sendTransaction: tronSend } = useTronSend();
+  const { wallets: evm } = useEvmWallets();
+  const { wallets: tron } = useTronWallets();
+  const value = useMemo<WalletActions>(() => ({
+    signedIn: mx.ready && mx.isAuthenticated,
+    signIn: () => window.dispatchEvent(new Event(SIGNIN_EVENT)),
+    cashOut: async (chain, address) => {
+      if (!mx.isAuthenticated) throw new Error("Sign in with your email first, then try again.");
+      await (chain === "solana" ? solCash : chain === "ethereum" ? evmCash : tronCash).cashOutWallet(address);
+    },
+    sendEvm: async (address, tx) => {
+      if (!mx.isAuthenticated) throw new Error("Sign in with your email first, then try again.");
+      const w = evm.find((x) => x.public_address.toLowerCase() === address.toLowerCase());
+      if (!w) throw new Error("Your Ethereum wallet isn't open in this browser. Sign in again with your email.");
+      const r = await evmSend({ transaction: { to: tx.to, value: BigInt(tx.valueWei), chainId: tx.chainId }, wallet: w, chain: tx.chainId, rpcUrl: tx.rpcUrl });
+      return r.hash;
+    },
+    sendTron: async (address, transaction) => {
+      if (!mx.isAuthenticated) throw new Error("Sign in with your email first, then try again.");
+      const w = tron.find((x) => x.public_address === address);
+      if (!w) throw new Error("Your Tron wallet isn't open in this browser. Sign in again with your email.");
+      const r = await tronSend({ transaction: transaction as never, wallet: w, rpcUrl: "https://api.trongrid.io" });
+      return r.txid;
+    },
+  }), [mx, solCash, evmCash, tronCash, evmSend, tronSend, evm, tron]);
+  return <WalletActionsContext.Provider value={value}>{children}</WalletActionsContext.Provider>;
+}
+
 function SignerBridge({ children }: { children: ReactNode }) {
   const { wallets } = useWallets();
   const { signTransaction } = useSignTransaction();
