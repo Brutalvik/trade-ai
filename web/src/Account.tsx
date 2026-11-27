@@ -683,7 +683,7 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
         </div>
       )}
       <p className="muted tiny plans-foot">
-        {on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD. </> : <>Online payment is being set up. An admin can change your plan meanwhile. {me?.role === "admin" && bill?.reason ? bill.reason : ""} </>}
+        {on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD. </> : <>Online payment is being set up. {me?.role === "admin" && bill?.reason ? bill.reason : ""} </>}
         {bill?.canManage && <button className="link-btn tiny" onClick={() => void manage()} disabled={!!busy}>Manage billing</button>}
       </p>
       {err && !pick && <p className="down small">{err}</p>}
