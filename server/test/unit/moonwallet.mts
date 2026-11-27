@@ -26,7 +26,8 @@ expect("with both: on, in sandbox", [mw.moonxConfig().on, mw.moonxConfig().mode]
 process.env.MOONX_PUBLISHABLE_KEY = "moon_pk_01a219b0abcdef";
 expect("a wallet key with no test or live mark (as MoonPay's dashboard may issue them) counts, as a test key", [mw.moonxConfig().on, mw.moonxConfig().mode], [true, "sandbox"]);
 process.env.MOONX_PUBLISHABLE_KEY = "moon_pk_live_abc";
-check("a live key alone does not switch them on", !mw.moonxConfig().on && /MOONPAY_LIVE=yes/.test(mw.moonxConfig().reason), mw.moonxConfig().reason);
+delete process.env.MOONPAY_LIVE;
+expect("a live key switches sign-in on by itself (signing in moves no money; MOONPAY_LIVE=yes guards real payments only)", [mw.moonxConfig().on, mw.moonxConfig().mode, mw.moonxConfig().reason], [true, "live", null]);
 process.env.MOONX_PUBLISHABLE_KEY = "moon_pk_test_abc";
 
 // ---------- a Solana wallet's own signature ----------

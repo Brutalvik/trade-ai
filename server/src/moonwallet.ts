@@ -13,7 +13,9 @@
 //
 // Settings (Vercel): MOONX_PUBLISHABLE_KEY (moon_pk_test_... / moon_pk_live_...), MOONX_APP_ID (the
 // wallet app's id, from its dashboard), MOONX_ISSUER (default https://x-api.moonpay.com).
-// Live keys need MOONPAY_LIVE=yes as well.
+// A live key (moon_pk_live_) is enough on its own: signing in and making a wallet move no money.
+// MOONPAY_LIVE=yes stays the switch for real payments only (moonpay.ts); a real trade from the wallet
+// is approved by the customer in the browser and capped (REAL_MAX_TRADE_USD).
 import crypto from "node:crypto";
 import { createStore } from "./store.js";
 
@@ -37,7 +39,6 @@ export function moonxConfig() {
   if (!publishableKey.startsWith("moon_pk_")) return off("MOONX_PUBLISHABLE_KEY is not a MoonPay wallet key: it should start with moon_pk_ (Embedded Wallets dashboard, Developer, API Keys).");
   const mode = publishableKey.startsWith("moon_pk_live_") ? "live" : "sandbox";
   if (!/^[A-Za-z0-9_-]{3,80}$/.test(appId)) return off("MOONX_APP_ID (the wallet app's id, from its dashboard) is not set.");
-  if (mode === "live" && process.env.MOONPAY_LIVE?.trim().toLowerCase() !== "yes") return off("Live wallet keys are set, but MOONPAY_LIVE=yes is not.");
   return { on: true, mode, reason: null as string | null, publishableKey, appId, issuer };
 }
 export const moonxStatus = () => {
