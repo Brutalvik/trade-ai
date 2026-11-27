@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, curSymbol, fmtBig, fmtMoney, fmtPct, fmtPrice, fmtTime, fmtUsd, fromUsd, setDisplayCurrency, toUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe, type WalletView } from "./api";
+import { type FramePatterns, type MaView, type PlanId, aiText, allBots, api, SIGNIN_EVENT, UPGRADE_EVENT, curSymbol, fmtBig, fmtMoney, fmtPct, fmtPrice, fmtTime, fmtUsd, fromUsd, setDisplayCurrency, toUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe, type WalletView } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
@@ -42,6 +42,8 @@ export default function App() {
   const [me, setMe] = useState<User | null>(null);
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const [plansOpen, setPlansOpen] = useState(false);
+  // Why the Plans window opened, when a feature needs a higher plan (the server says so).
+  const [plansAsk, setPlansAsk] = useState<{ reason: string; need?: PlanId } | null>(null);
   // The user guide lives at #guide (linked from the footer, shareable; old #rules links still open it).
   const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
@@ -214,6 +216,34 @@ export default function App() {
     setToast({ msg, bad });
     setTimeout(() => setToast(null), 4000);
   }, []);
+  // A feature the plan does not include: the Plans window opens, saying why (UPGRADE_EVENT, api.ts).
+  useEffect(() => {
+    const onUpgrade = (e: Event) => {
+      const d = (e as CustomEvent<{ reason: string; need: PlanId | null }>).detail;
+      setPlansAsk({ reason: d?.reason ?? "", ...(d?.need ? { need: d.need } : {}) });
+      setPlansOpen(true);
+    };
+    window.addEventListener(UPGRADE_EVENT, onUpgrade);
+    return () => window.removeEventListener(UPGRADE_EVENT, onUpgrade);
+  }, []);
+  // Back from Stripe's page: the server asks Stripe how the payment went (not the browser).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const how = q.get("billing");
+    if (!how) return;
+    const clean = () => history.replaceState(null, "", window.location.pathname + window.location.hash);
+    const sid = q.get("session_id");
+    if (how === "done" && sid) {
+      api.billingConfirm(sid)
+        .then((b) => { void loadMe(); notify(b.subscription?.plan ? `Payment received: you are on ${({ starter: "Starter", pro: "AI Pro", max: "AI Max" } as Record<string, string>)[b.subscription.plan] ?? "your new plan"}` : "Payment received: your AI tokens are added"); })
+        .catch((e) => notify(e.message, true))
+        .finally(clean);
+    } else {
+      if (how === "cancelled") notify("Payment cancelled: nothing was charged");
+      if (how === "portal") void loadMe();
+      clean();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // The Auto-Pilot card's "Switch to Paper Mode" (Real mode): the same switch as in the profile.
   const toPaper = useCallback(() => {
     api.setTradeMode("paper").then(() => { void loadMe(); notify("Paper mode on: trades use your paper account"); }).catch((e) => notify(e.message, true));
@@ -515,7 +545,7 @@ export default function App() {
 
       <Footer />
       {toast && <div className={`toast ${toast.bad ? "bad" : ""}`}>{toast.msg}</div>}
-      {plansOpen && <PlansModal onClose={() => setPlansOpen(false)} />}
+      {plansOpen && <PlansModal ask={plansAsk} onClose={() => { setPlansOpen(false); setPlansAsk(null); }} />}
       {(hash === "#guide" || hash === "#rules") && <GuidePage plans={plans} onClose={closeRules} />}
       {adminOpen && <AdminModal onClose={() => { setAdminOpen(false); void loadMe(); }} notify={notify} />}
     </div>
@@ -1138,14 +1168,14 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
             <button className="chip" onClick={() => cancel(pending.id)}>Cancel</button>
           </div>
           <p className="muted tiny">Waiting: {pending.side === "BUY" ? "buys" : "sells"} automatically when the price {pending.side === "BUY" ? "falls" : "rises"} to {fmtPrice(pending.price)} (live {fmtPrice(live)}).</p>
-          {tab === "sell" && pos && (access.can("trade.protect") ? <ProtectControl pos={pos} notify={notify} refresh={refresh} /> : <LockChip label="Protect this trade" plan="Member" />)}
+          {tab === "sell" && pos && (access.can("trade.protect") ? <ProtectControl pos={pos} notify={notify} refresh={refresh} /> : <LockChip label="Protect this trade" plan="Starter" />)}
         </>
       ) : (
         <>
       <div className="order-row">
       <div className="kind-toggle" role="radiogroup" aria-label="Order type">
         <button role="radio" aria-checked={kind === "market"} className={kind === "market" ? "on" : ""} onClick={() => setKind("market")} title="Buy or sell now at the current price">Market</button>
-        <button role="radio" aria-checked={kind === "limit"} className={kind === "limit" ? "on" : ""} onClick={() => (access.can("trade.limit") ? setKind("limit") : access.openPlans())} title={access.can("trade.limit") ? undefined : "Limit orders are included from the Member plan"}>
+        <button role="radio" aria-checked={kind === "limit"} className={kind === "limit" ? "on" : ""} onClick={() => (access.can("trade.limit") ? setKind("limit") : access.openPlans())} title={access.can("trade.limit") ? undefined : "Limit orders are included from the Starter plan"}>
           {!access.can("trade.limit") && "🔒 "}Limit
         </button>
       </div>
@@ -1188,7 +1218,7 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
           ) : (
             <button className="btn sell wide" onClick={limitSell} disabled={!(lp > 0)}>SET LIMIT SELL</button>
           )}
-          {access.can("trade.protect") ? <ProtectControl pos={pos} notify={notify} refresh={refresh} /> : <LockChip label="Protect this trade" plan="Member" />}
+          {access.can("trade.protect") ? <ProtectControl pos={pos} notify={notify} refresh={refresh} /> : <LockChip label="Protect this trade" plan="Starter" />}
         </>
       )}
         </>

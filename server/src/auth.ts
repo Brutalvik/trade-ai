@@ -185,6 +185,39 @@ export async function addTopup(username: string, tokens: number, by?: string) {
   return { username: k, topup: next };
 }
 
+// The only way billing (billing.ts) touches an account: its plan, and AI tokens bought. Returns the
+// plan the account had before (null = no such account).
+export async function planOfUser(username: string): Promise<PlanId | null> {
+  const u = await store.kvGet<User>(userKey(String(username)));
+  return u ? planOf(u.plan).id : null;
+}
+export async function setPlanFromBilling(username: string, plan: PlanId, summary: string): Promise<{ before: PlanId; after: PlanId } | null> {
+  const u = await store.kvGet<User>(userKey(String(username)));
+  if (!u || !(plan in PLANS)) return null;
+  const before = planOf(u.plan).id;
+  if (before !== plan) {
+    await store.kvSet(userKey(u.username), { ...u, plan });
+    await audit(u.username, "billing.plan", summary, { from: before, to: plan });
+  }
+  return { before, after: plan };
+}
+export async function addTokensFromBilling(username: string, tokens: number, summary: string) {
+  const k = String(username).toLowerCase();
+  const tk = `topup:${k}`;
+  const next = ((await store.kvGet<number>(tk)) ?? 0) + Math.round(tokens);
+  await store.kvSet(tk, next);
+  await audit(k, "billing.tokens", summary, { tokens: Math.round(tokens), balance: next });
+  return next;
+}
+export async function userRecordForAccess(username: string): Promise<{ plan: PlanId; role: Role } | null> {
+  const u = await store.kvGet<User>(userKey(String(username)));
+  return u ? { plan: planOf(u.plan).id, role: u.role ?? "user" } : null;
+}
+export async function userEmail(username: string): Promise<{ email: string; name: string } | null> {
+  const u = await store.kvGet<User>(userKey(String(username)));
+  return u ? { email: u.email, name: `${u.firstName} ${u.lastName}`.trim() } : null;
+}
+
 export async function setUserAccess(username: string, plan?: string, role?: string, by?: string) {
   const u = await store.kvGet<User>(userKey(String(username)));
   if (!u) throw new Error("User not found");

@@ -26,7 +26,7 @@ import { audit } from "./audit.js";
 import * as engine from "./engine.js";
 import * as live from "./live.js";
 import * as moonwallet from "./moonwallet.js";
-import { can, type PlanId, type Role } from "./plans.js";
+import { can, firstPlanWith, UpgradeNeeded, type PlanId, type Role } from "./plans.js";
 import { prices, WSOL } from "./wallet.js";
 
 const store = () => createStore();
@@ -265,7 +265,7 @@ async function startAgent(owner: string, limits: Limits, access: Access) {
 export async function start(owner: string, access: Access, user: { tradeMode?: string }) {
   const c = autopilotConfig();
   if (!c.on) throw new Error(c.reason!);
-  if (!can(access.plan, access.role, "bot.autopick")) throw new Error("Your plan doesn't include auto-pick agents. See Plans to upgrade.");
+  if (!can(access.plan, access.role, "bot.autopick")) throw new UpgradeNeeded("The auto-pilot runs an auto-pick agent, which is included from AI Pro.", firstPlanWith("bot.autopick"));
   if (user.tradeMode !== "real") throw new Error("Switch to Real in your profile first.");
   const signer = await usableSigner(owner);
   if (!signer) throw new Error("Allow automatic trading first.");

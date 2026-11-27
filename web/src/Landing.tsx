@@ -565,20 +565,21 @@ function Pricing({ plans }: { plans: PlanInfo[] }) {
         <h2>Start free. Add AI when you're ready.</h2>
         <div className="lp-toggle" role="radiogroup" aria-label="Billing">
           <button role="radio" aria-checked={!yearly} className={!yearly ? "on" : ""} onClick={() => setYearly(false)}>Monthly</button>
-          <button role="radio" aria-checked={yearly} className={yearly ? "on" : ""} onClick={() => setYearly(true)}>Yearly <em>2 months free</em></button>
+          <button role="radio" aria-checked={yearly} className={yearly ? "on" : ""} onClick={() => setYearly(true)}>Yearly <em>1 month free</em></button>
         </div>
       </div>
       <div className="lp-price-grid">
         {(plans.length ? plans : []).map((p) => {
-          const month = yearly ? (p.priceUsd * 10) / 12 : p.priceUsd;
-          const best = p.id === "pro";
+          const month = yearly ? (p.priceUsd * 11) / 12 : p.priceUsd; // (a year is 11 months: plans.ts YEARLY_MONTHS_PAID)
+          const best = !!p.popular;
           return (
             <div key={p.id} className={`lp-price ${best ? "best" : ""}`} onPointerMove={glow}>
               {best ? <span className="lp-best">Most popular</span> : null}
               <h3>{p.name}</h3>
               <div className="lp-amount">{p.priceUsd ? <><b>${month % 1 ? month.toFixed(2) : month}</b><span>/mo</span></> : <b>Free</b>}</div>
-              <small className="muted">{p.priceUsd ? (yearly ? `$${p.priceUsd * 10} billed yearly` : "billed monthly") : "forever"}</small>
-              <ul>{perks(p).map((x) => <li key={x}>{x}</li>)}</ul>
+              <small className="muted">{p.priceUsd ? (yearly ? `$${(p.priceUsd * 11).toLocaleString()} billed yearly` : "billed monthly") : "forever"}</small>
+              <p className="muted small">{p.blurb}</p>
+              <ul>{(p.features?.length ? p.features : perks(p)).map((x) => <li key={x}>{x}</li>)}</ul>
               <a className={`lp-btn ${best ? "primary" : "ghost"}`} href={START}>{p.priceUsd ? `Choose ${p.name}` : "Start free"}</a>
             </div>
           );

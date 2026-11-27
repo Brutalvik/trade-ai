@@ -24,7 +24,8 @@ import { balances as chainBalances, totalUsd as chainTotal } from "./chainbal.js
 import * as wallettx from "./wallettx.js";
 import { searchCoins, coinList } from "./lists.js";
 import { AGENT_PASS, scanAgents } from "./agents.js";
-import { botLimit, can, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
+import { analysesFor, APP_TOKENS_PER_API_TOKEN, botLimit, can, firstPlanWith, planOf, publicPlans, TOKEN_PACKS, YEARLY_MONTHS_PAID, type Permission } from "./plans.js";
+import * as billing from "./billing.js";
 
 const app = express();
 app.use(cors());
@@ -32,6 +33,17 @@ app.use(cors());
 // MoonPay's messages about purchases (webhooks). Registered before the JSON reader: the signature
 // is checked on the exact bytes MoonPay sent. A message is saved before it is acknowledged; one
 // that could not be saved gets an error, so MoonPay sends it again (moonpay.ts).
+// Stripe's word on payments (billing.ts): signed, read raw (before JSON parsing) to check the signature.
+app.post("/api/billing/webhook", express.raw({ type: () => true, limit: "1mb" }), async (req, res) => {
+  try {
+    await engine.ensureStore();
+    const r = await billing.webhook(Buffer.isBuffer(req.body) ? req.body : Buffer.from(""), req.headers);
+    res.status(r.status).json(r.body);
+  } catch (e) {
+    console.error("[billing] webhook:", engine.shortError(e));
+    res.status(500).json({ error: "not handled; Stripe will send it again" });
+  }
+});
 app.post("/api/moonpay/webhook", express.raw({ type: () => true, limit: "1mb" }), async (req, res) => {
   try {
     await engine.ensureStore();
@@ -131,6 +143,7 @@ app.get("/api/status", async (req, res) => {
       moonpay: moonpay.publicStatus(), // on or off and why (never a key; the publishable key is public by design)
       moonpayWallets: moonwallet.moonxStatus(), // the same for MoonPay's wallets
       autopilot: autopilot.autopilotConfig(), // the real-money auto-pilot: on, or why not
+      billing: billing.billingConfig(), // plans paid by card (Stripe): on, test or live, or why not
       node: process.versions.node, // MoonPay's wallet pre-generation needs Node 22 or later
       // Only when storage isn't working: names (not values) of database settings the server can see.
       ...(engine.storeKind() === "temp" || storageError ? { storageEnvNames: storageEnvNames() } : {}),
@@ -215,7 +228,7 @@ const guard = (perm: Permission | null, fn: (req: Request, res: Response) => Pro
   if (!a) return void res.status(401).json({ error: "Sign in to use your paper account." });
   if (perm && !can(a.plan, a.role, perm))
     return void res.status(403).json(
-      perm === "admin.users" ? { error: "Only admins can do this." } : { error: `Your ${planOf(a.plan).name} plan doesn't include ${NEEDS[perm]}. See Plans to upgrade.`, upgrade: true },
+      perm === "admin.users" ? { error: "Only admins can do this." } : { error: `Your ${planOf(a.plan).name} plan doesn't include ${NEEDS[perm]}.`, upgrade: true, need: firstPlanWith(perm) },
     );
   return fn(req, res);
 };
@@ -238,6 +251,7 @@ const ap = (fn: (a: Signed, req: Request) => Promise<unknown>) => signedIn(async
     res.setHeader("Cache-Control", "no-store");
     res.json(await fn(a, req));
   } catch (e: any) {
+    if (e?.upgrade) return void res.status(403).json({ error: e.message, upgrade: true, need: e.need });
     if (res.statusCode < 400) res.status(400);
     res.json({ error: e?.message ?? String(e) });
   }
@@ -255,6 +269,33 @@ app.get("/api/autopilot/log", ap(async (a, req) => {
   const now = Date.now();
   return logHistory(autopilot.agentAccount(a.key), num(req.query.from, now - 86_400_000), num(req.query.to, now), num(req.query.limit, 500), now, req.query.only === "decisions");
 }));
+
+// ---------- Billing (billing.ts): plans and AI token packs paid by card through Stripe ----------
+app.get("/api/billing", ap((a) => billing.status(a.key)));
+app.post("/api/billing/checkout", ap((a, req) => billing.checkout(a.key, req.body ?? {})));
+app.post("/api/billing/change", ap((a, req) => billing.change(a.key, req.body ?? {})));
+app.post("/api/billing/cancel", ap((a) => billing.cancel(a.key)));
+app.post("/api/billing/resume", ap((a) => billing.resume(a.key)));
+app.post("/api/billing/portal", ap((a) => billing.portal(a.key)));
+app.post("/api/billing/pack", ap((a, req) => billing.buyPack(a.key, req.body ?? {})));
+app.post("/api/billing/confirm", ap((a, req) => billing.confirm(a.key, req.body ?? {})));
+// A smaller plan: its agents beyond the new plan's number are stopped (the newest first), and the
+// real auto-pilot (an auto-pick agent) stops if the plan no longer has auto-pick (it sells first).
+billing.onPlanChanged(async (user, _before, after) => {
+  const u = await auth.userRecordForAccess(user);
+  const role = u?.role ?? "user";
+  const limit = botLimit(after, role);
+  await engine.withAccount(user, async () => {
+    await engine.ensureMigrated();
+    await engine.sync();
+    const st = engine.getState();
+    const running = [{ id: "1", bot: st.bot }, ...(st.bots ?? [])].filter((b) => b.bot.running).sort((x, y) => Number(x.id) - Number(y.id));
+    for (const b of running.slice(Math.max(0, limit))) engine.stopBot(`Your plan changed to ${planOf(after).name}, which includes ${limit} agent${limit === 1 ? "" : "s"}`, b.id);
+    await engine.flush();
+  }, { plan: after, role });
+  if (!can(after, role, "bot.autopick") && (await autopilot.status(user).catch(() => null))?.on)
+    await autopilot.stop(user, `Your plan changed to ${planOf(after).name}, which has no auto-pick agents`, { plan: after, role });
+});
 
 // Real trades from the user's own wallet (Jupiter): quote -> user signs in the browser -> execute.
 // The wallet they trade from: their MoonPay wallet on file (MoonPay wallets on). The server decides;
@@ -464,7 +505,7 @@ app.get("/api/trades/history", signedIn(async (req, res) => {
 app.get("/api/admin/activity", needs("admin.users", async (req, res) => {
   res.json(await history.activity(String(req.query.username ?? ""), num(req.query.before, 0), num(req.query.limit, 50)));
 }));
-app.get("/api/plans/extras", (_req, res) => void res.json({ tokenPacks: TOKEN_PACKS, yearlyMonthsPaid: YEARLY_MONTHS_PAID }));
+app.get("/api/plans/extras", (_req, res) => void res.json({ tokenPacks: TOKEN_PACKS.map((k) => ({ ...k, analyses: analysesFor(k.tokens) })), yearlyMonthsPaid: YEARLY_MONTHS_PAID, appTokensPerClaudeToken: APP_TOKENS_PER_API_TOKEN }));
 app.post("/api/admin/topup", needs("admin.users", async (req, res) => {
   try {
     const a = await auth.requestAuth(req);
@@ -550,9 +591,9 @@ app.post(
     // Auto-pick and risky mode need their own permissions.
     const a = (await auth.requestAuth(req))!;
     if ((req.body?.pick === "auto" || req.body?.pick === "agents") && !can(a.plan, a.role, "bot.autopick"))
-      return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick. See Plans to upgrade.`, upgrade: true });
+      return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick.`, upgrade: true, need: firstPlanWith("bot.autopick") });
     if (req.body?.allowRisky && !can(a.plan, a.role, "bot.risky"))
-      return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include risky mode. See Plans to upgrade.`, upgrade: true });
+      return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include risky mode.`, upgrade: true, need: firstPlanWith("bot.risky") });
     const { botId, ...cfg } = req.body ?? {};
     const max = botLimit(a.plan, a.role);
     return wrap(async () => engine.startBot(cfg, String(botId ?? "1"), max))(req, res);
@@ -564,7 +605,7 @@ app.post(
   "/api/bot/start-auto",
   needs("bot.run", async (req, res) => {
     const a = (await auth.requestAuth(req))!;
-    if (!can(a.plan, a.role, "bot.autopick")) return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick. See Plans to upgrade.`, upgrade: true });
+    if (!can(a.plan, a.role, "bot.autopick")) return void res.status(403).json({ error: `Your ${planOf(a.plan).name} plan doesn't include auto-pick.`, upgrade: true, need: firstPlanWith("bot.autopick") });
     const { budgets, strict, botId: _none, ...cfg } = req.body ?? {};
     const max = botLimit(a.plan, a.role);
     return wrap(async () => engine.startAutoAgents(cfg, budgets, !!strict, max))(req, res);

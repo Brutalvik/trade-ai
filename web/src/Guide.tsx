@@ -195,7 +195,7 @@ export function GuidePage({ plans, onClose }: { plans: PlanInfo[]; onClose: () =
               <li><b>Platform charge on your plan ({planName})</b>: {plan.feePct === 0 ? "none" : plan.freeTrades > 0 ? `${plan.freeTrades} trades a month free, then ${plan.feePct}% of each trade` : `${plan.feePct}% of each trade`}.</li>
             ) : null}
             {ai && plan ? (
-              <li><b>AI tokens</b>: {fmtM(plan.aiTokens)} app tokens a month on {planName} (10 app tokens = 1 AI token; a typical analysis uses about 140K). The allowance resets on the 1st (UTC); top-up packs don't expire. Your use is shown in your profile.</li>
+              <li><b>AI tokens</b>: {fmtM(plan.aiTokens)} app tokens a month on {planName} (2 app tokens = 1 Claude token; a typical analysis uses about 28K). The allowance resets on the 1st (UTC); top-up packs don't expire. Your use is shown in your profile.</li>
             ) : null}
           </ul>
           {!isTop ? (

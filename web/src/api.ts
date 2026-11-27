@@ -138,11 +138,17 @@ export type ScanResult = { source: "trending" | "boosted"; chain: ScanChain; row
 // Older saved logs, trades and plans may still name the model; show "AI" instead.
 export const aiText = (s: string) => s.replace(/\bClaude plan: /g, "AI plan: ").replace(/\bClaude \([^)]*\)/g, "AI").replace(/\bClaude's\b/g, "the AI's").replace(/\bClaude\b/g, "AI");
 export type LimitOrder = { id: string; side: "BUY" | "SELL"; chain: string; pool: string; symbol: string; price: number; usd?: number; positionId?: string; fraction?: number; createdAt: number };
-export type PlanId = "free" | "member" | "starter" | "pro" | "max";
+export type PlanId = "free" | "starter" | "pro" | "max";
 export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.analyze" | "bot.run" | "bot.autopick" | "bot.risky" | "admin.users";
 export type Usage = { month: string; used: number; limit: number; topup?: number }; // limit -1 = unlimited; topup = extra tokens that don't expire
-export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number }[]; yearlyMonthsPaid: number };
-export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[] }; // freeTrades -1 = unlimited
+export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number; analyses: number; note?: string }[]; yearlyMonthsPaid: number; appTokensPerClaudeToken: number };
+export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[]; features: string[]; popular?: boolean }; // freeTrades -1 = unlimited
+// Paying for plans by card (server/src/billing.ts, Stripe).
+export type BillingStatus = {
+  on: boolean; mode: "test" | "live" | null; reason: string | null; termsVersion: string; plan: PlanId;
+  subscription: { plan: PlanId | null; interval: "month" | "year" | null; status: string | null; periodEnd: number | null; cancelAtPeriodEnd: boolean; keep: { plan: PlanId; until: number } | null } | null;
+  canManage: boolean;
+};
 export type User = { prefs?: { hide: string[]; currency?: string }; username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
 export type AdminUser = User & { usage: Usage };
 export type RealQuote = { requestId: string; transaction: string; wallet: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
@@ -166,6 +172,14 @@ export type Analysis = { pair: PairInfo; snapshot: Snapshot; results: ModelResul
 export const SIGNIN_EVENT = "nexus:signin-needed";
 // The MoonPay wallet was just put on file (MoonPaySignIn.tsx): the wallet window loads it again.
 export const MOONPAY_WALLET_EVENT = "moonpay-wallet-changed";
+// Something the account's plan does not include: the Plans window opens (with why) instead of an error.
+export const UPGRADE_EVENT = "trading-rust:upgrade";
+export class UpgradeNeeded extends Error {
+  constructor() {
+    super(""); // empty: no error toast, the Plans window opens instead
+    this.name = "UpgradeNeeded";
+  }
+}
 export class SignInNeeded extends Error {
   constructor() {
     super(""); // empty: no error toast, the sign-in window opens instead
@@ -178,6 +192,10 @@ async function req<T>(path: string, body?: unknown): Promise<T> {
   if (res.status === 401 && body !== undefined && !path.startsWith("/auth/")) {
     window.dispatchEvent(new Event(SIGNIN_EVENT));
     throw new SignInNeeded();
+  }
+  if (data?.upgrade) {
+    window.dispatchEvent(new CustomEvent(UPGRADE_EVENT, { detail: { reason: String(data.error ?? ""), need: data.need ?? null } }));
+    throw new UpgradeNeeded();
   }
   if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
   return data as T;
@@ -256,6 +274,13 @@ export const api = {
   realWallet: (fresh = false) => req<WalletView & { via: "moonpay" | null }>(`/real/wallet${fresh ? "?fresh=1" : ""}`),
   realTrades: (limit = 50) => req<RealTrade[]>(`/real/trades?limit=${limit}`),
   autopilot: () => req<AutopilotStatus>("/autopilot"),
+  billing: () => req<BillingStatus>("/billing"),
+  billingCheckout: (b: { plan: PlanId; interval: "month" | "year"; terms: string }) => req<{ url: string } | { changed: true; status: BillingStatus }>("/billing/checkout", b),
+  billingPack: (b: { pack: string; terms: string }) => req<{ url: string }>("/billing/pack", b),
+  billingCancel: () => req<BillingStatus>("/billing/cancel", {}),
+  billingResume: () => req<BillingStatus>("/billing/resume", {}),
+  billingPortal: () => req<{ url: string }>("/billing/portal", {}),
+  billingConfirm: (sessionId: string) => req<BillingStatus>("/billing/confirm", { sessionId }),
   autopilotAllowStart: () => req<{ apiPubHex: string; address: string; expiresAt: number }>("/autopilot/allow/start", {}),
   autopilotAllowFinish: (b: { apiPubHex: string; walletId: string; expiresAt: number; accessToken: string; identityToken: string }) => req<AutopilotStatus>("/autopilot/allow/finish", b),
   autopilotRevoke: () => req<AutopilotStatus & { apiPubHex: string | null }>("/autopilot/revoke", {}),

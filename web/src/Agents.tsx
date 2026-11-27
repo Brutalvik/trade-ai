@@ -155,7 +155,7 @@ export function AgentsPanel({ state, limit, notify, refresh, onOpen, defaults, r
       ) : (
         <p className="muted small agents-empty">
           {limit <= 0
-            ? "Agents trade one coin each, on their own. They're included from the AI Starter plan."
+            ? "Agents trade one coin each, on their own. They're included from the Starter plan."
             : "No agents yet. An agent trades one coin with the money you give it. Its AI decides when to buy and sell, starting the moment you create it."}
         </p>
       )}

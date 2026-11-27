@@ -1624,3 +1624,44 @@ input { background: rgba(0, 0, 0, 0.32); border-color: rgba(255, 255, 255, 0.12)
 
 /* Profile: the currency picker */
 .currency-pick { max-width: 220px; padding: 4px 8px; border-radius: 8px; font-size: 13px; }
+
+/* Plans & AI Credits (the owner's mockup): glass cards, AI Pro lit as Most Popular, AI Max in violet */
+.plans-ask { margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; color: #ffe2a8; background: rgba(255, 200, 87, 0.08); border: 1px solid rgba(255, 200, 87, 0.4); }
+.plans-ask b { color: #ffd27a; }
+.plans-top .plans-lead { margin: 4px 0 0 !important; font-size: 14px; color: #c9d6f2; max-width: 640px; }
+.plans-sub { margin: 10px 0 0; color: #c9d6f2; }
+.plan-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 16px 0; }
+.plan-card { gap: 4px; padding: 18px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+.plan-card.current { border-color: rgba(255, 255, 255, 0.22); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+.plan-card.pro, .plan-card.max { background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)); }
+.plan-card.popular { border-color: rgba(62, 232, 200, 0.75); background: linear-gradient(180deg, rgba(62, 232, 200, 0.12), rgba(62, 232, 200, 0.03)); box-shadow: 0 0 0 1px rgba(62, 232, 200, 0.25), 0 0 28px rgba(62, 232, 200, 0.18); }
+.plan-card.max { border-color: rgba(180, 140, 255, 0.35); background: linear-gradient(180deg, rgba(150, 110, 255, 0.12), rgba(150, 110, 255, 0.03)); }
+.plan-card.suggested { outline: 2px solid rgba(255, 200, 87, 0.85); outline-offset: 2px; }
+.plan-name { font-family: Inter, system-ui, sans-serif; font-size: 20px; font-weight: 600; letter-spacing: 0; }
+.plan-card.pro .plan-name { color: #7ff5da; }
+.plan-card.max .plan-name { color: #c9b6ff; }
+.plan-current { font-size: 11.5px; padding: 3px 10px; background: rgba(255, 255, 255, 0.1); color: #e6ecfa; border: 1px solid rgba(255, 255, 255, 0.18); }
+.plan-popular { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; color: #7ff5da; background: rgba(62, 232, 200, 0.14); border: 1px solid rgba(62, 232, 200, 0.4); white-space: nowrap; }
+.plan-price { font-size: 34px; font-weight: 700; margin-top: 6px; letter-spacing: -0.5px; }
+.plan-price small { font-size: 15px; color: #aab4d4; font-weight: 400; letter-spacing: 0; }
+.plan-yearly { font-size: 13px; color: #aab4d4; margin-top: 0; min-height: 18px; }
+.plan-blurb { margin: 10px 0 6px !important; font-size: 14px; color: #e6ecfa; }
+.plan-features { gap: 8px; margin: 6px 0 14px; font-size: 13.5px; color: #d6def5; }
+.plan-features li { position: relative; padding-left: 22px; }
+.plan-features li::before { content: "✓"; position: absolute; left: 0; color: #3ee8c8; font-weight: 700; }
+.btn.plan-btn { background: #f4f7fb; color: #0b1020; border-color: transparent; font-weight: 600; }
+.btn.plan-btn:hover:not(:disabled) { background: #ffffff; }
+.plan-card.max .btn.plan-btn { background: rgba(255, 255, 255, 0.12); color: #f4f7fb; border-color: rgba(255, 255, 255, 0.22); }
+.packs { border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 14px; }
+.packs-title { font-size: 19px; font-weight: 600; color: var(--text); }
+.pack-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
+.pack-card { flex-direction: row; align-items: center; gap: 12px; min-width: 0; padding: 12px 14px; border-color: rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.04); }
+.pack-card > div { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.pack-card b { font-size: 15px; font-weight: 600; color: var(--text); }
+.pack-card.best { border-color: rgba(62, 232, 200, 0.45); background: rgba(62, 232, 200, 0.08); }
+.pack-price { font-size: 22px; }
+.plans-foot { margin-top: 12px; }
+@media (max-width: 980px) { .plan-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pack-row { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 560px) { .plan-grid { grid-template-columns: minmax(0, 1fr); } }
+.modal-body label.terms-ok { display: flex; flex-direction: row; align-items: flex-start; justify-content: flex-start; gap: 10px; margin: 14px 0 4px; text-align: left; color: var(--text); cursor: pointer; }
+.modal-body label.terms-ok input { width: auto; flex: none; margin: 2px 0 0; accent-color: #3ee8c8; }

@@ -20,6 +20,10 @@ export type AuditType =
   | "order.cancel"
   | "trade.protect"
   | "trade.real" // a real swap from the user's own wallet (signature on-chain)
+  | "billing.plan" // the plan changed through a payment, renewal, cancellation or failed payment (Stripe)
+  | "billing.tokens" // AI tokens bought (Stripe)
+  | "billing.terms" // accepted the Subscription Terms before paying
+  | "billing.event" // something about the subscription worth keeping (a failed payment, a cancellation asked for)
   | "wallet.send" // crypto sent from the customer's own wallet to another address
   | "wallet.send_failed"
   | "autopilot.allow" // the real auto-pilot was allowed to sign for the customer's wallet (MoonPay signer)

@@ -7,13 +7,21 @@ const PRIVACY_EMAIL = "testing@tradeairust.com";
 
 // Footer: a short risk reminder on the left; version, User guide, Privacy Policy and Terms on the right.
 // The Privacy Policy also opens at #privacy (shareable link).
+// The Subscription Terms (paid plans and AI token packs), a document of their own: they open at
+// #subscription-terms, from the footer or from the Plans window before paying.
+export const SUBSCRIPTION_TERMS_VERSION = "2026-11-27"; // (the server's billing.ts TERMS_VERSION)
+export const openSubscriptionTerms = () => {
+  window.location.hash = "subscription-terms";
+};
 export function Footer() {
+  const [subTerms, setSubTerms] = useState(() => window.location.hash === "#subscription-terms");
   const [open, setOpen] = useState(() => window.location.hash === "#terms");
   const [privacy, setPrivacy] = useState(() => window.location.hash === "#privacy");
   useEffect(() => {
     const on = () => {
       if (window.location.hash === "#privacy") setPrivacy(true);
       if (window.location.hash === "#terms") setOpen(true);
+      if (window.location.hash === "#subscription-terms") setSubTerms(true);
     };
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
@@ -38,10 +46,14 @@ export function Footer() {
           <button className="link" onClick={() => setOpen(true)}>
             Terms &amp; Conditions
           </button>
+          <button className="link" onClick={() => setSubTerms(true)}>
+            Subscription Terms
+          </button>
         </span>
       </footer>
       {open && <TermsModal onClose={() => { setOpen(false); if (window.location.hash === "#terms") history.replaceState(null, "", window.location.pathname + window.location.search); }} onPrivacy={() => { setOpen(false); setPrivacy(true); }} />}
       {privacy && <PrivacyModal onClose={closePrivacy} />}
+      {subTerms && <SubscriptionTermsModal onClose={() => { setSubTerms(false); if (window.location.hash === "#subscription-terms") history.replaceState(null, "", window.location.pathname + window.location.search); }} />}
     </>
   );
 }
@@ -97,7 +109,7 @@ function TermsModal({ onClose, onPrivacy }: { onClose: () => void; onPrivacy: ()
           <p>Crypto, and small "memecoin" tokens above all, is extremely risky. Prices can fall to zero within minutes, tokens can be scams ("rug pulls"), and stop-losses can sell well below their price in fast markets. Past or simulated results don't predict future results. Never trade money you can't afford to lose.</p>
 
           <h3>9. Plans, AI tokens and fees</h3>
-          <p>Plans (Free, Member, AI Starter, AI Pro, AI Max) decide which features you can use, how many AI tokens you get each month and the platform fee on trades. AI use is metered in app tokens; unused monthly tokens don't carry over, while top-up tokens don't expire. Prices, allowances, fees and features may change; we'll show changes in the app before they apply to you.</p>
+          <p>Plans (Free, Starter, AI Pro, AI Max) decide which features you can use, how many AI tokens you get each month and the platform fee on trades. Paying for a plan or an AI token pack is covered by our separate Subscription Terms. AI use is metered in app tokens; unused monthly tokens don't carry over, while top-up tokens don't expire. Prices, allowances, fees and features may change; we'll show changes in the app before they apply to you.</p>
 
           <h3>10. Your personal information</h3>
           <p>How we collect, use, share and protect your personal information, and your rights over it, is set out in our <button className="link" onClick={onPrivacy}>Privacy Policy</button>, which is part of these terms. We don't sell your data.</p>
@@ -205,6 +217,48 @@ function PrivacyModal({ onClose }: { onClose: () => void }) {
 
           <h3>12. Changes</h3>
           <p>We'll update this policy as the app changes and show the new date above. For significant changes we'll tell you in the app before they apply.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Subscription Terms: what a customer agrees to when they pay for a plan or a token pack.
+function SubscriptionTermsModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="modal-backdrop on-top">
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="subterms-title" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2 id="subterms-title">Subscription Terms</h2>
+          <button className="modal-close" onClick={onClose} aria-label="Close" title="Close">✕</button>
+        </div>
+        <div className="modal-body">
+          <p className="muted small">Version {SUBSCRIPTION_TERMS_VERSION}. These terms cover paid plans and AI token packs. They are separate from, and in addition to, our Terms &amp; Conditions, which still apply to everything else.</p>
+          <h3>1. Plans and prices</h3>
+          <p>Starter is $19 a month or $209 a year, AI Pro $59 a month or $649 a year, AI Max $149 a month or $1,639 a year (a year costs 11 months). AI token packs cost $20 (2 million tokens), $50 (5 million) and $100 (10 million). Prices are in US dollars. Where the law requires it, sales tax is added at checkout.</p>
+          <h3>2. Paying</h3>
+          <p>Payments are processed by Stripe on its own secure page. We never see or store your full card number. By subscribing you authorize us, through Stripe, to charge your payment method for each renewal until you cancel.</p>
+          <h3>3. Automatic renewal</h3>
+          <p>A subscription renews automatically at the end of each month or year, at the price shown, until you cancel. If a price changes, we will tell you before it applies to your next renewal.</p>
+          <h3>4. Cancelling</h3>
+          <p>You can cancel at any time in the Plans window or under Manage billing. Your plan stays until the end of the period you have paid for, then your account returns to the Free plan. Nothing more is charged after you cancel.</p>
+          <h3>5. Changing plan</h3>
+          <p>An upgrade starts at once, and your card is charged the difference for the rest of the current period. A downgrade starts at your next renewal; until then you keep the plan you paid for. If your plan includes fewer AI agents than you are running, the extra agents are stopped.</p>
+          <h3>6. Failed payments</h3>
+          <p>If a renewal payment fails, Stripe tries your card again over the following days and your plan continues meanwhile. If the payment still cannot be collected, the subscription ends and your account returns to the Free plan.</p>
+          <h3>7. Refunds</h3>
+          <p>Payments are not refundable, except where the law requires a refund or where we choose to give one. AI tokens from a pack cannot be refunded once used. For billing questions, contact us at the address in our Privacy Policy.</p>
+          <h3>8. AI tokens</h3>
+          <p>AI tokens are this app's unit of AI use. A plan's monthly allowance starts again each month, and unused allowance does not carry over. Tokens from a pack are used after the monthly allowance runs out, and they never expire. How many tokens an AI analysis uses depends on the request.</p>
+          <h3>9. What you pay for</h3>
+          <p>A plan pays for features of the software. It does not buy any trading result. Trading carries risk, and the AI's plans are estimates, not financial advice; see our Terms &amp; Conditions.</p>
+          <h3>10. Changes to these terms</h3>
+          <p>We may update these terms. If a change affects your subscription, we will tell you before it applies, and you can cancel before then.</p>
         </div>
       </div>
     </div>

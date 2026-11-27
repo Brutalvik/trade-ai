@@ -152,7 +152,8 @@ ap.__setSignerForTests(async (p: any) => {
 
 // ---------- starting ----------
 expect("not in Paper mode", await fail(ap.start("ada", access, { tradeMode: "paper" })), "Switch to Real in your profile first.");
-expect("not on a plan without auto-pick agents", await fail(ap.start("ada", { plan: "free", role: "user" }, { tradeMode: "real" })), "Your plan doesn't include auto-pick agents. See Plans to upgrade.");
+const noPick = await ap.start("ada", { plan: "free", role: "user" }, { tradeMode: "real" }).then(() => null, (e: any) => e);
+expect("not on a plan without auto-pick agents: an upgrade is asked for (the app opens its Plans window), naming the plan that has them", [noPick?.upgrade, noPick?.need, /AI Pro/.test(noPick?.message ?? "")], [true, "pro", true]);
 const started = await ap.start("ada", access, { tradeMode: "real" });
 expect("started: its agent runs in an account of its own (never the paper account)", [started.on, started.agent.running], [true, true]);
 const paper = await engine.withAccount("ada", async () => { await engine.sync(); const s = engine.getState(); return [s.bot.running, (s.bots ?? []).some((b: any) => b.bot.running)]; });
