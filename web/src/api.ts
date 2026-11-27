@@ -203,13 +203,20 @@ export type WalletTxEvent = { at: number; source: string; type: string | null; s
 export type MoonPayStatus = { on: boolean; mode: "sandbox" | "live" | null; reason: string | null; webhooks: boolean; publishableKey: string | null; minBuy: number; maxBuy: number };
 export type MoonWalletsStatus = { on: boolean; mode: "sandbox" | "live" | null; reason: string | null; publishableKey: string | null; appId: string | null };
 export type MoonWallet = { address: string; chain: "solana"; via: string; moonxUserId: string | null; at: number };
-export type BuyOptions = { coins: { id: string; label: string }[]; fiats: { code: string; min: number; max: number }[] };
-export type MoonWalletView = { wallet: MoonWallet | null; wallets: MoonWalletsStatus; buying: MoonPayStatus; options: BuyOptions | null; buyInto: { address: string; which: "moonpay" | "current-test" } | null; balance: { sol: number | null; network: string } | null };
+// The four wallets MoonPay makes for a person (the Ethereum one also works on BNB Chain, Base, Polygon,
+// Arbitrum, Optimism and Avalanche), and what is in them, network by network.
+export const WALLET_KINDS = ["solana", "ethereum", "bitcoin", "tron"] as const;
+export type WalletChain = (typeof WALLET_KINDS)[number];
+export type ChainWallet = { address: string; chain: WalletChain; via: string; moonxUserId: string | null; at: number };
+export type BalanceRow = { network: string; symbol: string; amount: number | null; test?: boolean };
+export type BuyOptions = { coins: { id: string; label: string; wallet?: WalletChain }[]; fiats: { code: string; min: number; max: number }[] };
+export type MoonWalletView = { wallet: MoonWallet | null; all?: ChainWallet[]; wallets: MoonWalletsStatus; buying: MoonPayStatus; options: BuyOptions | null; buyInto: { address: string; which: "moonpay" | "current-test" } | null; balance: { sol: number | null; network: string } | null };
 
 export const api = {
   walletTxs: (before?: number) => req<{ transactions: WalletTx[]; moonpay: MoonPayStatus }>(`/wallet/transactions?limit=50${before ? `&before=${before}` : ""}`),
   walletTx: (id: string) => req<{ tx: WalletTx; events: WalletTxEvent[] }>(`/wallet/transactions/${encodeURIComponent(id)}`),
   moonWallet: () => req<MoonWalletView>("/moonpay/wallet"),
+  moonBalances: (fresh = false) => req<{ balances: Partial<Record<WalletChain, BalanceRow[]>> }>(`/moonpay/balances${fresh ? "?fresh=1" : ""}`),
   moonSession: () => req<{ sessionToken: string }>("/moonpay/session", {}),
   moonChallenge: () => req<{ message: string; expiresAt: number }>("/moonpay/wallet/challenge", {}),
   moonProve: (body: { address: string; signature: string; accessToken: string; identityToken: string }) => req<{ wallet: MoonWallet }>("/moonpay/wallet/prove", body),
@@ -259,7 +266,7 @@ export const api = {
   // Sign up and sign in with MoonPay (its wallet sign-in): MoonPay's two tokens; the server checks them itself.
   moonpayLogin: (t: { accessToken: string; identityToken: string }) => req<{ user?: User; needsProfile?: boolean; email?: string | null; firstName?: string; lastName?: string }>("/auth/moonpay-login", t),
   moonpayComplete: (b: { accessToken: string; identityToken: string; username: string; firstName: string; lastName: string }) => req<{ user: User }>("/auth/moonpay-complete", b),
-  moonpayWalletSync: (t: { accessToken: string; identityToken: string }) => req<{ wallet: MoonWallet }>("/moonpay/wallet/sync", t),
+  moonpayWalletSync: (t: { accessToken: string; identityToken: string }) => req<{ wallet: MoonWallet | null; all: ChainWallet[] }>("/moonpay/wallet/sync", t),
   changePassword: (b: { current: string; next: string }) => req("/auth/password", b),
   setTradeMode: (mode: "paper" | "real") => req<{ user: User }>("/auth/trade-mode", { mode }),
   // The parts of the app this user has hidden (saved on their account).

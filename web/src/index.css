@@ -1397,6 +1397,18 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .mp .tabs { margin-bottom: 12px; }
 .mp-sandbox { color: var(--amber); background: rgba(255, 200, 87, 0.07); border: 1px solid rgba(255, 200, 87, 0.28); border-radius: 10px; padding: 7px 10px; margin: 0 0 12px; }
 .mp-card { border: 1px solid rgba(0, 229, 255, 0.14); background: rgba(0, 229, 255, 0.03); border-radius: 14px; padding: 14px 16px; }
+/* The four wallets: one card each (network, address, balances by network) */
+.wallets-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.wallets-top p { margin: 0; }
+.wallet-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-bottom: 8px; }
+.chain-card { border: 1px solid rgba(0, 229, 255, 0.14); background: rgba(0, 229, 255, 0.03); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.chain-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.chain-name { font-weight: 700; color: var(--text); }
+.chain-address { text-align: left; word-break: break-all; padding: 0; }
+.chain-bal { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
+.chain-row { display: flex; justify-content: space-between; gap: 8px; }
+.chain-row.test .muted::after { content: " · test"; color: var(--amber); }
+@media (max-width: 640px) { .wallets-top { flex-direction: column; align-items: stretch; } }
 .mp-card h3 { margin: 0 0 6px; font-size: 15px; }
 .mp-form { display: grid; gap: 10px; margin: 12px 0 8px; max-width: 420px; }
 .mp-form label { display: grid; gap: 4px; }

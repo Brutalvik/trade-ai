@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MoonXProvider, useMoonX } from "@moon-x/react-sdk";
 import { useSignTransaction, useWallets } from "@moon-x/react-sdk/solana";
 import "@moon-x/react-sdk/style.css";
-import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, type User } from "./api";
+import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, WALLET_KINDS, type User, type WalletChain } from "./api";
 import { Avatar, MoonPaySigner, MoonPayUI, ProfileModal, SetupProfileModal, SIGNIN_PENDING, type AccountButtonProps, type TxSigner } from "./Account";
 
 const METHODS: ("email" | "google" | "apple")[] = ["email", "google", "apple"];
@@ -81,10 +81,11 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
     api.me().then((r) => setUser(r.user)).catch(() => setUser(null));
   }, []);
 
-  // MoonPay's two tokens for the server, once the person's Solana wallet exists (MoonPay makes it at
-  // sign-up; this only makes sure, for someone whose sign-up was cut short).
-  const tokens = async () => {
-    await mx.findOrCreateWallet("solana").catch(() => null);
+  // MoonPay's two tokens for the server, once the person's wallets of the kinds asked for exist
+  // (MoonPay makes the Solana one at sign-up; the others are made here, one after another, with no
+  // window shown). A kind MoonPay cannot make right now is skipped: the next visit tries again.
+  const tokens = async (kinds: readonly WalletChain[] = ["solana"]) => {
+    for (const kind of kinds) await mx.findOrCreateWallet(kind).catch(() => null);
     const t = await mx.getSessionTokens();
     if (!t) throw new Error("Your sign-in expired. Please sign in again.");
     return { accessToken: t.accessToken, identityToken: t.identityToken };
@@ -96,11 +97,12 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
       const r = await api.moonpayLogin(await tokens());
       if (r.needsProfile) setSetup({ email: r.email ?? null, firstName: r.firstName ?? "", lastName: r.lastName ?? "" });
       else if (r.user) {
-        synced.current = r.user.username; // signing in puts the wallet on file already
+        synced.current = r.user.username; // signing in puts the Solana wallet on file already
         setUser(r.user);
         onChange();
         window.dispatchEvent(new Event(MOONPAY_WALLET_EVENT));
         notify(`Welcome, ${r.user.firstName}! Your account and wallet are ready.`);
+        void sync(false); // then the other three kinds, without a click
       }
     } catch (e: any) {
       notify(e.message, true);
@@ -108,14 +110,17 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
       linking.current = false;
     }
   };
-  // Signed in to the app (from before) and to MoonPay, but no MoonPay wallet on file yet: put it on file.
+  // Signed in to the app and to MoonPay, and a kind of wallet not on file yet: make it (MoonPay) and
+  // put it on file (the server asks MoonPay which wallets are the person's). No click needed.
   const sync = async (loud: boolean) => {
     try {
       const v = await api.moonWallet();
-      if (v.wallet || !v.wallets.on) return;
-      await api.moonpayWalletSync(await tokens());
+      if (!v.wallets.on) return;
+      const missing = WALLET_KINDS.filter((k) => !(v.all ?? []).some((w) => w.chain === k));
+      if (!missing.length) return;
+      const r = await api.moonpayWalletSync(await tokens(missing));
       window.dispatchEvent(new Event(MOONPAY_WALLET_EVENT));
-      notify("Your wallet is connected.");
+      if (loud || r.all.length > (v.all ?? []).length) notify(r.all.length >= WALLET_KINDS.length ? "Your wallets are ready." : "Your wallet is ready.");
     } catch (e: any) {
       if (loud) notify(e.message, true);
     }
@@ -197,6 +202,7 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
             onChange();
             window.dispatchEvent(new Event(MOONPAY_WALLET_EVENT));
             notify(`Welcome, ${u.firstName}! Your account and wallet are ready.`);
+            void sync(false); // then the other three kinds, without a click
           }}
           complete={async (f) => api.moonpayComplete({ ...(await tokens()), ...f })}
         />

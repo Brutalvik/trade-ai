@@ -18,6 +18,7 @@ import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import * as moonpay from "./moonpay.js";
 import * as moonwallet from "./moonwallet.js";
+import { balances as chainBalances } from "./chainbal.js";
 import * as wallettx from "./wallettx.js";
 import { searchCoins, coinList } from "./lists.js";
 import { AGENT_PASS, scanAgents } from "./agents.js";
@@ -305,11 +306,21 @@ const deviceIp = (req: Request) => String(req.headers["x-real-ip"] ?? req.header
 app.get("/api/moonpay/wallet", signedIn(async (req, res) => {
   try {
     const a = (await auth.requestAuth(req))!;
-    const wallet = await moonwallet.myWallet(a.key);
+    const [wallet, all] = await Promise.all([moonwallet.myWallet(a.key), moonwallet.myWallets(a.key)]);
     const sandbox = moonpay.config().mode !== "live";
     res.setHeader("Cache-Control", "no-store");
     const [options, buyInto] = await Promise.all([moonpay.buyOptions().catch(() => null), moonpay.buyDestination(a.key, { solanaAddress: a.user.solanaAddress })]);
-    res.json({ wallet, wallets: moonwallet.moonxStatus(), buying: moonpay.publicStatus(), options, buyInto, balance: wallet ? { sol: await moonwallet.solBalance(wallet.address, sandbox), network: sandbox ? "Solana test network (devnet)" : "Solana" } : null });
+    res.json({ wallet, all, wallets: moonwallet.moonxStatus(), buying: moonpay.publicStatus(), options, buyInto, balance: wallet ? { sol: await moonwallet.solBalance(wallet.address, sandbox), network: sandbox ? "Solana test network (devnet)" : "Solana" } : null });
+  } catch (e) {
+    txError(res, e);
+  }
+}));
+// What is in each of the account's wallets, network by network (chainbal.ts).
+app.get("/api/moonpay/balances", signedIn(async (req, res) => {
+  try {
+    const a = (await auth.requestAuth(req))!;
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ balances: await chainBalances(await moonwallet.myWallets(a.key), moonpay.config().mode !== "live", req.query.fresh === "1") });
   } catch (e) {
     txError(res, e);
   }

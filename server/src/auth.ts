@@ -270,7 +270,8 @@ export async function moonpayLogin(req: Request, res: Response) {
   if (!user) return { needsProfile: true, email: m.email, firstName: m.givenName ?? (m.name ?? "").split(/\s+/)[0] ?? "", lastName: m.familyName ?? (m.name ?? "").split(/\s+/).slice(1).join(" ") };
   const updated: User = { ...user, moonxId: m.sub };
   if (updated.moonxId !== user.moonxId) await store.kvSet(userKey(user.username), updated);
-  const wallet = m.wallet ? await moonwallet.keepMoonWallet(user.username.toLowerCase(), m.wallet, m.sub) : null;
+  const wallets = await moonwallet.keepMoonWallets(user.username.toLowerCase(), m.wallets, m.sub); // all four kinds MoonPay made
+  const wallet = wallets.find((w) => w.chain === "solana") ?? null;
   await addToIndex(user.username);
   await setSession(res, updated);
   await audit(user.username, "account.signin", "Signed in with MoonPay", { ip: clientIp(req), wallet: wallet?.address ?? null });
@@ -292,7 +293,8 @@ export async function moonpayCompleteProfile(req: Request, res: Response) {
     throw new Error("An account with that email already exists. Sign in again to link it.");
   }
   await store.kvSet(moonxKey(m.sub), username.toLowerCase());
-  const wallet = m.wallet ? await moonwallet.keepMoonWallet(username.toLowerCase(), m.wallet, m.sub) : null;
+  const wallets = await moonwallet.keepMoonWallets(username.toLowerCase(), m.wallets, m.sub); // all four kinds MoonPay made
+  const wallet = wallets.find((w) => w.chain === "solana") ?? null;
   await addToIndex(username);
   await audit(username, "account.signup", "Account created (MoonPay)", { email: m.email, wallet: wallet?.address ?? null });
   await setSession(res, user);
@@ -307,9 +309,10 @@ export async function moonpayWalletSync(req: Request) {
   const m = await moonwallet.moonxSignIn(req.body?.accessToken, req.body?.identityToken);
   const mine = (a.user.moonxId && a.user.moonxId === m.sub) || (!!m.email && m.email === a.user.email.toLowerCase());
   if (!mine) throw new Error("Sign in to MoonPay with the same email as your account.");
-  if (!m.wallet) throw new Error("MoonPay has no Solana wallet for you yet.");
+  if (!Object.keys(m.wallets).length) throw new Error("Your wallets have not been made yet. Try again in a moment.");
   if (a.user.moonxId !== m.sub) await store.kvSet(userKey(a.user.username), { ...a.user, moonxId: m.sub });
-  return { wallet: await moonwallet.keepMoonWallet(a.key, m.wallet, m.sub) };
+  const all = await moonwallet.keepMoonWallets(a.key, m.wallets, m.sub);
+  return { wallet: all.find((w) => w.chain === "solana") ?? null, all };
 }
 
 // Step 1: verify the Privy login and sign in the matching user (by Privy ID, or by email for

@@ -193,7 +193,7 @@ expect("...and next time it is linked", (await wallettx.myTransaction("ada", pen
 
 // ---------- MoonPay's own window, in the app's modal ----------
 expect("the address MoonPay sees, written the one way it compares", [moonpay.canonicalIp("::ffff:203.0.113.42"), moonpay.canonicalIp("2001:0DB8:0000:0000:0000:0000:0000:0001"), moonpay.canonicalIp("[2001:db8::1]")], ["203.0.113.42", "2001:db8::1", "2001:db8::1"]);
-expect("what can be bought and paid with comes from MoonPay's own list (USDC on Solana is not offered to this account)", await moonpay.buyOptions(), { coins: [{ id: "sol", label: "SOL (Solana)" }], fiats: [{ code: "usd", min: 20, max: 500 }, { code: "cad", min: 30, max: 500 }] });
+expect("what can be bought and paid with comes from MoonPay's own list (USDC on Solana is not offered to this account)", await moonpay.buyOptions(), { coins: [{ id: "sol", label: "SOL (Solana)", wallet: "solana" }], fiats: [{ code: "usd", min: 20, max: 500 }, { code: "cad", min: 30, max: 500 }] });
 const wfail = (p: Promise<unknown>) => p.then(() => "accepted", (e: Error) => e.message);
 expect("the window's link needs a whole amount within MoonPay's limits for that currency, and a coin MoonPay offers", [
   await wfail(moonpay.widgetBuy("ada", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 50.5 }, "203.0.113.42")),

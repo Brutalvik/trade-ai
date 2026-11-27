@@ -79,6 +79,36 @@ export function signedBy(address: string, message: string, signature: string): b
 }
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
+// ---------- The four wallets ----------
+// MoonPay makes one wallet per kind for a person: Solana; Ethereum (one address that also works on
+// BNB Chain, Base, Polygon, Arbitrum, Optimism and Avalanche); Bitcoin; Tron. Each is kept on file
+// on its own (the Solana one where it always was, which buying and real trades read), and the first
+// one of a kind stays: another is never put in its place.
+export const CHAINS = ["solana", "ethereum", "bitcoin", "tron"] as const;
+export type Chain = (typeof CHAINS)[number];
+export type ChainWallet = { address: string; chain: Chain; via: "proven" | "pregenerated"; moonxUserId: string | null; at: number };
+export const ADDRESS: Record<Chain, RegExp> = {
+  solana: SOLANA_ADDRESS,
+  ethereum: /^0x[0-9a-fA-F]{40}$/,
+  bitcoin: /^(bc1[02-9ac-hj-np-z]{8,87}|tb1[02-9ac-hj-np-z]{8,87}|[13mn2][1-9A-HJ-NP-Za-km-z]{25,39})$/,
+  tron: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
+};
+const chainKey = (chain: Chain, key: string) => (chain === "solana" ? walletKey(key) : `moonpay-wallet-${chain}:${key}`);
+// The account's wallets on file, in the order above (kinds not made yet are left out).
+export async function myWallets(key: string): Promise<ChainWallet[]> {
+  const got = await Promise.all(CHAINS.map((c) => store().kvGet<ChainWallet>(chainKey(c, key))));
+  return got.filter((w): w is ChainWallet => !!w?.address);
+}
+// Puts each wallet MoonPay names for the person on file, unless one of that kind is there already.
+export async function keepMoonWallets(key: string, wallets: Partial<Record<Chain, string>>, moonxUserId: string | null, via: ChainWallet["via"] = "proven"): Promise<ChainWallet[]> {
+  for (const chain of CHAINS) {
+    const address = wallets[chain];
+    if (!address || !ADDRESS[chain].test(address)) continue;
+    await store().kvSet(chainKey(chain, key), { address, chain, via, moonxUserId, at: Date.now() } satisfies ChainWallet, { nx: true });
+  }
+  return myWallets(key);
+}
+
 // ---------- MoonPay's sign-in tokens ----------
 // MoonPay's wallet service answers on two hosts: x-api.moonpay.com (/v0/...) and api.moonx-dev.com
 // (MoonPay's browser kit talks to that one, and the wallet dashboard shows its key address). On
@@ -152,15 +182,20 @@ export async function verifySession(accessToken: string, identityToken: string):
 // Who MoonPay says the signed-in person is, and their wallets: MoonPay's own record, asked with the
 // person's access token (GET <issuer>/v0/sdk/auth/users/public/me). The wallet the app keeps on file
 // comes from here, never from the browser.
-export async function moonxMe(accessToken: string): Promise<{ userId: string; status: string | null; solana: string | null }> {
+export async function moonxMe(accessToken: string): Promise<{ userId: string; status: string | null; solana: string | null; wallets: Partial<Record<Chain, string>> }> {
   const c = moonxConfig();
   if (!c.on) throw new Error(c.reason ?? "MoonPay wallets are off.");
   const r = await fetch(`${c.issuer}/v0/sdk/auth/users/public/me`, { headers: { Authorization: `PublicToken ${c.publishableKey}`, "X-MoonX-Access-Token": accessToken, Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
   if (!r.ok) throw new Error(`MoonPay could not confirm the sign-in (HTTP ${r.status}).`);
   const j: any = await r.json();
-  const sol = (Array.isArray(j?.wallets) ? j.wallets : []).filter((w: any) => w?.wallet_type === "solana" && SOLANA_ADDRESS.test(String(w?.public_address ?? "")));
-  sol.sort((x: any, y: any) => Date.parse(x?.created_at ?? "") - Date.parse(y?.created_at ?? "")); // (the first one made)
-  return { userId: String(j?.user_id ?? ""), status: j?.status ? String(j.status) : null, solana: sol[0]?.public_address ?? null };
+  const all: any[] = Array.isArray(j?.wallets) ? j.wallets : [];
+  const wallets: Partial<Record<Chain, string>> = {};
+  for (const chain of CHAINS) {
+    const of = all.filter((w) => w?.wallet_type === chain && ADDRESS[chain].test(String(w?.public_address ?? "")));
+    of.sort((x, y) => Date.parse(x?.created_at ?? "") - Date.parse(y?.created_at ?? "")); // (the first one made)
+    if (of[0]) wallets[chain] = String(of[0].public_address);
+  }
+  return { userId: String(j?.user_id ?? ""), status: j?.status ? String(j.status) : null, solana: wallets.solana ?? null, wallets };
 }
 // A sign-in with MoonPay, fully checked: MoonPay's tokens (checked here against its published keys),
 // then MoonPay's own record of the same person, who must be active. Returns who it is and their
@@ -177,7 +212,7 @@ export async function moonxSignIn(accessToken: string, identityToken: string) {
   const me = await moonxMe(String(accessToken));
   if (me.userId !== s.sub) throw new Error("MoonPay's sign-in could not be confirmed (it names another person). Sign in again.");
   if (me.status && me.status !== "active") throw new Error("This MoonPay account cannot be used. Contact support.");
-  return { ...s, email: s.email?.toLowerCase() ?? null, wallet: me.solana };
+  return { ...s, email: s.email?.toLowerCase() ?? null, wallet: me.solana, wallets: me.wallets };
 }
 // Puts the person's MoonPay wallet on file for the account (from MoonPay's own record), unless one
 // is there already: the first one stays, another is never put in its place.

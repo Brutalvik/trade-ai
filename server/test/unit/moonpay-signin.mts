@@ -118,6 +118,24 @@ expect("another person's MoonPay sign-in cannot put their wallet on this account
 people.mx_ghost.wallets.unshift(sol(A("XTRA"), "2026-11-25T00:00:00Z"));
 expect("a wallet on file is never replaced by another", (await call("/api/moonpay/wallet/sync", ghost, gm.cookie)).body.wallet?.address, A("GHST"));
 expect("signed out, the wallet cannot be synced at all", (await call("/api/moonpay/wallet/sync", ghost)).body.error, "Sign in first.");
+
+// ---------- the four kinds of wallet: Solana, Ethereum (also BNB Chain and the other EVM networks), Bitcoin, Tron ----------
+const EVM = "0x52908400098527886E0F7030069857D2E4169EE7", EVM2 = "0x8617E340B3D01FA5F11F306F4090FD50E238070D";
+const BTC = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", TRX = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7";
+const kind = (wallet_type: string, public_address: string, created_at = "2026-11-27T10:00:00Z") => ({ wallet_type, public_address, created_at });
+people.mx_cat = { status: "active", wallets: [sol(A("CAT")), kind("ethereum", EVM), kind("bitcoin", BTC), kind("tron", TRX), kind("ethereum", "0xnot-an-address")] };
+const cat = await call("/api/auth/moonpay-complete", { ...tokens("mx_cat", "cat@example.test"), username: "cat", firstName: "Cat", lastName: "S" });
+const catAll = (await call("/api/moonpay/wallet", undefined, cat.cookie)).body.all?.map((x: any) => [x.chain, x.address]);
+expect("a new person's four wallets are all on file from sign-up, as MoonPay names them (a malformed address is left out)", catAll, [["solana", A("CAT")], ["ethereum", EVM], ["bitcoin", BTC], ["tron", TRX]]);
+people.mx_cat.wallets.push(kind("ethereum", EVM2, "2026-11-28T10:00:00Z"));
+const catSync = await call("/api/moonpay/wallet/sync", tokens("mx_cat", "cat@example.test"), cat.cookie);
+expect("...and the first wallet of a kind stays: a later one never takes its place", catSync.body.all?.find((x: any) => x.chain === "ethereum")?.address, EVM);
+people.mx_ghost.wallets.push(kind("ethereum", EVM2), kind("tron", TRX));
+const more = await call("/api/moonpay/wallet/sync", ghost, gm.cookie);
+expect("an account with only a Solana wallet gets the kinds MoonPay made later, with the same sign-in", more.body.all?.map((x: any) => x.chain), ["solana", "ethereum", "tron"]);
+people.mx_dot = { status: "active", wallets: [] };
+const dot = await call("/api/auth/moonpay-complete", { ...tokens("mx_dot", "dot@example.test"), username: "dot", firstName: "Dot", lastName: "C" });
+expect("when MoonPay has made none yet, connecting says to try again", (await call("/api/moonpay/wallet/sync", tokens("mx_dot", "dot@example.test"), dot.cookie)).body.error, "Your wallets have not been made yet. Try again in a moment.");
 delete process.env.MOONX_PUBLISHABLE_KEY;
 expect("real trades: with MoonPay wallets switched off, from the previous wallet again", await rw(bob.cookie), [A("BBPRIVY"), "previous"]);
 expect("switched off, a MoonPay sign-in says so plainly", await err(tokens("mx_ada", "ada@example.test")), "Signing in with MoonPay is not switched on. MoonPay wallets are not set up (no MOONX_PUBLISHABLE_KEY).");
@@ -139,7 +157,7 @@ server.close();
   const signIn = fs.readFileSync(new URL("../../../web/src/MoonPaySignIn.tsx", import.meta.url), "utf8");
   const walletTab = panel.slice(panel.indexOf("function WalletTab"), panel.indexOf("// ---------- ", panel.indexOf("function WalletTab")));
   const shown = (code: string) => code.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  expect("the wallet tab, its name and the test-mode line do not say MoonPay", [walletTab.length > 200, /MoonPay/.test(shown(walletTab)), panel.includes('["wallet", "Your wallet"]'), /mp-sandbox[^\n]*MoonPay/.test(panel)], [true, false, true, false]);
+  expect("the wallet tab, its name and the test-mode line do not say MoonPay", [walletTab.length > 200, /MoonPay/.test(shown(walletTab)), panel.includes('["wallet", "Your wallets"]'), /mp-sandbox[^\n]*MoonPay/.test(panel)], [true, false, true, false]);
   expect("...nor the messages after connecting", ["MoonPay wallet is connected", "and MoonPay wallet are ready", "kept safe by MoonPay"].map((t) => signIn.includes(t)), [false, false, false]);
 }
 finish();

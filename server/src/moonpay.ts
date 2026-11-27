@@ -220,7 +220,7 @@ export async function customerRef(key: string): Promise<string> {
 const customerOf = async (ext: string | null | undefined) => (ext && /^cus_[0-9a-f]{24}$/.test(ext) ? store().kvGet<string>(`moonpay-ext:${ext}`) : null);
 
 // The customer's wallet the app buys into (kept by the server: see wallets in phase 1's next step).
-type WalletRec = { address: string; chain: "solana"; via: string; at: number };
+type WalletRec = { address: string; chain: string; via: string; at: number };
 export async function customerWallet(key: string): Promise<WalletRec | null> {
   return store().kvGet<WalletRec>(`moonpay-wallet:${key}`);
 }
@@ -248,7 +248,35 @@ export async function createSession(key: string, email: string, deviceIp: string
 
 // ---------- Buying ----------
 const FIATS = ["usd", "eur", "gbp", "cad", "aud"];
-const ASSETS: Record<string, { network: string }> = { sol: { network: "solana" }, usdc_sol: { network: "solana" } };
+// What can be bought, on which network (MoonPay's network code), into which of the customer's four
+// wallets. MoonPay's own list decides which of these are offered (buyOptions).
+type WalletKind = "solana" | "ethereum" | "bitcoin" | "tron";
+const ASSETS: Record<string, { network: string; wallet: WalletKind; label: string }> = {
+  sol: { network: "solana", wallet: "solana", label: "SOL (Solana)" },
+  usdc_sol: { network: "solana", wallet: "solana", label: "USDC on Solana" },
+  eth: { network: "ethereum", wallet: "ethereum", label: "ETH (Ethereum)" },
+  usdc: { network: "ethereum", wallet: "ethereum", label: "USDC on Ethereum" },
+  usdt: { network: "ethereum", wallet: "ethereum", label: "USDT on Ethereum" },
+  bnb_bsc: { network: "binance_smart_chain", wallet: "ethereum", label: "BNB (BNB Chain)" },
+  usdt_bsc: { network: "binance_smart_chain", wallet: "ethereum", label: "USDT on BNB Chain" },
+  eth_base: { network: "base", wallet: "ethereum", label: "ETH on Base" },
+  usdc_base: { network: "base", wallet: "ethereum", label: "USDC on Base" },
+  pol_polygon: { network: "polygon", wallet: "ethereum", label: "POL (Polygon)" },
+  eth_arbitrum: { network: "arbitrum", wallet: "ethereum", label: "ETH on Arbitrum" },
+  eth_optimism: { network: "optimism", wallet: "ethereum", label: "ETH on Optimism" },
+  avax_cchain: { network: "avalanche_c_chain", wallet: "ethereum", label: "AVAX (Avalanche)" },
+  btc: { network: "bitcoin", wallet: "bitcoin", label: "BTC (Bitcoin)" },
+  trx: { network: "tron", wallet: "tron", label: "TRX (Tron)" },
+  usdt_trx: { network: "tron", wallet: "tron", label: "USDT on Tron" },
+};
+// In test mode MoonPay pays test coins on test networks; only those the wallet window can show are
+// offered (SOL on Solana's devnet, ETH on Sepolia). Test Bitcoin needs a test-network address.
+const SANDBOX_COINS = new Set(["sol", "usdc_sol", "eth"]);
+// The customer's wallet of a kind (moonwallet.ts keeps them: the Solana one under moonpay-wallet:<key>).
+async function walletOf(key: string, kind: WalletKind): Promise<WalletRec | null> {
+  if (kind === "solana") return customerWallet(key);
+  return store().kvGet<WalletRec>(`moonpay-wallet-${kind}:${key}`);
+}
 // The customer confirmed an amount on the app's buy screen: the purchase is started, with the
 // wallet from the server's own record. Returns our id, which the browser hands to MoonPay's
 // frame as externalTransactionId.
@@ -262,7 +290,7 @@ export async function startBuy(key: string, body: any): Promise<{ id: string; wa
   if (!ASSETS[asset]) throw new Error("Choose a coin to buy.");
   if (!(fiatAmount >= MIN_BUY)) throw new Error(`The smallest purchase is ${MIN_BUY}.`);
   if (fiatAmount > maxBuy()) throw new Error(`The largest purchase is ${maxBuy()} at a time.`);
-  const wallet = await customerWallet(key);
+  const wallet = await walletOf(key, ASSETS[asset].wallet);
   if (!wallet?.address) throw new Error("Your wallet is not set up yet.");
   // No more than 10 purchases started per customer in an hour (a stuck screen or a script cannot flood the table).
   const recent = await myTransactions(key, null, 20);
@@ -289,15 +317,14 @@ async function moonpayCurrencies(): Promise<any[]> {
   listCache = { at: Date.now(), list: Array.isArray(list) ? list : [] };
   return listCache.list;
 }
-const COIN_LABEL: Record<string, string> = { sol: "SOL (Solana)", usdc_sol: "USDC on Solana" };
-export async function buyOptions(): Promise<{ coins: { id: string; label: string }[]; fiats: { code: string; min: number; max: number }[] }> {
+export async function buyOptions(): Promise<{ coins: { id: string; label: string; wallet: WalletKind }[]; fiats: { code: string; min: number; max: number }[] }> {
   const c = config();
   if (!c.on) return { coins: [], fiats: [] };
   const list = await moonpayCurrencies();
   const coins = Object.keys(ASSETS).filter((code) => {
     const x = list.find((y) => y?.code === code && y?.type === "crypto");
-    return x && !x.isSuspended && (c.mode === "live" || x.supportsTestMode);
-  }).map((id) => ({ id, label: COIN_LABEL[id] ?? id.toUpperCase() }));
+    return x && !x.isSuspended && (c.mode === "live" || (x.supportsTestMode && SANDBOX_COINS.has(code)));
+  }).map((id) => ({ id, label: ASSETS[id].label, wallet: ASSETS[id].wallet }));
   const fiats = FIATS.map((code) => list.find((y) => y?.code === code && y?.type === "fiat")).filter(Boolean)
     .map((x: any) => ({ code: String(x.code), min: Math.max(MIN_BUY, Math.ceil(Number(x.minBuyAmount) || 0)), max: Math.min(maxBuy(), Math.floor(Number(x.maxBuyAmount) || maxBuy())) }))
     .filter((f) => f.min <= f.max);
@@ -330,9 +357,10 @@ const PAY_WITH: Record<string, string> = { card: "credit_debit_card", apple_pay:
 // Where a test purchase goes when the customer has no MoonPay wallet yet: the account's current
 // wallet address, in sandbox only (test coins on Solana's test network). Real money only ever goes
 // to a MoonPay wallet on file.
-async function buyInto(key: string, user: { solanaAddress?: string | null }): Promise<{ address: string; which: "moonpay" | "current-test" } | null> {
-  const w = await customerWallet(key);
+async function buyInto(key: string, user: { solanaAddress?: string | null }, kind: WalletKind = "solana"): Promise<{ address: string; which: "moonpay" | "current-test" } | null> {
+  const w = await walletOf(key, kind);
   if (w?.address) return { address: w.address, which: "moonpay" };
+  if (kind !== "solana") return null;
   if (config().mode === "sandbox" && user.solanaAddress && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(user.solanaAddress)) return { address: user.solanaAddress, which: "current-test" };
   return null;
 }
@@ -354,7 +382,7 @@ export async function widgetBuy(key: string, user: { solanaAddress?: string | nu
   if (!Number.isInteger(fiatAmount)) throw new Error("Use a whole amount, without cents.");
   if (fiatAmount < fiat.min) throw new Error(`The smallest purchase is ${fiat.min} ${fiatCurrency.toUpperCase()}.`);
   if (fiatAmount > fiat.max) throw new Error(`The largest purchase is ${fiat.max} ${fiatCurrency.toUpperCase()} at a time.`);
-  const into = await buyInto(key, user);
+  const into = await buyInto(key, user, ASSETS[asset].wallet);
   if (!into) throw new Error("Your wallet is not set up yet.");
   await checkRate(key);
   const ref = await customerRef(key);

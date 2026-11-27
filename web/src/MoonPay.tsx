@@ -4,7 +4,8 @@
 // price, fee or "paid" is ever made up here.
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, type MoonWalletView, type TxStatus, type WalletTx, type WalletTxEvent } from "./api";
+import QRCode from "qrcode";
+import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, WALLET_KINDS, type BalanceRow, type ChainWallet, type MoonWalletView, type TxStatus, type WalletChain, type WalletTx, type WalletTxEvent } from "./api";
 
 type Tab = "wallet" | "buy" | "history" | "previous";
 type Notify = (m: string, bad?: boolean) => void;
@@ -20,7 +21,7 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
     window.addEventListener(MOONPAY_WALLET_EVENT, again);
     return () => window.removeEventListener(MOONPAY_WALLET_EVENT, again);
   }, []);
-  const tabs: [Tab, string][] = [["wallet", "Your wallet"], ["buy", "Buy"], ["history", "Transactions"], ["previous", "Previous wallet"]];
+  const tabs: [Tab, string][] = [["wallet", "Your wallets"], ["buy", "Buy"], ["history", "Transactions"], ["previous", "Previous wallet"]];
   return (
     <div className="mp">
       <div className="tabs" role="tablist">
@@ -28,7 +29,7 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
-      {view?.buying.mode === "sandbox" && tab !== "previous" && <p className="mp-sandbox small">Test mode: no real money moves, and coins arrive on Solana's test network.</p>}
+      {view?.buying.mode === "sandbox" && tab !== "previous" && <p className="mp-sandbox small">Test mode: no real money moves, and bought coins arrive on test networks.</p>}
       {err && tab !== "previous" && <p className="down small">{err}</p>}
       {tab === "wallet" && <WalletTab view={view} reload={load} notify={notify} toBuy={() => setTab("buy")} />}
       {tab === "buy" && <BuyTab view={view} toWallet={() => setTab("wallet")} toHistory={() => setTab("history")} />}
@@ -38,41 +39,112 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
   );
 }
 
-// ---------- The wallet ----------
+// ---------- The wallets ----------
+// Four wallets, made for the person by MoonPay (with no click: at sign-up, or the first time the app
+// and MoonPay know it is them). The Ethereum one is a single address on all the EVM networks.
+export const CHAIN_INFO: Record<WalletChain, { name: string; networks: string; holds: string; qr: (a: string) => string }> = {
+  solana: { name: "Solana", networks: "Solana", holds: "SOL and Solana tokens, such as USDC and the coins this app trades.", qr: (a) => `solana:${a}` },
+  ethereum: { name: "Ethereum & EVM", networks: "Ethereum · BNB Chain · Base · Polygon · Arbitrum · Optimism · Avalanche", holds: "One address on all these networks: ETH, BNB, POL, AVAX and their tokens (USDT, USDC…).", qr: (a) => `ethereum:${a}` },
+  bitcoin: { name: "Bitcoin", networks: "Bitcoin", holds: "BTC.", qr: (a) => `bitcoin:${a}` },
+  tron: { name: "Tron", networks: "Tron", holds: "TRX and USDT on Tron (TRC-20).", qr: (a) => a },
+};
+const amountText = (n: number | null, symbol: string) => (n === null ? "—" : `${n === 0 ? "0" : n < 0.0001 ? n.toExponential(2) : n.toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 6 : 4 })} ${symbol}`);
 function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | null; reload: () => void; notify: Notify; toBuy: () => void }) {
-  if (!view) return <p className="muted small pad">Loading your wallet…</p>;
-  const w = view.wallet;
-  if (!w)
+  const [bal, setBal] = useState<Partial<Record<WalletChain, BalanceRow[]>> | null>(null);
+  const [deposit, setDeposit] = useState<ChainWallet | null>(null);
+  const all = view?.all ?? (view?.wallet ? [view.wallet as ChainWallet] : []);
+  const loadBal = (fresh = false) => api.moonBalances(fresh).then((r) => setBal(r.balances)).catch(() => setBal({}));
+  useEffect(() => {
+    if (all.length) void loadBal();
+  }, [all.map((w) => w.address).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!view) return <p className="muted small pad">Loading your wallets…</p>;
+  if (!all.length)
     return (
       <div className="mp-card">
-        <h3>Your wallet</h3>
-        <p className="small">A wallet of your own, kept safe with your email sign-in. Crypto you buy here goes into it. This app can see it but can never move money out of it.</p>
+        <h3>Your wallets</h3>
+        <p className="small">Wallets of your own on Solana, Ethereum (with BNB Chain, Base, Polygon, Arbitrum, Optimism and Avalanche), Bitcoin and Tron, kept safe with your email sign-in. This app can see them but can never move money out of them.</p>
         {view.wallets.on ? (
           <>
-            <p className="muted small">Sign in with your account's email (a code is emailed to you), or with Google or Apple. Your wallet is made and connected in the same step.</p>
-            <button className="btn buy" onClick={() => window.dispatchEvent(new Event(SIGNIN_EVENT))}>Connect wallet</button>
+            <p className="muted small">They are made the moment you sign in with your account's email. Sign in once to finish making them.</p>
+            <button className="btn buy" onClick={() => window.dispatchEvent(new Event(SIGNIN_EVENT))}>Sign in to finish</button>
           </>
         ) : (
           <p className="muted small">Wallets are not switched on in this app yet.</p>
         )}
       </div>
     );
+  const missing = WALLET_KINDS.filter((k) => !all.some((w) => w.chain === k));
   return (
     <div className="wallet-tab">
-      <div className="wallet-head">
-        <div>
-          <div className="label-sm">Your wallet · Solana</div>
-          <div className="wallet-total">{view.balance?.sol === null || view.balance?.sol === undefined ? "…" : `${view.balance.sol.toFixed(4)} SOL`}</div>
-          <button className="link-btn mono small" onClick={() => void copy(w.address, notify)} title="Copy the full address">{w.address.slice(0, 6)}…{w.address.slice(-6)} ⧉</button>
-          {view.balance && <div className="muted tiny">{view.balance.network}</div>}
-        </div>
+      <div className="wallets-top">
+        <p className="muted small">Your own wallets, kept safe with your email sign-in. This app can see them but can never move money out of them.</p>
         <div className="wallet-actions">
           <button className="btn buy" onClick={toBuy}>Buy</button>
-          <button className="btn ghost" onClick={reload}>↻ Refresh</button>
+          <button className="btn ghost" onClick={() => { reload(); void loadBal(true); }}>↻ Refresh</button>
         </div>
       </div>
-      <p className="muted small">Your own wallet, kept safe with your email sign-in. This app can see it but can never move money out of it.</p>
+      <div className="wallet-cards">
+        {WALLET_KINDS.map((k) => all.find((w) => w.chain === k)).filter((w): w is ChainWallet => !!w).map((w) => {
+          const info = CHAIN_INFO[w.chain];
+          const rows = bal?.[w.chain];
+          return (
+            <div key={w.chain} className="chain-card">
+              <div className="chain-head">
+                <div>
+                  <div className="chain-name">{info.name}</div>
+                  <div className="muted tiny">{info.networks}</div>
+                </div>
+                <button className="btn ghost small" onClick={() => setDeposit(w)}>Deposit</button>
+              </div>
+              <button className="link-btn mono small chain-address" onClick={() => void copy(w.address, notify)} title="Copy the full address">{w.address} ⧉</button>
+              <div className="chain-bal">
+                {rows === undefined
+                  ? <span className="muted tiny">Reading balances…</span>
+                  : rows.map((r) => (
+                    <div key={`${r.network}-${r.symbol}`} className={`chain-row${r.test ? " test" : ""}`}>
+                      <span className="muted">{r.network}</span>
+                      <span className="mono">{amountText(r.amount, r.symbol)}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {missing.length > 0 && <p className="muted tiny">Your {missing.map((k) => CHAIN_INFO[k].name).join(" and ")} {missing.length > 1 ? "wallets are" : "wallet is"} made the next time you sign in.</p>}
+      {deposit && <DepositModal wallet={deposit} sandbox={view.buying.mode === "sandbox"} onClose={() => setDeposit(null)} notify={notify} />}
     </div>
+  );
+}
+// Receiving crypto from an exchange or another wallet: the wallet's address, with a QR code, and the
+// networks it works on (sending on another network can lose the money).
+function DepositModal({ wallet, sandbox, onClose, notify }: { wallet: ChainWallet; sandbox: boolean; onClose: () => void; notify: Notify }) {
+  const info = CHAIN_INFO[wallet.chain];
+  const [qr, setQr] = useState("");
+  useEffect(() => {
+    QRCode.toDataURL(info.qr(wallet.address), { margin: 1, width: 220, color: { dark: "#04101c", light: "#ffffff" } }).then(setQr).catch(() => setQr(""));
+  }, [wallet.address]); // eslint-disable-line react-hooks/exhaustive-deps
+  return createPortal(
+    <div className="modal-backdrop on-top">
+      <div className="modal narrow" role="dialog" aria-modal="true" aria-labelledby="deposit-title">
+        <div className="modal-head">
+          <h2 id="deposit-title">Deposit to your {info.name} wallet</h2>
+          <button className="modal-close" onClick={onClose} aria-label="Close" title="Close">✕</button>
+        </div>
+        <div className="modal-body deposit-body">
+          <p>{info.holds}</p>
+          {qr && <img className="deposit-qr" src={qr} alt={`QR code of your ${info.name} wallet address`} />}
+          <div className="deposit-address mono">{wallet.address}</div>
+          <button className="btn buy wide" onClick={() => void copy(wallet.address, notify)}>Copy address</button>
+          <ul className="small deposit-notes">
+            <li><b>Only on: {info.networks}.</b> Sending on any other network can lose the money.</li>
+            {wallet.chain === "ethereum" && <li>Choose the same network when you send as the coin you send (BNB on BNB Chain, POL on Polygon…).</li>}
+            {sandbox && <li>This app is in test mode, but this address is a real one: anything sent here is real.</li>}
+          </ul>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -96,7 +168,11 @@ function BuyTab({ view, toWallet, toHistory }: { view: MoonWalletView | null; to
   const asset = coins.some((c) => c.id === coin) ? coin : coins[0]?.id ?? "";
   const n = Number(amount);
   const amountProblem = !amount || !fiat ? "" : n < fiat.min ? `The smallest purchase is ${money(fiat.min, fiat.code, 0)}.` : n > fiat.max ? `The largest purchase is ${money(fiat.max, fiat.code, 0)} at a time.` : "";
-  const into = view?.buyInto ?? null;
+  // The coin goes into the customer's wallet of its kind (BNB, POL, AVAX… into the Ethereum & EVM
+  // one). The server decides again when the purchase starts; this only says where.
+  const kind: WalletChain = coins.find((c) => c.id === asset)?.wallet ?? "solana";
+  const mine = (view?.all ?? []).find((w) => w.chain === kind);
+  const into = mine ? { address: mine.address, which: "moonpay" as const } : kind === "solana" ? view?.buyInto ?? null : null;
   const go = async () => {
     setMsg(null);
     if (!view?.buying.on) return setMsg({ text: "Buying is not switched on in this app yet.", bad: true });
@@ -125,9 +201,9 @@ function BuyTab({ view, toWallet, toHistory }: { view: MoonWalletView | null; to
       <h3>Buy crypto</h3>
       <p className="small">
         Pay with a card, Apple Pay or Google Pay. The crypto goes straight into{" "}
-        {into ? (into.which === "moonpay" ? <>your wallet (<span className="mono">{short(into.address)}</span>)</> : <>your current wallet (<span className="mono">{short(into.address)}</span>), as test coins</>) : "your wallet"}.
+        {into ? (into.which === "moonpay" ? <>your {CHAIN_INFO[kind].name} wallet (<span className="mono">{short(into.address)}</span>)</> : <>your current wallet (<span className="mono">{short(into.address)}</span>), as test coins</>) : `your ${CHAIN_INFO[kind].name} wallet`}.
       </p>
-      {!into && view && <p className="small"><button className="link-btn" onClick={toWallet}>Connect your wallet</button> first.</p>}
+      {!into && view && <p className="small">Your {CHAIN_INFO[kind].name} wallet is not made yet: <button className="link-btn" onClick={toWallet}>see your wallets</button>.</p>}
       <div className="mp-form">
         <label>
           <span className="label-sm">You pay</span>
@@ -255,7 +331,7 @@ function TxDetail({ id, notify, sandbox }: { id: string; notify: Notify; sandbox
   if (!d) return <p className="muted small">Loading…</p>;
   const t = d.tx, cur = t.fiatCurrency ?? "usd";
   const fees: [string, number | null][] = [["MoonPay Fee", t.feeAmount], ["Network Fee", t.networkFeeAmount], ["Ecosystem Fee", t.extraFeeAmount]];
-  const explorer = t.txHash && t.network === "solana" ? `https://solscan.io/tx/${encodeURIComponent(t.txHash)}${sandbox ? "?cluster=devnet" : ""}` : null;
+  const explorer = t.txHash ? explorerTx(t.network, t.txHash, sandbox) : null;
   return (
     <div className="mp-detail small">
       {t.flag && <p className="warn">⚠ {t.flag}. Contact support before relying on this transaction.</p>}
@@ -300,4 +376,22 @@ async function copy(text: string, notify: Notify, done = "Wallet address copied"
   } catch {
     notify(text);
   }
+}
+
+// Where a delivered purchase can be looked up, on its own network's explorer (test networks in test mode).
+const EXPLORER: Record<string, (h: string, test: boolean) => string> = {
+  solana: (h, t) => `https://solscan.io/tx/${h}${t ? "?cluster=devnet" : ""}`,
+  ethereum: (h, t) => `https://${t ? "sepolia." : ""}etherscan.io/tx/${h}`,
+  binance_smart_chain: (h) => `https://bscscan.com/tx/${h}`,
+  base: (h) => `https://basescan.org/tx/${h}`,
+  polygon: (h) => `https://polygonscan.com/tx/${h}`,
+  arbitrum: (h) => `https://arbiscan.io/tx/${h}`,
+  optimism: (h) => `https://optimistic.etherscan.io/tx/${h}`,
+  avalanche_c_chain: (h) => `https://snowtrace.io/tx/${h}`,
+  bitcoin: (h, t) => `https://mempool.space/${t ? "testnet/" : ""}tx/${h}`,
+  tron: (h) => `https://tronscan.org/#/transaction/${h}`,
+};
+function explorerTx(network: string | null | undefined, hash: string, sandbox: boolean): string | null {
+  const f = network ? EXPLORER[network] : undefined;
+  return f ? f(encodeURIComponent(hash), sandbox) : null;
 }
