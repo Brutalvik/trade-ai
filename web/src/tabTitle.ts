@@ -36,25 +36,26 @@ export const boldDigits = (text: string) => text.replace(/[0-9]/g, (d) => String
 const GAP = "\u2003"; // an em space
 const DOT = { up: "\u{1F7E2}", down: "\u{1F534}" }; // a green circle, a red circle
 // "T//R  (green dot) +$1,234.56", "T//R  (red dot) -$23.40", "T//R  $0.00", the digits in bold
-export function tabText(pnl: number): string {
+// sym = the shown currency's symbol (the amount is already in that currency: api.ts fromUsd).
+export function tabText(pnl: number, sym = "$"): string {
   const tone = tabTone(pnl);
   const amount = boldDigits(tone === "flat" ? "0.00" : Math.abs(pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-  return tone === "flat" ? `T//R${GAP}$${amount}` : `T//R${GAP}${DOT[tone]}\u00a0${tone === "up" ? "+" : "-"}$${amount}`;
+  return tone === "flat" ? `T//R${GAP}${sym}${amount}` : `T//R${GAP}${DOT[tone]}\u00a0${tone === "up" ? "+" : "-"}${sym}${amount}`;
 }
 // The same figure as the header prints it under EQUITY: always with its sign ("+$1,234.56",
 // "-$23.40"), and "$0.00" with none when it is under half a cent either way.
-export function pnlText(pnl: number): string {
+export function pnlText(pnl: number, sym = "$"): string {
   const tone = tabTone(pnl);
   const amount = (tone === "flat" ? 0 : Math.abs(pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `${tone === "up" ? "+" : tone === "down" ? "-" : ""}$${amount}`;
+  return `${tone === "up" ? "+" : tone === "down" ? "-" : ""}${sym}${amount}`;
 }
 export const tabIcon = (tone: TabTone): string =>
   tone === "flat" ? ICON : `data:image/svg+xml,${encodeURIComponent(logoIcon(tone))}`;
 
 // pnl = the account's profit or loss in dollars; null = show the plain name and the usual icon.
-export function showTab(pnl: number | null) {
+export function showTab(pnl: number | null, sym = "$") {
   if (typeof document === "undefined") return;
-  const title = pnl === null || !Number.isFinite(pnl) ? NAME : tabText(pnl);
+  const title = pnl === null || !Number.isFinite(pnl) ? NAME : tabText(pnl, sym);
   if (document.title !== title) document.title = title;
   const href = tabIcon(pnl === null || !Number.isFinite(pnl) ? "flat" : tabTone(pnl));
   // Every icon the page names (the .svg and the .ico; not the apple-touch-icon): with the .ico still

@@ -368,6 +368,7 @@ export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOu
         <div><dt>Username</dt><dd>@{user.username} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Name</dt><dd>{user.firstName} {user.lastName} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Email</dt><dd>{user.email}</dd></div>
+        <div><dt>Currency</dt><dd><CurrencyPicker notify={notify} /></dd></div>
         {!real && <div><dt>Started with</dt><dd>{acc ? fmtUsd(acc.startCash) : "–"}</dd></div>}
       </dl>
       <p className="muted tiny">{real
@@ -405,6 +406,33 @@ function RealStats({ view }: { view: { totalUsd: number | null; complete: boolea
       <div><small>Traded</small><b>{view?.trades ? fmtUsd(volume) : "…"}<em>in real trades</em></b></div>
       <div><small>Auto-pilot</small><b>Off<em>for real money: not on yet</em></b></div>
     </div>
+  );
+}
+
+// The currency every amount in the app is shown in (and typed in). The app keeps dollars; this is
+// how they are shown, at Coinbase's rate (server/src/fx.ts). Kept with the account.
+function CurrencyPicker({ notify }: { notify: (m: string, bad?: boolean) => void }) {
+  const access = useAccess();
+  const list = access.currencies ?? [];
+  const now = access.me?.prefs?.currency ?? "USD";
+  const [busy, setBusy] = useState(false);
+  const pick = async (code: string) => {
+    setBusy(true);
+    try {
+      await api.setCurrency(code);
+      access.reloadMe?.();
+      notify(`Amounts are now shown in ${code}`);
+    } catch (e: any) {
+      notify(e.message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!list.length) return <span>{now}</span>;
+  return (
+    <select className="currency-pick" value={now} disabled={busy} onChange={(e) => void pick(e.target.value)} aria-label="Currency to show amounts in">
+      {list.map((c) => <option key={c.code} value={c.code}>{c.code} · {c.name}</option>)}
+    </select>
   );
 }
 
@@ -470,7 +498,7 @@ function TradeModeSwitch({ user, notify }: { user: User; notify: (m: string, bad
 const PLAN_NAMES: Record<string, string> = { free: "Free", member: "Member", starter: "AI Starter", pro: "AI Pro", max: "AI Max" };
 const planName = (id?: string) => PLAN_NAMES[id ?? "free"] ?? "Free";
 // The signed-in user's plan, role and permissions, shared across the page.
-export type Access = { me: User | null; can: (p: Permission) => boolean; openPlans: () => void; openAdmin: () => void; reloadMe?: () => void };
+export type Access = { me: User | null; can: (p: Permission) => boolean; openPlans: () => void; openAdmin: () => void; reloadMe?: () => void; currencies?: { code: string; name: string; rate: number }[] };
 export const AccessCtx = createContext<Access>({ me: null, can: () => true, openPlans: () => {}, openAdmin: () => {} });
 export const useAccess = () => useContext(AccessCtx);
 

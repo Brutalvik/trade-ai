@@ -3,6 +3,7 @@
 // Sessions are signed cookies (HMAC-SHA256) that last 30 days; changing the password
 // signs out every other session. The signing key is made once and kept in the store,
 // so no extra setting is needed.
+import { checkCurrency } from "./fx.js";
 import crypto from "node:crypto";
 import * as moonwallet from "./moonwallet.js";
 import { promisify } from "node:util";
@@ -34,9 +35,9 @@ type User = {
 export type TradeMode = "paper" | "real";
 // Parts of the app a user can hide in Settings. Everything is shown unless its name is in `hide`.
 export const HIDEABLE = ["aiSignal"] as const;
-export type Prefs = { hide?: string[] };
+export type Prefs = { hide?: string[]; currency?: string }; // currency: what the app shows money in (fx.ts); USD when not set
 const cleanHide = (v: unknown): string[] => [...new Set((Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string" && (HIDEABLE as readonly string[]).includes(x)))];
-export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role; solanaAddress: string | null; hasPassword: boolean; tradeMode: TradeMode; prefs: { hide: string[] } };
+export type PublicUser = { username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; plan: PlanId; role: Role; solanaAddress: string | null; hasPassword: boolean; tradeMode: TradeMode; prefs: { hide: string[]; currency: string } };
 
 const COOKIE = "nexus_session";
 const SESSION_DAYS = 30;
@@ -45,7 +46,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const userKey = (u: string) => `user:${u.toLowerCase()}`;
 const emailKey = (e: string) => `email:${e.toLowerCase()}`;
-const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash, tradeMode: u.tradeMode === "real" ? "real" : "paper", prefs: { hide: cleanHide(u.prefs?.hide) } });
+const pub = (u: User): PublicUser => ({ username: u.username, firstName: u.firstName, lastName: u.lastName, email: u.email, createdAt: u.createdAt, avatarUrl: u.avatarUrl ?? null, plan: planOf(u.plan).id, role: u.role ?? "user", solanaAddress: u.solanaAddress ?? null, hasPassword: !!u.hash, tradeMode: u.tradeMode === "real" ? "real" : "paper", prefs: { hide: cleanHide(u.prefs?.hide), currency: u.prefs?.currency ?? "USD" } });
 
 let secret: Buffer | null = null;
 async function key() {
@@ -345,8 +346,10 @@ export async function setPrefs(req: Request, res: Response) {
     res.status(401);
     throw new Error("Sign in first");
   }
-  if (!Array.isArray(req.body?.hide)) throw new Error("Send the list of parts to hide");
-  const updated: User = { ...user, prefs: { ...(user.prefs ?? {}), hide: cleanHide(req.body.hide) } };
+  const hide = req.body?.hide, currency = req.body?.currency;
+  if (hide === undefined && currency === undefined) throw new Error("Send the list of parts to hide, or a currency");
+  if (hide !== undefined && !Array.isArray(hide)) throw new Error("Send the list of parts to hide");
+  const updated: User = { ...user, prefs: { ...(user.prefs ?? {}), ...(hide !== undefined ? { hide: cleanHide(hide) } : {}), ...(currency !== undefined ? { currency: await checkCurrency(currency) } : {}) } };
   await store.kvSet(userKey(user.username), updated);
   return { user: { ...pub(updated), owner: true } };
 }

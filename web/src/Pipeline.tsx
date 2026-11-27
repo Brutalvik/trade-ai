@@ -8,8 +8,8 @@
 // people who ask for less motion.)
 import { useEffect, useRef, useState } from "react";
 import { useAgentLog } from "./agentLog";
-import { aiText, api, type AppState } from "./api";
-import { coinTraces, price, type CoinTrace, type TraceKey } from "./pipelineTrace";
+import { aiText, api, fmtPrice, fmtUsd, type AppState } from "./api";
+import { coinTraces, type CoinTrace, type TraceKey } from "./pipelineTrace";
 
 type Scan = { scanned: number; icons: Record<string, string> };
 
@@ -42,7 +42,7 @@ export function Pipeline({ state, onOpenLog }: { state: AppState | null; onOpenL
   const running = bots.filter((b) => b.bot.running).length;
   const icons: Record<string, string> = { ...(scan?.icons ?? {}) };
   for (const b of bots) if (b.bot.config?.symbol && b.bot.config.imageUrl) icons[b.bot.config.symbol] = b.bot.config.imageUrl;
-  const traces = coinTraces(lines, { scanned: scan?.scanned ?? null });
+  const traces = coinTraces(lines, { scanned: scan?.scanned ?? null, money: (v) => fmtUsd(v), price: fmtPrice });
   const [picked, setPicked] = useState<string | null>(null);
   const tr = traces.find((t) => t.coin === picked) ?? traces[0] ?? null;
   const flash = useFlash(tr);
@@ -73,7 +73,7 @@ export function Pipeline({ state, onOpenLog }: { state: AppState | null; onOpenL
         </div>
         {tr && (
           <span className="pf-traceinfo">
-            <b>{tr.coin}</b> · Solana{tr.entry?.price ? <> · Entry {price(tr.entry.price)}</> : null}{tr.entry?.usd ? <> · Size ${tr.entry.usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</> : null}
+            <b>{tr.coin}</b> · Solana{tr.entry?.price ? <> · Entry {fmtPrice(tr.entry.price)}</> : null}{tr.entry?.usd ? <> · Size {fmtUsd(tr.entry.usd)}</> : null}
           </span>
         )}
       </div>

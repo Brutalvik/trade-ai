@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe, type WalletView } from "./api";
+import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, curSymbol, fmtBig, fmtMoney, fmtPct, fmtPrice, fmtTime, fmtUsd, fromUsd, setDisplayCurrency, toUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe, type WalletView } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
@@ -87,9 +87,20 @@ export default function App() {
     const id = setInterval(() => void loadMe(), 60_000); // keeps the token meter current
     return () => clearInterval(id);
   }, [loadMe]);
+  // The currencies money can be shown in (with their rates), read now and every 10 minutes. The
+  // person's choice applies before anything below is drawn, so every amount uses it.
+  const [currencies, setCurrencies] = useState<{ code: string; name: string; rate: number }[]>([]);
+  useEffect(() => {
+    const load = () => void api.currencies().then((r) => setCurrencies(r.currencies)).catch(() => {});
+    load();
+    const id = setInterval(load, 10 * 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const chosen = me?.prefs?.currency ?? "USD";
+  setDisplayCurrency(chosen, currencies.find((c) => c.code === chosen)?.rate);
   const access = useMemo<Access & { plans: PlanInfo[] }>(
-    () => ({ me, plans, can: (perm) => (me ? (me.permissions ?? []).includes(perm) : true), openPlans: () => setPlansOpen(true), openAdmin: () => setAdminOpen(true), reloadMe: () => void loadMe() }),
-    [me, plans, loadMe],
+    () => ({ me, plans, currencies, can: (perm) => (me ? (me.permissions ?? []).includes(perm) : true), openPlans: () => setPlansOpen(true), openAdmin: () => setAdminOpen(true), reloadMe: () => void loadMe() }),
+    [me, plans, loadMe, currencies],
   );
   // Restore the last session instantly (coin, timeframe, tab, last-seen data); live data replaces it moments later.
   const [pair, setPair] = useState<PairInfo | null>(() => savedUi().pair ?? null);
@@ -556,7 +567,8 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
   // The browser tab shows "T//R" and this profit or loss (paper mode, signed in); its icon is
   // green or red with it. Leaving the app puts the plain name back.
   const tabPnl = me && !real && state ? Math.round(pnl * 100) / 100 : null;
-  useEffect(() => showTab(tabPnl), [tabPnl]);
+  const sym = curSymbol();
+  useEffect(() => showTab(tabPnl === null ? null : Math.round(fromUsd(tabPnl) * 100) / 100, sym), [tabPnl, sym]);
   useEffect(() => () => showTab(null), []);
   return (
     <header className="topbar">
@@ -580,7 +592,7 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
           <div className="equity">
             <small>Equity</small>
             <b>{fmtUsd(eq)}</b>
-            <span className={`equity-pnl ${tabTone(pnl)}`} title={state ? `Your profit or loss so far: your equity now, less the ${fmtUsd(state.startCash)} the account started with.` : undefined}>{pnlText(pnl)}</span>
+            <span className={`equity-pnl ${tabTone(pnl)}`} title={state ? `Your profit or loss so far: your equity now, less the ${fmtUsd(state.startCash)} the account started with.` : undefined}>{pnlText(fromUsd(pnl), curSymbol())}</span>
           </div>
         )}
         <AccountButton notify={notify} onChange={refresh} state={state} />
@@ -1077,9 +1089,10 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
   };
   const lp = Number(limitPrice);
   const diffPct = live && lp ? ((lp - live) / live) * 100 : 0;
-  const buyNow = () => pair && run(() => api.buy(pair.chain, pair.pool, Number(usd)), `Bought ${fmtUsd(Number(usd))} of ${pair.symbol} (paper)`);
+  // The amount is typed in the shown currency (curSymbol); the paper account keeps dollars.
+  const buyNow = () => pair && run(() => api.buy(pair.chain, pair.pool, toUsd(Number(usd))), `Bought ${fmtMoney(Number(usd))} of ${pair.symbol} (paper)`);
   const sellNow = (f: number) => pair && pos && run(() => api.sell(pair.chain, pair.pool, pos.id, f), `Sold ${f * 100}% of ${pair.symbol} (paper)`);
-  const limitBuy = () => pair && run(() => api.placeOrder({ side: "BUY", chain: pair.chain, pool: pair.pool, symbol: pair.symbol, price: lp, usd: Number(usd) }), `Limit buy set: ${fmtUsd(Number(usd))} of ${pair.symbol} at ${fmtPrice(lp)}`);
+  const limitBuy = () => pair && run(() => api.placeOrder({ side: "BUY", chain: pair.chain, pool: pair.pool, symbol: pair.symbol, price: lp, usd: toUsd(Number(usd)) }), `Limit buy set: ${fmtMoney(Number(usd))} of ${pair.symbol} at ${fmtPrice(lp)}`);
   const limitSell = () => pos && run(() => api.placeOrder({ side: "SELL", positionId: pos.id, price: lp, fraction: sellShare }), `Limit sell set: ${sellShare * 100}% of ${pos.symbol} at ${fmtPrice(lp)}`);
   const cancel = (id: string) => run(() => api.cancelOrder(id), "Order cancelled");
 
@@ -1141,10 +1154,10 @@ function TradePanel({ pair, state, notify, refresh }: { pair: PairInfo | null; s
       {tab === "buy" ? (
         <>
           <div className="amount">
-            <span>$</span>
-            <input type="number" min="1" step="1" value={usd} onChange={(e) => setUsd(e.target.value)} aria-label="Amount in dollars" />
+            <span>{curSymbol()}</span>
+            <input type="number" min="1" step="1" value={usd} onChange={(e) => setUsd(e.target.value)} aria-label="Amount to buy" />
             {[25, 50, 100].map((p) => (
-              <button key={p} className="chip" onClick={() => setUsd(((cash * p) / 100).toFixed(2))}>{p}%</button>
+              <button key={p} className="chip" onClick={() => setUsd(((fromUsd(cash) * p) / 100).toFixed(2))}>{p}%</button>
             ))}
           </div>
           {kind === "limit" && priceBox}

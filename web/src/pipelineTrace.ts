@@ -31,8 +31,9 @@ export type CoinTrace = {
   steps: TraceStep[];
 };
 
-const money = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-export const price = (v: number) => `$${v >= 1 ? v.toLocaleString("en-US", { maximumFractionDigits: 4 }) : v.toPrecision(4)}`;
+// How amounts are written (the Pipeline passes the app's, which show the person's currency; dollars by default).
+let money = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+let price = (v: number) => `$${v >= 1 ? v.toLocaleString("en-US", { maximumFractionDigits: 4 }) : v.toPrecision(4)}`;
 const num = (re: RegExp, s: string) => { const m = re.exec(s); return m ? Number(m[1].replace(/,/g, "")) : undefined; };
 // The figures of a decision: its own, else what its reason (and line) say.
 function figs(d: Decision, msg = "") {
@@ -47,7 +48,9 @@ function figs(d: Decision, msg = "") {
 }
 const BY: Record<string, string> = { scouts: "the scouts", numbers: "the numbers", cost: "the cost" };
 
-export function coinTraces(lines: LogLine[], opts: { scanned?: number | null } = {}): CoinTrace[] {
+export function coinTraces(lines: LogLine[], opts: { scanned?: number | null; money?: (usd: number) => string; price?: (usd: number) => string } = {}): CoinTrace[] {
+  if (opts.money) money = opts.money;
+  if (opts.price) price = opts.price;
   const ds = lines.filter((l) => l.d && typeof l.d.act === "string" && (l.d.coin ?? l.sym)).sort((a, b) => a.t - b.t);
   // Every decision of the stretch, in order: its place is its "entry" number in the log.
   const order = new Map(ds.map((l, i) => [l, i + 1]));

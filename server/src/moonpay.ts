@@ -317,6 +317,11 @@ async function moonpayCurrencies(): Promise<any[]> {
   listCache = { at: Date.now(), list: Array.isArray(list) ? list : [] };
   return listCache.list;
 }
+// The currencies MoonPay takes for paying (its own list; for showing amounts in, fx.ts).
+export async function fiatCurrencies(): Promise<{ code: string; name: string }[]> {
+  if (!config().on) return [];
+  return (await moonpayCurrencies()).filter((x) => x?.type === "fiat" && !x.isSuspended && typeof x.code === "string").map((x) => ({ code: String(x.code).toUpperCase(), name: String(x.name ?? x.code) }));
+}
 export async function buyOptions(): Promise<{ coins: { id: string; label: string; wallet: WalletKind }[]; fiats: { code: string; min: number; max: number }[] }> {
   const c = config();
   if (!c.on) return { coins: [], fiats: [] };

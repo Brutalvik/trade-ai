@@ -17,6 +17,7 @@ import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import * as send from "./send.js";
 import * as moonpay from "./moonpay.js";
+import * as fx from "./fx.js";
 import * as moonwallet from "./moonwallet.js";
 import { balances as chainBalances, totalUsd as chainTotal } from "./chainbal.js";
 import * as wallettx from "./wallettx.js";
@@ -496,6 +497,15 @@ app.post("/api/moonpay/wallet/sync", authRoute(auth.moonpayWalletSync));
 app.post("/api/auth/password", authRoute(auth.changePassword));
 app.post("/api/auth/trade-mode", authRoute(auth.setTradeMode));
 app.post("/api/auth/prefs", authRoute(auth.setPrefs));
+// The currencies the app can show money in, with their rates against the US dollar (fx.ts).
+app.get("/api/currencies", async (_req, res) => {
+  try {
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.json({ currencies: await fx.currencies() });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message ?? String(e) });
+  }
+});
 app.post("/api/reset", signedIn(wrap(async (req) => engine.reset(Number(req.body.startCash ?? 10)))));
 app.post(
   "/api/bot/start",

@@ -143,7 +143,7 @@ export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.
 export type Usage = { month: string; used: number; limit: number; topup?: number }; // limit -1 = unlimited; topup = extra tokens that don't expire
 export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number }[]; yearlyMonthsPaid: number };
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[] }; // freeTrades -1 = unlimited
-export type User = { prefs?: { hide: string[] }; username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
+export type User = { prefs?: { hide: string[]; currency?: string }; username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
 export type AdminUser = User & { usage: Usage };
 export type RealQuote = { requestId: string; transaction: string; wallet: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
 export type RealTrade = { t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: "SOL" | "USDC"; status: "Success" | "Failed"; signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; feeBps: number; error?: string };
@@ -281,6 +281,8 @@ export const api = {
   setTradeMode: (mode: "paper" | "real") => req<{ user: User }>("/auth/trade-mode", { mode }),
   // The parts of the app this user has hidden (saved on their account).
   setPrefs: (hide: string[]) => req<{ user: User }>("/auth/prefs", { hide }),
+  setCurrency: (currency: string) => req<{ user: User }>("/auth/prefs", { currency }),
+  currencies: () => req<{ currencies: { code: string; name: string; rate: number }[] }>("/currencies"),
   plans: () => req<PlanInfo[]>("/plans"),
   agents: () => req<{ at: number; scanned: number; pass: number; coins: AgentCoin[] }>("/agents"),
   searchCoins: (q: string) => req<{ crypto: ListCoin[]; tokens: (ListCoin & { organic?: number })[]; address: boolean }>(`/search-coins?q=${encodeURIComponent(q)}`),
@@ -304,13 +306,36 @@ export const api = {
   protect: (positionId: string, pct: number) => req("/protect", { positionId, pct }),
 };
 
-export const fmtPrice = (p: number) => {
-  if (!p) return "$0";
-  if (p >= 1) return `$${p.toLocaleString(undefined, { maximumFractionDigits: 4 })}`;
-  const digits = Math.max(2, -Math.floor(Math.log10(p)) + 3);
-  return `$${p.toFixed(Math.min(digits, 12))}`;
+// ---------- The currency money is shown in ----------
+// The app keeps every amount in US dollars. A person can choose another currency in their profile
+// (USD, CAD and the currencies MoonPay takes, with Coinbase's rate: server/src/fx.ts): every
+// amount shown through fmtUsd and fmtPrice is then converted, and amounts typed into the forms
+// are in that currency (toUsd turns them into dollars before they are sent).
+let shown = { code: "USD", rate: 1, symbol: "$" };
+const symbolOf = (code: string) => {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: code }).formatToParts(0).find((x) => x.type === "currency")?.value ?? code;
+  } catch {
+    return code;
+  }
 };
-export const fmtUsd = (v: number, d = 2) => `${v < 0 ? "-" : ""}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+export const displayCurrency = () => shown;
+export function setDisplayCurrency(code: string | null | undefined, rate: number | null | undefined) {
+  shown = !code || code === "USD" || !(Number(rate) > 0) ? { code: "USD", rate: 1, symbol: "$" } : { code, rate: Number(rate), symbol: symbolOf(code) };
+}
+export const curSymbol = () => shown.symbol;
+export const toUsd = (local: number) => Math.round((local / shown.rate) * 100) / 100; // an amount typed in the shown currency, in dollars
+export const fromUsd = (usd: number) => usd * shown.rate;
+// An amount already in the shown currency (a form's own figures).
+export const fmtMoney = (v: number, d = 2) => `${v < 0 ? "-" : ""}${shown.symbol}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+export const fmtPrice = (usd: number) => {
+  const p = usd * shown.rate;
+  if (!p) return `${shown.symbol}0`;
+  if (p >= 1) return `${shown.symbol}${p.toLocaleString(undefined, { maximumFractionDigits: 4 })}`;
+  const digits = Math.max(2, -Math.floor(Math.log10(p)) + 3);
+  return `${shown.symbol}${p.toFixed(Math.min(digits, 12))}`;
+};
+export const fmtUsd = (usd: number, d = 2) => fmtMoney(usd * shown.rate, d);
 export const fmtBig = (v: number) => (v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : `$${v.toFixed(0)}`);
 export const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 export const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

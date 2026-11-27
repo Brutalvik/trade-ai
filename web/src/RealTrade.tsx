@@ -3,7 +3,7 @@
 // Confirm (your MoonPay wallet signs in your browser) -> the server checks it's the same swap and
 // sends it. Nothing moves until you sign.
 import { useContext, useEffect, useState } from "react";
-import { api, fmtPrice, fmtUsd, type PairInfo, type RealQuote, type RealTrade, type WalletView } from "./api";
+import { api, curSymbol, fmtPrice, fmtUsd, toUsd, type PairInfo, type RealQuote, type RealTrade, type WalletView } from "./api";
 import { MoonPaySigner, useAccess, type TxSigner } from "./Account";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -87,7 +87,7 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
     setBusy("quote");
     try {
       const slippage = slip === "auto" ? {} : { slippageBps: slip };
-      const q = await api.realQuote(tab === "buy" ? { side: "BUY", pay, mint: pair.tokenAddress, symbol: pair.symbol, usd: Number(usd), ...slippage } : { side: "SELL", pay, mint: pair.tokenAddress, symbol: pair.symbol, pct, ...slippage });
+      const q = await api.realQuote(tab === "buy" ? { side: "BUY", pay, mint: pair.tokenAddress, symbol: pair.symbol, usd: toUsd(Number(usd)), ...slippage } : { side: "SELL", pay, mint: pair.tokenAddress, symbol: pair.symbol, pct, ...slippage });
       setQuote(q);
       setMaxUsd(q.maxTradeUsd);
       setNow(Date.now());
@@ -149,11 +149,11 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
           {tab === "buy" ? (
             <>
               <div className="amount">
-                <span>$</span>
-                <input type="number" min="1" step="1" inputMode="decimal" value={usd} onChange={(e) => setUsd(e.target.value)} aria-label="Amount in US dollars" />
+                <span>{curSymbol()}</span>
+                <input type="number" min="1" step="1" inputMode="decimal" value={usd} onChange={(e) => setUsd(e.target.value)} aria-label="Amount to buy" />
               </div>
               <div className="real-quick">
-                {[5, 10, 25, 50, 100].map((v) => <button key={v} className="chip" onClick={() => setUsd(String(v))}>${v}</button>)}
+                {[5, 10, 25, 50, 100].map((v) => <button key={v} className="chip" onClick={() => setUsd(String(v))}>{curSymbol()}{v}</button>)}
               </div>
               {pay === "SOL" && <p className="muted tiny">0.01 SOL is kept for network fees.</p>}
             </>
@@ -188,7 +188,7 @@ function RealTradeForm({ pair, notify, signers }: { pair: PairInfo; notify: (m: 
           <button className={`btn ${tab === "buy" ? "buy" : "sell"} wide`} disabled={!!busy || (tab === "sell" && !tokenH)} onClick={() => void review()}>
             {busy === "quote" ? "Getting a price…" : `Review ${tab === "buy" ? "buy" : "sell"}`}
           </button>
-          <p className="muted tiny">Real money from your own wallet. Max ${maxUsd} per trade while real trading is new.</p>
+          <p className="muted tiny">Real money from your own wallet. Max {fmtUsd(maxUsd, 0)} per trade while real trading is new.</p>
         </>
       ) : (
         <div className="real-review">

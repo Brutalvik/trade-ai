@@ -8,7 +8,7 @@ import { Modal, useAccess } from "./Account";
 import { CoinSearch } from "./CoinSearch";
 import { findCoinPair } from "./CoinList";
 import { MaCrossChips } from "./MaCross";
-import { allBots, api, fmtPrice, fmtUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type CheckedOrder, type FcKey, type OrderPrediction, type PairInfo } from "./api";
+import { allBots, api, curSymbol, fmtMoney, fmtPrice, fmtUsd, fromUsd, toUsd, type AgentCoin, type AppState, type BotConfig, type BotSlot, type CheckedOrder, type FcKey, type OrderPrediction, type PairInfo } from "./api";
 import { tradeTone } from "./tradeTone";
 import { agentMoney, cardOrder, heldOrder, HOLD_MS } from "./cardOrder";
 
@@ -617,7 +617,9 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
   const [picking, setPicking] = useState<string | null>(null);
   // Default budget: $1,000, or whatever is available if that is less.
   const free = state?.available ?? state?.cash ?? 0;
-  const [budget, setBudget] = useState(String(free >= DEFAULT_BUDGET ? DEFAULT_BUDGET : Math.max(10, Math.floor(free))));
+  // Budgets are typed in the shown currency (api.ts) and sent in dollars; $10 is an agent's least.
+  const freeL = fromUsd(free), minL = Math.ceil(fromUsd(10) * 100) / 100;
+  const [budget, setBudget] = useState(String(free >= DEFAULT_BUDGET ? Math.round(fromUsd(DEFAULT_BUDGET)) : Math.max(Math.ceil(minL), Math.floor(freeL))));
   const quick = !!preset; // opened from the chart: the coin is chosen, only the budget is asked
   const [starting, setStarting] = useState(false);
   // Auto trade with auto-pick: several agents that choose their own coins.
@@ -625,7 +627,7 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
   const auto = mode === "auto" && !quick;
   const [count, setCount] = useState(Math.max(1, Math.min(freeCount, Math.floor(free / 10)))); // as many as are free, and as the cash can give $10 each
   const [split, setSplit] = useState<"equal" | "each">("equal");
-  const [total, setTotal] = useState(String(Math.max(10, Math.floor(Math.min(free, Math.max(1, Math.min(freeCount, Math.floor(free / 10))) * DEFAULT_BUDGET)))));
+  const [total, setTotal] = useState(String(Math.max(Math.ceil(minL), Math.floor(fromUsd(Math.min(free, Math.max(1, Math.min(freeCount, Math.floor(free / 10))) * DEFAULT_BUDGET))))));
   const [each, setEach] = useState<string[]>([]);
   const [strict, setStrict] = useState(false);
   const n = Math.max(1, Math.min(count, Math.max(1, freeCount)));
@@ -652,11 +654,12 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
       setPicking(null);
     }
   };
-  const cash = state?.available ?? state?.cash ?? 0; // what isn't already locked for other agents
-  const amount = Number(budget);
+  const cash = state?.available ?? state?.cash ?? 0; // what isn't already locked for other agents (dollars)
+  const amount = Number(budget); // (shown currency)
+  const amountUsd = toUsd(amount), sumUsd = budgets.reduce((s, b) => s + (Number.isFinite(b) ? toUsd(b) : 0), 0);
   const taken = pick ? takenPools.includes(pick.pool) : false;
-  const coinProblem = !pick ? "Pick a coin" : taken ? `An agent is already trading ${pick.symbol}` : !(amount >= 10) ? "Budget must be at least $10" : amount > cash ? `Only ${fmtUsd(cash)} is available${(state?.locked ?? 0) > 0.005 ? ` (${fmtUsd(state!.locked!)} is locked for your other agents)` : ""}` : "";
-  const autoProblem = !canAuto ? "Auto-pick is not in your plan" : freeCount < 1 ? "No agent is free" : budgets.some((b) => !(b >= 10)) ? "Each agent's budget must be at least $10" : sum > cash + 0.005 ? `Only ${fmtUsd(cash)} is available${(state?.locked ?? 0) > 0.005 ? ` (${fmtUsd(state!.locked!)} is locked for your other agents)` : ""}; these budgets add up to ${fmtUsd(sum)}` : "";
+  const coinProblem = !pick ? "Pick a coin" : taken ? `An agent is already trading ${pick.symbol}` : !(amountUsd >= 10) ? `Budget must be at least ${fmtUsd(10)}` : amountUsd > cash + 0.005 ? `Only ${fmtUsd(cash)} is available${(state?.locked ?? 0) > 0.005 ? ` (${fmtUsd(state!.locked!)} is locked for your other agents)` : ""}` : "";
+  const autoProblem = !canAuto ? "Auto-pick is not in your plan" : freeCount < 1 ? "No agent is free" : budgets.some((b) => !(toUsd(b) >= 10)) ? `Each agent's budget must be at least ${fmtUsd(10)}` : sumUsd > cash + 0.005 ? `Only ${fmtUsd(cash)} is available${(state?.locked ?? 0) > 0.005 ? ` (${fmtUsd(state!.locked!)} is locked for your other agents)` : ""}; these budgets add up to ${fmtUsd(sum)}` : "";
   const problem = auto ? autoProblem : coinProblem;
   const base = {
     ...defaults, tf: "5m" as const, checkEverySec: 5, goalUsd: 1e9, pick: "agent" as const, strongMode: false, rewardRule: false, minConfidence: 0,
@@ -666,8 +669,8 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
     if (autoProblem) return;
     setStarting(true);
     try {
-      const r = await api.startAuto(base, budgets, strict);
-      notify(`${r.started.length} auto-pick agent${r.started.length === 1 ? "" : "s"} started with ${fmtUsd(sum)} in all`);
+      const r = await api.startAuto(base, budgets.map(toUsd), strict);
+      notify(`${r.started.length} auto-pick agent${r.started.length === 1 ? "" : "s"} started with ${fmtMoney(sum)} in all`);
       onStarted();
     } catch (e: any) {
       notify(e.message, true);
@@ -681,11 +684,11 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
     try {
       const cfg: BotConfig = {
         ...defaults, chain: pick.chain, pool: pick.pool, symbol: pick.symbol, ...(pick.imageUrl ? { imageUrl: pick.imageUrl } : {}), tf: "5m", checkEverySec: 5, goalUsd: 1e9,
-        pick: "agent", budgetUsd: amount, strongMode: false, rewardRule: false, minConfidence: 0,
+        pick: "agent", budgetUsd: amountUsd, strongMode: false, rewardRule: false, minConfidence: 0,
         disabled: ["dailyLossPct", "cooldownMin", "maxDrawdownPct", "minConfidence", "maxDrop1hPct", "riskPerTradePct"],
       };
       await api.startBot(cfg, slotId);
-      notify(`Agent started on ${pick.symbol} with ${fmtUsd(amount)}`);
+      notify(`Agent started on ${pick.symbol} with ${fmtMoney(amount)}`);
       onStarted();
     } catch (e: any) {
       notify(e.message, true);
@@ -701,13 +704,13 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
       foot={
         auto ? (
           <>
-            <span className="muted small agent-foot-note">{problem || `${fmtUsd(sum)} will be locked for these ${n} agent${n === 1 ? "" : "s"} (${split === "equal" ? `${fmtUsd(equalEach)} each` : "as set above"}): it leaves your Available cash, and stays in your equity.`}</span>
+            <span className="muted small agent-foot-note">{problem || `${fmtMoney(sum)} will be locked for these ${n} agent${n === 1 ? "" : "s"} (${split === "equal" ? `${fmtUsd(equalEach)} each` : "as set above"}): it leaves your Available cash, and stays in your equity.`}</span>
             <button className="btn ghost" onClick={onClose}>Cancel</button>
             <button className="btn buy" onClick={() => void startAuto()} disabled={!!problem || starting}>{starting ? "Starting…" : `Start ${n} auto-pick agent${n === 1 ? "" : "s"}`}</button>
           </>
         ) : (
           <>
-            <span className="muted small agent-foot-note">{problem || `${fmtUsd(amount)} will be locked for this agent: it leaves your Available cash, and stays in your equity.`}</span>
+            <span className="muted small agent-foot-note">{problem || `${fmtMoney(amount)} will be locked for this agent: it leaves your Available cash, and stays in your equity.`}</span>
             <button className="btn ghost" onClick={onClose}>Cancel</button>
             <button className="btn buy" onClick={() => void start()} disabled={!!problem || starting}>{starting ? "Starting…" : pick ? `Start agent on ${pick.symbol}` : "Start agent"}</button>
           </>
@@ -752,23 +755,23 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
                   <div className="agent-form auto">
                     <label>
                       <span>In all, for the {n} agent{n === 1 ? "" : "s"}</span>
-                      <div className="agent-budget"><i>$</i><input type="number" min={10 * n} step={100} value={total} onChange={(e) => setTotal(e.target.value)} /></div>
+                      <div className="agent-budget"><i>{curSymbol()}</i><input type="number" min={Math.ceil(minL) * n} step={100} value={total} onChange={(e) => setTotal(e.target.value)} /></div>
                       <div className="agent-quick">
-                        <button type="button" className="chip" onClick={() => setTotal(String(Math.floor(cash)))}>All available ({fmtUsd(cash)})</button>
-                        {[250, 500, 1000].filter((v) => v * n <= cash + 0.005).map((v) => <button key={v} type="button" className={`chip ${equalEach === v ? "on" : ""}`} onClick={() => setTotal(String(v * n))}>${v.toLocaleString()} each</button>)}
+                        <button type="button" className="chip" onClick={() => setTotal(String(Math.floor(fromUsd(cash))))}>All available ({fmtUsd(cash)})</button>
+                        {[250, 500, 1000].filter((v) => toUsd(v * n) <= cash + 0.005).map((v) => <button key={v} type="button" className={`chip ${equalEach === v ? "on" : ""}`} onClick={() => setTotal(String(v * n))}>{curSymbol()}{v.toLocaleString()} each</button>)}
                       </div>
                     </label>
-                    <p className="muted small agent-form-note"><b>{fmtUsd(equalEach)} for each agent.</b> Each trade uses the agent's budget, never more: profit beyond the budget goes straight back to your available cash; a loss comes out of the budget until later trades make it back.</p>
+                    <p className="muted small agent-form-note"><b>{fmtMoney(equalEach)} for each agent.</b> Each trade uses the agent's budget, never more: profit beyond the budget goes straight back to your available cash; a loss comes out of the budget until later trades make it back.</p>
                   </div>
                 ) : (
                   <div className="auto-each">
                     {Array.from({ length: n }, (_, i) => (
                       <label key={i}>
                         <span>Agent {i + 1}</span>
-                        <div className="agent-budget"><i>$</i><input type="number" min={10} step={50} value={each[i] ?? String(equalEach)} onChange={(e) => setEach(Array.from({ length: Math.max(n, each.length) }, (_, k) => (k === i ? e.target.value : each[k] ?? String(equalEach))))} aria-label={`Budget of agent ${i + 1}`} /></div>
+                        <div className="agent-budget"><i>{curSymbol()}</i><input type="number" min={Math.ceil(minL)} step={50} value={each[i] ?? String(equalEach)} onChange={(e) => setEach(Array.from({ length: Math.max(n, each.length) }, (_, k) => (k === i ? e.target.value : each[k] ?? String(equalEach))))} aria-label={`Budget of agent ${i + 1}`} /></div>
                       </label>
                     ))}
-                    <p className="muted small agent-form-note"><b>{fmtUsd(sum)} in all.</b> Each trade uses the agent's budget, never more: profit beyond the budget goes straight back to your available cash; a loss comes out of the budget until later trades make it back.</p>
+                    <p className="muted small agent-form-note"><b>{fmtMoney(sum)} in all.</b> Each trade uses the agent's budget, never more: profit beyond the budget goes straight back to your available cash; a loss comes out of the budget until later trades make it back.</p>
                   </div>
                 )}
                 <label className="check small auto-strict">
@@ -797,8 +800,8 @@ function NewAgentModal({ slotId, preset, state, defaults, notify, onClose, onSta
         <div className={`agent-form ${quick ? "quick" : ""}`}>
           <label>
             <span>Budget (paper money)</span>
-            <div className="agent-budget"><i>$</i><input type="number" min={10} step={50} value={budget} onChange={(e) => setBudget(e.target.value)} /></div>
-            <div className="agent-quick">{[250, 500, 1000, 2500].map((v) => <button key={v} type="button" className={`chip ${amount === v ? "on" : ""}`} onClick={() => setBudget(String(v))}>${v.toLocaleString()}</button>)}</div>
+            <div className="agent-budget"><i>{curSymbol()}</i><input type="number" min={Math.ceil(minL)} step={50} value={budget} onChange={(e) => setBudget(e.target.value)} /></div>
+            <div className="agent-quick">{[250, 500, 1000, 2500].map((v) => <button key={v} type="button" className={`chip ${amount === v ? "on" : ""}`} onClick={() => setBudget(String(v))}>{curSymbol()}{v.toLocaleString()}</button>)}</div>
           </label>
           <p className="muted small agent-form-note">Its AI decides when to buy and sell. There is no daily loss limit, cool-down or other brake: <b>the budget is the only limit</b>, so give it only what you're ready to lose.</p>
         </div>
