@@ -9,7 +9,8 @@ import { cachedJson, fromDexScreener, getCandles, getPair, getRecentTokenCandles
 import { atr, snapshot } from "./indicators.js";
 import { scanOpportunities } from "./scan.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
+import { APP_TOKENS_PER_API_TOKEN, month, planOf, tokenLimit, TokensNeeded, type PlanId, type Role } from "./plans.js";
+import { usageKeyOf } from "./allowance.js";
 import { copyFromUpstash, createStore, oldStoreFromEnv, type HourRow } from "./store.js";
 import { keepLogLines, shortWhy, type Decision, type LogLine } from "./botlog.js";
 import { alertChannel, sendAlert } from "./alerts.js";
@@ -698,7 +699,9 @@ export async function sync() {
 }
 
 // ---------- Plans: AI tokens and transaction charges ----------
-const usageKey = (key: string) => `usage:${ownerOf(key)}:${month()}`; // (the real auto-pilot uses its customer's tokens)
+// This allowance period's use (allowance.ts: it starts again only for a plan being paid for). The real
+// auto-pilot uses its customer's tokens.
+const usageKey = (key: string) => usageKeyOf(ownerOf(key));
 // AI tokens left this month (app tokens; Infinity for admins).
 async function tokensLeft(): Promise<number> {
   const a = acct();
@@ -706,17 +709,17 @@ async function tokensLeft(): Promise<number> {
   const limit = tokenLimit(a.plan, a.role);
   if (!Number.isFinite(limit)) return Infinity;
   if (limit <= 0) return 0; // no AI on this plan (top-ups don't add AI to a plan without it)
-  const used = (await store.kvGet<number>(usageKey(a.key))) ?? 0;
+  const used = (await store.kvGet<number>(await usageKey(a.key))) ?? 0;
   const topup = (await store.kvGet<number>(`topup:${ownerOf(a.key)}`)) ?? 0;
   return Math.max(0, limit - used) + topup;
 }
-// Charge the AI tokens an analysis used: 10 app tokens per AI API token, for every model asked.
+// Charge the AI tokens an analysis used: APP_TOKENS_PER_API_TOKEN (2) app tokens per Claude token, for every model asked.
 async function chargeTokens(results: ModelResult[]) {
   const a = acct();
   const apiTokens = results.reduce((s, r) => s + (r.tokens ?? 0), 0);
   if (!a.key || !apiTokens) return 0;
   const appTokens = apiTokens * APP_TOKENS_PER_API_TOKEN;
-  const k = usageKey(a.key);
+  const k = await usageKey(a.key);
   const used = (await store.kvGet<number>(k)) ?? 0;
   const limit = tokenLimit(a.plan, a.role);
   // The monthly allowance is used first; anything beyond it comes out of top-up tokens.
@@ -1335,7 +1338,7 @@ export async function runAnalysis(chain: string, pool: string, tf: Timeframe, op
     `Exact exit rules: once up ${ex.be}%, the stop moves to break-even, then a profit lock keeps at least ${ex.lock}% of the best gain; it sells half at ${ex.half}% of the way from entry to your target; at the target it trails ${ex.trail}% below the highest price. Orders with a win chance below ${ex.minWin}% are not used. After a losing trade it waits before re-buying, and skips the coin for the day after 2 losses.`,
     ]),
   ].filter(Boolean).join("\n");
-  if ((await tokensLeft()) <= 0) throw new Error("You've used this month's AI tokens for your plan. Upgrade your plan or wait for next month.");
+  if ((await tokensLeft()) <= 0) throw new TokensNeeded("You've used all your AI tokens for this month. Top up to keep using AI plans and agents now, or wait for next month's allowance.");
   // Agents: an order is judged on the combined chance (its AI, the numbers, the forecaster panel),
   // and a win counts as what managed winners really made (measured once there are 5; simulated before).
   const seen = new Map<string, Forecast | null>();
@@ -3343,7 +3346,7 @@ async function tickBot(persist: boolean) {
     let askedAt = 0;
     const askGap = isCoinAgent(cfg) ? 30_000 : MIN_CLAUDE_GAP_MS; // agents decide again quickly after a trade or a broken plan
     if (why && (await tokensLeft()) <= 0) {
-      noteOnce(`tokens:${month()}`, "Out of AI tokens for this month on your plan: the bot can't make new plans. Open positions are still managed. Upgrade your plan to keep the bot trading.", "bad");
+      noteOnce(`tokens:${month()}`, "Out of AI tokens for this month: the bot can't make new plans. Open positions are still managed. Top up AI tokens to keep it trading.", "bad");
       return;
     }
     if (why && Date.now() - state.bot.lastAnalysisAt >= askGap) {

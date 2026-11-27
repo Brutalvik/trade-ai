@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, type MaView, type PlanId, aiText, allBots, api, SIGNIN_EVENT, UPGRADE_EVENT, curSymbol, fmtBig, fmtMoney, fmtPct, fmtPrice, fmtTime, fmtUsd, fromUsd, setDisplayCurrency, toUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe, type WalletView } from "./api";
+import { type FramePatterns, type MaView, type PlanId, aiText, allBots, api, SIGNIN_EVENT, TOPUP_EVENT, UPGRADE_EVENT, curSymbol, fmtBig, fmtMoney, fmtPct, fmtPrice, fmtTime, fmtUsd, fromUsd, setDisplayCurrency, toUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe, type WalletView } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
@@ -10,7 +10,7 @@ import { WalletButton } from "./Wallet";
 import { Chevrons, CoinList, LIST_MAX, LIST_MIN, ListResizer } from "./CoinList";
 import { RealTradePanel, solscanTx } from "./RealTrade";
 import { paperCsv, paperPdf, realCsv, realPdf } from "./exportTrades";
-import { AccessCtx, AccountButton, SIGNIN_PENDING, AdminModal, LockChip, PlansModal, SettingsButton, useAccess, type Access } from "./Account";
+import { AccessCtx, AccountButton, SIGNIN_PENDING, AdminModal, LockChip, PlansModal, SettingsButton, TopUpModal, useAccess, type Access } from "./Account";
 import { BotTradeNotifications, UpdateBanner } from "./Notifications";
 import { isMuted, playSoundPreview, setMuted, unlockAudioOnFirstGesture } from "./sounds";
 import { saveAnalysis, saveChart, saveState, saveUi, savedAnalysis, savedChart, savedState, savedUi, type SavedAnalysis } from "./persist";
@@ -42,6 +42,7 @@ export default function App() {
   const [me, setMe] = useState<User | null>(null);
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const [plansOpen, setPlansOpen] = useState(false);
+  const [topUpOpen, setTopUpOpen] = useState(false); // the top-up window (token packs only)
   // Why the Plans window opened, when a feature needs a higher plan (the server says so).
   const [plansAsk, setPlansAsk] = useState<{ reason: string; need?: PlanId } | null>(null);
   // The user guide lives at #guide (linked from the footer, shareable; old #rules links still open it).
@@ -102,7 +103,7 @@ export default function App() {
   const chosen = me?.prefs?.currency ?? "USD";
   setDisplayCurrency(chosen, currencies.find((c) => c.code === chosen)?.rate);
   const access = useMemo<Access & { plans: PlanInfo[] }>(
-    () => ({ me, plans, currencies, can: (perm) => (me ? (me.permissions ?? []).includes(perm) : true), openPlans: () => setPlansOpen(true), openAdmin: () => setAdminOpen(true), reloadMe: () => void loadMe() }),
+    () => ({ me, plans, currencies, can: (perm) => (me ? (me.permissions ?? []).includes(perm) : true), openPlans: () => setPlansOpen(true), openAdmin: () => setAdminOpen(true), openTopUp: () => setTopUpOpen(true), reloadMe: () => void loadMe() }),
     [me, plans, loadMe, currencies],
   );
   // Restore the last session instantly (coin, timeframe, tab, last-seen data); live data replaces it moments later.
@@ -216,6 +217,22 @@ export default function App() {
     setToast({ msg, bad });
     setTimeout(() => setToast(null), 4000);
   }, []);
+  // Out of AI tokens: the top-up window opens (TOPUP_EVENT, api.ts) when an AI request is refused for
+  // it, and by itself once a day while the account's tokens are used up (its agents used the last of
+  // them in the background; the account is read every minute).
+  useEffect(() => {
+    const onTopUp = () => setTopUpOpen(true);
+    window.addEventListener(TOPUP_EVENT, onTopUp);
+    return () => window.removeEventListener(TOPUP_EVENT, onTopUp);
+  }, []);
+  useEffect(() => {
+    const u = me?.usage;
+    if (!me || !u || !(u.limit > 0) || u.left !== 0) return;
+    const seen = `topup-shown:${me.username}:${new Date().toISOString().slice(0, 10)}`;
+    if (localStorage.getItem(seen)) return;
+    localStorage.setItem(seen, "1");
+    setTopUpOpen(true);
+  }, [me]);
   // A feature the plan does not include: the Plans window opens, saying why (UPGRADE_EVENT, api.ts).
   useEffect(() => {
     const onUpgrade = (e: Event) => {
@@ -235,7 +252,12 @@ export default function App() {
     const sid = q.get("session_id");
     if (how === "done" && sid) {
       api.billingConfirm(sid)
-        .then((b) => { void loadMe(); notify(b.subscription?.plan ? `Payment received: you are on ${({ starter: "Starter", pro: "AI Pro", max: "AI Max" } as Record<string, string>)[b.subscription.plan] ?? "your new plan"}` : "Payment received: your AI tokens are added"); })
+        .then((b) => {
+          void loadMe();
+          const pack = b.paid?.kind === "pack" || (!b.paid && !b.subscription?.plan);
+          const tokens = b.paid?.tokens ? `${(b.paid.tokens / 1e6).toLocaleString()}M ` : "";
+          notify(pack ? `Payment received: your ${tokens}AI tokens are added` : `Payment received: you are on ${({ starter: "Starter", pro: "AI Pro", max: "AI Max" } as Record<string, string>)[b.subscription?.plan ?? ""] ?? "your new plan"}`);
+        })
         .catch((e) => notify(e.message, true))
         .finally(clean);
     } else {
@@ -546,6 +568,7 @@ export default function App() {
       <Footer />
       {toast && <div className={`toast ${toast.bad ? "bad" : ""}`}>{toast.msg}</div>}
       {plansOpen && <PlansModal ask={plansAsk} onClose={() => { setPlansOpen(false); setPlansAsk(null); }} />}
+      {topUpOpen && !plansOpen && <TopUpModal onClose={() => setTopUpOpen(false)} />}
       {(hash === "#guide" || hash === "#rules") && <GuidePage plans={plans} onClose={closeRules} />}
       {adminOpen && <AdminModal onClose={() => { setAdminOpen(false); void loadMe(); }} notify={notify} />}
     </div>

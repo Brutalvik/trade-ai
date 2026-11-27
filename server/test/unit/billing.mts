@@ -17,12 +17,15 @@ const prices: any[] = [], customers: any[] = [], sessions = new Map<string, any>
 const idem = new Map<string, any>();
 const updates: any[] = [];
 let portalConfigs = 0;
+const versions = new Set<string>(); // the Stripe-Version every call sent
+const productUpdates: { id: string; tax_code: string | null }[] = [];
 const nested = (q: URLSearchParams, key: string) => q.get(key);
 globalThis.fetch = (async (input: any, init?: any) => {
   const u = new URL(String(input));
   if (u.host !== "stripe.fake.test") throw new Error(`no network in this test: ${u.host}`);
   const h = new Headers(init?.headers);
   if (h.get("authorization") !== "Bearer sk_test_fake") return Response.json({ error: { message: "bad key" } }, { status: 401 });
+  versions.add(String(h.get("stripe-version")));
   const key = h.get("idempotency-key");
   if (key && idem.has(key)) return Response.json(idem.get(key));
   const q = new URLSearchParams(init?.method === "POST" ? String(init?.body ?? "") : u.search);
@@ -32,9 +35,15 @@ globalThis.fetch = (async (input: any, init?: any) => {
   if (p === "/v1/prices") {
     const lk = q.get("lookup_key");
     if (q.get("transfer_lookup_key") === "true") for (const x of prices) if (x.lookup_key === lk) x.lookup_key = null;
-    const price = { id: nid("price"), active: true, currency: q.get("currency"), unit_amount: Number(q.get("unit_amount")), lookup_key: lk, recurring: q.get("recurring[interval]") ? { interval: q.get("recurring[interval]") } : null };
+    const price = { id: nid("price"), active: true, currency: q.get("currency"), unit_amount: Number(q.get("unit_amount")), lookup_key: lk, recurring: q.get("recurring[interval]") ? { interval: q.get("recurring[interval]") } : null, product: { id: nid("prod"), tax_code: q.get("product_data[tax_code]") } };
     prices.push(price);
     return out(price);
+  }
+  const prod = /^\/v1\/products\/(prod_\w+)$/.exec(p);
+  if (prod && init?.method === "POST") {
+    productUpdates.push({ id: prod[1], tax_code: q.get("tax_code") });
+    for (const x of prices) if (x.product?.id === prod[1]) x.product.tax_code = q.get("tax_code");
+    return out({ id: prod[1], tax_code: q.get("tax_code") });
   }
   if (p === "/v1/customers") { const c = { id: nid("cus"), email: q.get("email"), metadata: { user: q.get("metadata[user]") } }; customers.push(c); return out(c); }
   if (p === "/v1/checkout/sessions" && init?.method === "POST") {
@@ -65,7 +74,7 @@ function pay(sessionId: string) {
   s.payment_status = "paid";
   if (s.mode === "subscription") {
     const id = nid("sub");
-    subs.set(id, { id, customer: s.customer, status: "active", cancel_at_period_end: false, metadata: s.subMeta, items: { data: [{ id: nid("si"), price: prices.find((x) => x.id === s.price), current_period_end: Math.floor((Date.now() + 30 * DAY) / 1000) }] } });
+    subs.set(id, { id, customer: s.customer, status: "active", cancel_at_period_end: false, metadata: s.subMeta, latest_invoice: { id: nid("in"), status: "paid" }, items: { data: [{ id: nid("si"), price: prices.find((x) => x.id === s.price), current_period_start: Math.floor(Date.now() / 1000), current_period_end: Math.floor((Date.now() + 30 * DAY) / 1000) }] } });
     s.subscription = id;
   }
   return s;
@@ -83,6 +92,7 @@ const store = createStore();
 const plans = await import(new URL("../../src/plans.ts", import.meta.url).href);
 const billing = await import(new URL("../../src/billing.ts", import.meta.url).href);
 const auth = await import(new URL("../../src/auth.ts", import.meta.url).href);
+const allowance = await import(new URL("../../src/allowance.ts", import.meta.url).href);
 const fail = (p: Promise<unknown>) => p.then(() => "accepted", (e: Error) => e.message);
 const send = async (ev: any, secret?: string, t?: number) => { const s = signed(ev, secret, t); return billing.webhook(s.raw, s.headers); };
 const planNow = async (u: string) => auth.planOfUser(u);
@@ -173,10 +183,47 @@ expect("a pack is a one-time payment of $50", [!!pk.url, ps.mode, prices.find((x
 await send(event("checkout.session.completed", ps));
 await send(event("checkout.session.completed", { ...ps })); // (Stripe sends it again, with another event id)
 expect("paid: 5M AI tokens added once, however often Stripe says so", await store.kvGet("topup:ada"), 5_000_000);
+expect("back from Stripe's page, the app is told it was a pack (not the plan the account is on)", (await billing.confirm("ada", { sessionId: ps.id })).paid, { kind: "pack", tokens: 5_000_000 });
 
 // ---------- Stripe's billing page ----------
 const pt = await billing.portal("ada");
 await billing.portal("ada");
 expect("Manage billing opens Stripe's page for the account; its settings are made once", [/^https:\/\/billing\.stripe\.test\/cus_/.test(pt.url), portalConfigs], [true, 1]);
 expect("an account that never paid has no billing page", await fail(billing.portal("carol")), "You have no billing yet: choose a plan first.");
+// Stripe's Managed Payments (on by default on new accounts) works out sales tax from each product's
+// tax category: every product gets one, and every call names the API version this was tested on.
+expect("every product made has a tax category (SaaS, personal use)", [...new Set(prices.filter((x) => x.product).map((x) => x.product.tax_code))], ["txcd_10103000"]);
+prices.push({ id: "price_old", active: true, currency: "usd", unit_amount: 10_000, lookup_key: "trading_rust_pack10m", recurring: null, product: { id: "prod_old", tax_code: null } });
+await billing.buyPack("ada", { pack: "pack10m", terms: T });
+expect("...a product made before that, without one, is given it when it is next sold", productUpdates.filter((x) => x.id === "prod_old"), [{ id: "prod_old", tax_code: "txcd_10103000" }]);
+expect("every call to Stripe names the API version it was tested against", [...versions], ["2026-11-18.endive"]);
+// ---------- The AI allowance starts again only for a plan being paid for (the owner's rule) ----------
+await store.kvSet("user:dora", { username: "dora", firstName: "Dora", lastName: "D", email: "dora@example.test", salt: "", hash: "", passVer: 1, createdAt: Date.now(), avatarUrl: null });
+expect("without a subscription: by the calendar month, as before", (await allowance.allowanceOf("dora")).id, plans.month());
+await billing.checkout("dora", { plan: "pro", interval: "month", terms: T });
+const sd = pay([...sessions.values()].at(-1).id);
+await send(event("checkout.session.completed", sd));
+const dsub = subs.get(sd.subscription);
+let al = await allowance.allowanceOf("dora");
+expect("paid monthly: its allowance runs by the paid month, and starts again when the renewal is paid", [/^p\d+-0$/.test(al.id), al.why, al.resetsAt], [true, "renewal", 1000 * dsub.items.data[0].current_period_end]);
+await store.kvSet(`usage:dora:${al.id}`, 5_000_000);
+expect("...its use is counted in that month (all 5M used: none left)", (await auth.tokenUsage("dora", "pro", "user")).left, 0);
+// The renewal: Stripe starts the next month, but its invoice is not paid yet.
+const item = dsub.items.data[0];
+Object.assign(item, { current_period_start: item.current_period_end, current_period_end: item.current_period_end + 30 * 86_400 });
+dsub.latest_invoice = { id: nid("in"), status: "open" };
+await send(event("customer.subscription.updated", dsub));
+expect("a new month whose invoice is not paid yet: no new allowance", [(await allowance.allowanceOf("dora")).id, (await auth.tokenUsage("dora", "pro", "user")).left], [al.id, 0]);
+dsub.status = "past_due";
+await send(event("invoice.payment_failed", { id: dsub.latest_invoice.id, subscription: dsub.id }));
+const due = allowance.allowanceCycle(await store.kvGet("billing:dora"), Date.now() + 31 * DAY);
+expect("the payment failed: it does not start again until a payment goes through", [due.id, due.resetsAt, due.why], [al.id, null, "payment"]);
+dsub.status = "active";
+dsub.latest_invoice.status = "paid";
+await send(event("invoice.paid", { id: dsub.latest_invoice.id, subscription: dsub.id }));
+const al2 = await allowance.allowanceOf("dora", Date.now() + 31 * DAY);
+expect("paid: the new month's allowance starts (all of it)", [al2.id !== al.id, (await store.kvGet(`usage:dora:${al2.id}`)) ?? 0], [true, 0]);
+await billing.cancel("dora");
+expect("renewal cancelled: what is left lasts until the plan ends, then it does not start again", (await allowance.allowanceOf("dora", Date.now() + 31 * DAY)).why, "ends");
+
 finish();

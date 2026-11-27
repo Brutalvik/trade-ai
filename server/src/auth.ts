@@ -10,7 +10,8 @@ import { promisify } from "node:util";
 import type { Request, Response } from "express";
 import { createStore } from "./store.js";
 import { audit } from "./audit.js";
-import { botLimit, month, permissionsFor, PLANS, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
+import { botLimit, permissionsFor, PLANS, planOf, tokenLimit, type PlanId, type Role } from "./plans.js";
+import { allowanceOf } from "./allowance.js";
 
 const store = createStore();
 const scrypt = promisify(crypto.scrypt) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
@@ -156,13 +157,18 @@ export async function accountKey(req: Request): Promise<string | null> {
   return (await requestAuth(req))?.key ?? null;
 }
 
-// This month's AI token use for an account (app tokens).
-const usageKey = (key: string, m = month()) => `usage:${key}:${m}`;
+// This allowance period's AI token use for an account (app tokens: 2 per Claude token). month = the
+// period (allowance.ts: a calendar month, or a paid billing period); left = what the AI may still use
+// (the allowance left, then top-ups; -1 = unlimited; 0 on a plan without AI, as engine.ts tokensLeft
+// counts it); resetsAt / resetWhy = when, and on what, the allowance starts again (null: not until a
+// payment goes through).
 export async function tokenUsage(key: string, plan: PlanId, role: Role) {
-  const used = (await store.kvGet<number>(usageKey(key))) ?? 0;
+  const al = await allowanceOf(key);
+  const used = (await store.kvGet<number>(`usage:${key.toLowerCase()}:${al.id}`)) ?? 0;
   const limit = tokenLimit(plan, role);
   const topup = (await store.kvGet<number>(`topup:${key}`)) ?? 0;
-  return { month: month(), used, limit: Number.isFinite(limit) ? limit : -1, topup };
+  const left = !Number.isFinite(limit) ? -1 : limit <= 0 ? 0 : Math.max(0, limit - used) + topup;
+  return { month: al.id, used, limit: Number.isFinite(limit) ? limit : -1, topup, left, resetsAt: al.resetsAt, resetWhy: al.why };
 }
 
 // Admin: list users and change a user's plan / role.

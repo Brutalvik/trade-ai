@@ -76,6 +76,19 @@ export class UpgradeNeeded extends Error {
     super(message);
   }
 }
+// The account's AI tokens are used up (this month's allowance and any top-up): answers carry
+// `topup: true`, and the app opens its top-up window (the token packs only) instead of an error.
+export class TokensNeeded extends Error {
+  readonly topup = true;
+  constructor(message = "You've used all your AI tokens for this month.") {
+    super(message);
+  }
+}
+// When a month's AI allowance starts again: the 1st of next month, 00:00 UTC.
+export const nextMonthStart = (ms = Date.now()) => {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+};
 
 // Pay-as-you-go AI tokens for AI plans: used after the monthly allowance runs out; they never expire.
 export const TOKEN_PACKS: { id: string; tokens: number; priceUsd: number; note?: string }[] = [

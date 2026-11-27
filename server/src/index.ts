@@ -109,6 +109,7 @@ const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => async (r
       res.json(out ?? { ok: true });
     } catch (e: any) {
       await engine.flush().catch(() => {});
+      if (e?.topup) return void res.status(402).json({ error: e.message, topup: true }); // (the app opens its top-up window)
       if (res.statusCode < 400) res.status(400);
       res.json({ error: engine.shortError(e) });
     }
@@ -252,6 +253,7 @@ const ap = (fn: (a: Signed, req: Request) => Promise<unknown>) => signedIn(async
     res.json(await fn(a, req));
   } catch (e: any) {
     if (e?.upgrade) return void res.status(403).json({ error: e.message, upgrade: true, need: e.need });
+    if (e?.topup) return void res.status(402).json({ error: e.message, topup: true });
     if (res.statusCode < 400) res.status(400);
     res.json({ error: e?.message ?? String(e) });
   }

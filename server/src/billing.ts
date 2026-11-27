@@ -20,12 +20,16 @@
 // Settings (Vercel): STRIPE_SECRET_KEY (sk_test_... / sk_live_..., or a restricted rk_ key),
 // STRIPE_WEBHOOK_SECRET (whsec_..., from the webhook endpoint https://<app>/api/billing/webhook),
 // STRIPE_LIVE=yes for a live key (real cards are charged only then), APP_URL (default
-// https://trade-ai-rust.vercel.app: where Stripe sends customers back).
+// https://trade-ai-rust.vercel.app: where Stripe sends customers back), STRIPE_TAX_CODE (the
+// products' tax category, default txcd_10103000 "Software as a service, personal use": Stripe's
+// Managed Payments, on by default on new accounts, needs one to work out sales tax),
+// STRIPE_API_VERSION (default the version this was tested against, below).
 import crypto from "node:crypto";
 import { createStore } from "./store.js";
 import { PLAN_ORDER, PLANS, TOKEN_PACKS, YEARLY_MONTHS_PAID, planOf, type PlanId } from "./plans.js";
 import * as auth from "./auth.js";
 import { audit } from "./audit.js";
+import { billingKey, forgetAllowance, type PaidPeriod } from "./allowance.js";
 
 const store = () => createStore();
 export const TERMS_VERSION = "2026-11-27";
@@ -48,6 +52,9 @@ const appUrl = () => (process.env.APP_URL?.trim() || "https://trade-ai-rust.verc
 
 // ---------- Stripe's API (form-encoded, over HTTPS) ----------
 const API = () => (process.env.STRIPE_API_URL?.trim() || "https://api.stripe.com").replace(/\/+$/, "");
+// Pinned, so a change of the account's default API version never changes what these calls get.
+const API_VERSION = () => process.env.STRIPE_API_VERSION?.trim() || "2026-11-18.endive";
+const TAX_CODE = () => process.env.STRIPE_TAX_CODE?.trim() || "txcd_10103000";
 export function formOf(v: unknown, prefix = "", out = new URLSearchParams()): URLSearchParams {
   if (v === undefined || v === null) return out;
   if (Array.isArray(v)) v.forEach((x, i) => formOf(x, `${prefix}[${i}]`, out));
@@ -68,6 +75,7 @@ async function stripe<T = any>(method: "GET" | "POST", path: string, body?: Reco
     method,
     headers: {
       Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY!.trim()}`,
+      "Stripe-Version": API_VERSION(),
       ...(method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
       ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
     },
@@ -88,16 +96,20 @@ const priceIds = new Map<string, { id: string; at: number }>();
 async function priceFor(lookupKey: string, cents: number, name: string, recurring?: Interval): Promise<string> {
   const hit = priceIds.get(lookupKey);
   if (hit && Date.now() - hit.at < 3_600_000) return hit.id;
-  const found = await stripe<{ data: any[] }>("GET", "/prices", { "lookup_keys[]": lookupKey, active: true, limit: 1 });
+  const found = await stripe<{ data: any[] }>("GET", "/prices", { "lookup_keys[]": lookupKey, active: true, limit: 1, "expand[]": "data.product" });
   const p = found.data?.[0];
   let id: string;
-  if (p && p.unit_amount === cents && p.currency === "usd" && (p.recurring?.interval ?? null) === (recurring ?? null)) id = p.id;
-  else {
+  if (p && p.unit_amount === cents && p.currency === "usd" && (p.recurring?.interval ?? null) === (recurring ?? null)) {
+    id = p.id;
+    // A product made before it had a tax category gets one (Stripe needs it to work out the tax).
+    const product = typeof p.product === "object" ? p.product : null;
+    if (product?.id && product.tax_code !== TAX_CODE() && (product.tax_code?.id ?? null) !== TAX_CODE()) await stripe("POST", `/products/${encodeURIComponent(product.id)}`, { tax_code: TAX_CODE() });
+  } else {
     const made = await stripe("POST", "/prices", {
       currency: "usd", unit_amount: cents, lookup_key: lookupKey, transfer_lookup_key: true,
       ...(recurring ? { recurring: { interval: recurring } } : {}),
-      product_data: { name },
-    }, `price-${lookupKey}-${cents}`);
+      product_data: { name, tax_code: TAX_CODE() },
+    }, `price-${lookupKey}-${cents}-${TAX_CODE()}`);
     id = made.id;
   }
   priceIds.set(lookupKey, { id, at: Date.now() });
@@ -113,17 +125,23 @@ const rank = (p: PlanId) => PLAN_ORDER.indexOf(p);
 
 // ---------- Records ----------
 // What billing knows of an account. applied = the plan billing last gave it (so billing never takes
-// away a plan an admin gave); keep = a plan paid for that stays until a date (after a downgrade).
+// away a plan an admin gave); keep = a plan paid for that stays until a date (after a downgrade);
+// paid = the last billing period actually paid (its invoice paid): the monthly AI allowance starts
+// again only from a paid period (allowance.ts).
 export type BillingRecord = {
   customerId?: string; subscriptionId?: string; plan?: PlanId; interval?: Interval; status?: string;
   periodEnd?: number; cancelAtPeriodEnd?: boolean; keep?: { plan: PlanId; until: number }; applied?: PlanId; updatedAt?: number;
+  paid?: PaidPeriod;
 };
-const recKey = (user: string) => `billing:${user.toLowerCase()}`;
+const recKey = billingKey;
 const custKey = (id: string) => `billing-customer:${id}`;
 async function record(user: string): Promise<BillingRecord> {
   return (await store().kvGet<BillingRecord>(recKey(user))) ?? {};
 }
-const putRecord = (user: string, r: BillingRecord) => store().kvSet(recKey(user), { ...r, updatedAt: Date.now() });
+const putRecord = async (user: string, r: BillingRecord) => {
+  await store().kvSet(recKey(user), { ...r, updatedAt: Date.now() });
+  forgetAllowance(user);
+};
 
 async function customer(user: string): Promise<string> {
   const r = await record(user);
@@ -259,7 +277,9 @@ export async function confirm(user: string, body: any) {
   const s = await stripe("GET", `/checkout/sessions/${encodeURIComponent(id)}`);
   if (String(s.client_reference_id ?? "") !== user.toLowerCase()) throw new Error("That payment is not yours.");
   await handleSession(s);
-  return status(user);
+  // What was paid for, so the app says the right thing (a pack bought on a plan is still a pack).
+  const paid = s.mode === "payment" && s.metadata?.kind === "pack" ? { kind: "pack" as const, tokens: TOKEN_PACKS.find((k) => k.id === s.metadata?.pack)?.tokens ?? null } : { kind: "plan" as const };
+  return { ...(await status(user)), paid };
 }
 
 // ---------- What Stripe says (webhooks) ----------
@@ -327,9 +347,10 @@ async function handleSession(s: any) {
   }
 }
 const periodEndOf = (sub: any) => 1000 * Number(sub.current_period_end ?? sub.items?.data?.[0]?.current_period_end ?? 0);
+const periodStartOf = (sub: any) => 1000 * Number(sub.current_period_start ?? sub.items?.data?.[0]?.current_period_start ?? 0);
 // Reads the subscription from Stripe and gives the account the plan it pays for now.
 export async function sync(subscriptionId: string) {
-  const sub = await stripe("GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  const sub = await stripe("GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`, { "expand[]": "latest_invoice" });
   const user = String(sub.metadata?.user ?? "") || (await userOfCustomer(String(sub.customer ?? ""))) || "";
   if (!user) return null;
   const r = await record(user);
@@ -343,6 +364,11 @@ export async function sync(subscriptionId: string) {
     ...r, customerId: String(sub.customer ?? r.customerId ?? ""), subscriptionId: live ? sub.id : sub.id === r.subscriptionId ? undefined : r.subscriptionId,
     plan: paid?.plan, interval: paid?.interval, status: String(sub.status), periodEnd, cancelAtPeriodEnd: !!sub.cancel_at_period_end, keep,
   };
+  // The period now running counts as paid only once its invoice is paid (Stripe starts a new period
+  // before it charges for it): only then does the AI allowance start again (allowance.ts).
+  const invoicePaid = typeof sub.latest_invoice === "object" && sub.latest_invoice?.status === "paid";
+  const start = periodStartOf(sub);
+  if (String(sub.status) === "active" && invoicePaid && paid && start > 0 && periodEnd > start) next.paid = { start, end: periodEnd, interval: paid.interval };
   // Billing never takes away a plan it did not give: an admin's plan stays when a subscription ends,
   // and a cheaper subscription does not lower a higher plan an admin gave.
   const had = await auth.planOfUser(user);

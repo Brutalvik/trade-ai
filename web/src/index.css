@@ -1665,3 +1665,5 @@ input { background: rgba(0, 0, 0, 0.32); border-color: rgba(255, 255, 255, 0.12)
 @media (max-width: 560px) { .plan-grid { grid-template-columns: minmax(0, 1fr); } }
 .modal-body label.terms-ok { display: flex; flex-direction: row; align-items: flex-start; justify-content: flex-start; gap: 10px; margin: 14px 0 4px; text-align: left; color: var(--text); cursor: pointer; }
 .modal-body label.terms-ok input { width: auto; flex: none; margin: 2px 0 0; accent-color: #3ee8c8; }
+/* The top-up window (out of AI tokens): a few facts above the token packs. */
+.topup-facts { margin: 6px 0 14px; padding-left: 18px; display: grid; gap: 4px; }

@@ -140,7 +140,22 @@ export const aiText = (s: string) => s.replace(/\bClaude plan: /g, "AI plan: ").
 export type LimitOrder = { id: string; side: "BUY" | "SELL"; chain: string; pool: string; symbol: string; price: number; usd?: number; positionId?: string; fraction?: number; createdAt: number };
 export type PlanId = "free" | "starter" | "pro" | "max";
 export type Permission = "trade.manual" | "trade.limit" | "trade.protect" | "ai.analyze" | "bot.run" | "bot.autopick" | "bot.risky" | "admin.users";
-export type Usage = { month: string; used: number; limit: number; topup?: number }; // limit -1 = unlimited; topup = extra tokens that don't expire
+// AI tokens in this allowance period, in app tokens (2 per Claude token). limit -1 = unlimited; topup =
+// extra tokens that don't expire; left = what the AI may still use (-1 = unlimited); resetsAt / resetWhy =
+// when the allowance starts again, and on what (server allowance.ts: only for a plan being paid for):
+// month = a new month; renewal = when the plan renews and is paid; payment = not until a payment goes
+// through (resetsAt null); ends = the plan ends then (renewal cancelled).
+export type Usage = { month: string; used: number; limit: number; topup?: number; left?: number; resetsAt?: number | null; resetWhy?: "month" | "renewal" | "payment" | "ends" };
+// The sentence for when the allowance starts again (dates in UTC, when the server counts them).
+export function refillText(u: Usage, short = false): string {
+  const d = u.resetsAt ? new Date(u.resetsAt).toLocaleDateString([], { day: "numeric", month: short ? "short" : "long", timeZone: "UTC" }) : "";
+  switch (u.resetWhy) {
+    case "payment": return short ? "no refill until paid" : "Your allowance starts again once your plan's payment goes through (update your card under Manage billing).";
+    case "ends": return short ? `no refill: plan ends ${d}` : `Your plan ends on ${d}, so the allowance does not start again.`;
+    case "renewal": return short ? `refills ${d} when renewed` : `Your allowance starts again when your plan renews and is paid, on ${d}.`;
+    default: return d ? (short ? `resets ${d}` : `Your monthly allowance starts again on ${d}.`) : "";
+  }
+}
 export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: number; analyses: number; note?: string }[]; yearlyMonthsPaid: number; appTokensPerClaudeToken: number };
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[]; features: string[]; popular?: boolean }; // freeTrades -1 = unlimited
 // Paying for plans by card (server/src/billing.ts, Stripe).
@@ -180,6 +195,14 @@ export class UpgradeNeeded extends Error {
     this.name = "UpgradeNeeded";
   }
 }
+// The account's AI tokens are used up: the top-up window (the token packs only) opens instead of an error.
+export const TOPUP_EVENT = "trading-rust:topup";
+export class TokensNeeded extends Error {
+  constructor() {
+    super(""); // empty: no error toast, the top-up window opens instead
+    this.name = "TokensNeeded";
+  }
+}
 export class SignInNeeded extends Error {
   constructor() {
     super(""); // empty: no error toast, the sign-in window opens instead
@@ -196,6 +219,10 @@ async function req<T>(path: string, body?: unknown): Promise<T> {
   if (data?.upgrade) {
     window.dispatchEvent(new CustomEvent(UPGRADE_EVENT, { detail: { reason: String(data.error ?? ""), need: data.need ?? null } }));
     throw new UpgradeNeeded();
+  }
+  if (data?.topup) {
+    window.dispatchEvent(new Event(TOPUP_EVENT));
+    throw new TokensNeeded();
   }
   if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
   return data as T;
@@ -280,7 +307,7 @@ export const api = {
   billingCancel: () => req<BillingStatus>("/billing/cancel", {}),
   billingResume: () => req<BillingStatus>("/billing/resume", {}),
   billingPortal: () => req<{ url: string }>("/billing/portal", {}),
-  billingConfirm: (sessionId: string) => req<BillingStatus>("/billing/confirm", { sessionId }),
+  billingConfirm: (sessionId: string) => req<BillingStatus & { paid?: { kind: "plan" | "pack"; tokens?: number | null } }>("/billing/confirm", { sessionId }),
   autopilotAllowStart: () => req<{ apiPubHex: string; address: string; expiresAt: number }>("/autopilot/allow/start", {}),
   autopilotAllowFinish: (b: { apiPubHex: string; walletId: string; expiresAt: number; accessToken: string; identityToken: string }) => req<AutopilotStatus>("/autopilot/allow/finish", b),
   autopilotRevoke: () => req<AutopilotStatus & { apiPubHex: string | null }>("/autopilot/revoke", {}),

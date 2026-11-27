@@ -254,7 +254,7 @@ function SubscriptionTermsModal({ onClose }: { onClose: () => void }) {
           <h3>7. Refunds</h3>
           <p>Payments are not refundable, except where the law requires a refund or where we choose to give one. AI tokens from a pack cannot be refunded once used. For billing questions, contact us at the address in our Privacy Policy.</p>
           <h3>8. AI tokens</h3>
-          <p>AI tokens are this app's unit of AI use. A plan's monthly allowance starts again each month, and unused allowance does not carry over. Tokens from a pack are used after the monthly allowance runs out, and they never expire. How many tokens an AI analysis uses depends on the request.</p>
+          <p>AI tokens are this app's unit of AI use. A paid plan's monthly allowance starts again only while the plan is being paid for: for a monthly plan, when its renewal is paid; for a yearly plan, each month of the year paid for. If you cancel the renewal, or a payment does not go through, the allowance does not start again, and you can use what is left until the plan ends. Unused allowance does not carry over. Tokens from a pack are used after the monthly allowance runs out, and they never expire. How many tokens an AI analysis uses depends on the request.</p>
           <h3>9. What you pay for</h3>
           <p>A plan pays for features of the software. It does not buy any trading result. Trading carries risk, and the AI's plans are estimates, not financial advice; see our Terms &amp; Conditions.</p>
           <h3>10. Changes to these terms</h3>

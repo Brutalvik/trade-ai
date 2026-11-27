@@ -1,7 +1,7 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtPrice, fmtUsd, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type BillingStatus, type Trade, type RealTrade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
+import { api, fmtPrice, fmtUsd, refillText, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type BillingStatus, type Trade, type RealTrade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 import { openSubscriptionTerms } from "./Footer";
 
 // ---------- Shared modal ----------
@@ -520,7 +520,7 @@ function TradeModeSwitch({ user, notify }: { user: User; notify: (m: string, bad
 const PLAN_NAMES: Record<string, string> = { free: "Free", member: "Starter", starter: "Starter", pro: "AI Pro", max: "AI Max" };
 const planName = (id?: string) => PLAN_NAMES[id ?? "free"] ?? "Free";
 // The signed-in user's plan, role and permissions, shared across the page.
-export type Access = { me: User | null; can: (p: Permission) => boolean; openPlans: () => void; openAdmin: () => void; reloadMe?: () => void; currencies?: { code: string; name: string; rate: number }[] };
+export type Access = { me: User | null; can: (p: Permission) => boolean; openPlans: () => void; openAdmin: () => void; openTopUp?: () => void; reloadMe?: () => void; currencies?: { code: string; name: string; rate: number }[] };
 export const AccessCtx = createContext<Access>({ me: null, can: () => true, openPlans: () => {}, openAdmin: () => {} });
 export const useAccess = () => useContext(AccessCtx);
 
@@ -540,24 +540,119 @@ export function LockChip({ label, plan = "Starter" }: { label: string; plan?: st
 // Unlimited accounts (admins) are measured against the top plan's allowance.
 const MAX_PLAN_TOKENS = 13_000_000;
 export function TokenMeter({ usage }: { usage?: User["usage"] }) {
-  const { openPlans } = useAccess();
+  const { openPlans, openTopUp } = useAccess();
   if (!usage) return null;
   const noAi = usage.limit === 0;
-  const ref = usage.limit < 0 ? MAX_PLAN_TOKENS : usage.limit;
+  const unlimited = usage.limit < 0;
+  const ref = unlimited ? MAX_PLAN_TOKENS : usage.limit;
   const pct = noAi ? 0 : Math.min(100, (usage.used / ref) * 100);
+  const out = !noAi && !unlimited && usage.left === 0;
+  const refill = unlimited ? "" : refillText(usage, true);
   return (
     <div className="token-meter">
       <div className="tm-head">
         <span>AI token usage</span>
-        <b>{noAi ? <button className="link-btn" onClick={openPlans}>Not in your plan</button> : `${pct.toFixed(0)}%`}</b>
+        <b>{noAi ? <button className="link-btn" onClick={openPlans}>Not in your plan</button> : out ? <span className="down">Used up</span> : `${pct.toFixed(0)}%`}</b>
       </div>
       <div className="tm-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)} aria-label="AI tokens used this month">
         <div className={pct > 90 ? "hot" : pct > 70 ? "warm" : ""} style={{ width: `${Math.max(pct, usage.used > 0 ? 1 : 0)}%` }} />
       </div>
+      {!noAi && (
+        <div className="tm-foot small muted">
+          <span>
+            {unlimited ? `${fmtTokens(usage.used)} used this month · unlimited` : `${fmtTokens(usage.used)} of ${fmtTokens(usage.limit)} this month`}
+            {usage.topup ? ` · ${fmtTokens(usage.topup)} top-up` : ""}
+            {refill ? ` · ${refill}` : ""}
+          </span>
+          {!unlimited && openTopUp && <button className="link-btn tiny" onClick={openTopUp}>Top up</button>}
+        </div>
+      )}
     </div>
   );
 }
 
+
+// ---------- AI token packs (the Plans window, and the top-up window on its own) ----------
+type Pack = PlanExtras["tokenPacks"][number];
+function PackRow({ extras, on, busy, onPick }: { extras: PlanExtras; on: boolean; busy: boolean; onPick: (k: Pack) => void }) {
+  const { me } = useAccess();
+  const ai = !!me && (me.permissions ?? []).includes("ai.analyze");
+  return (
+    <div className="pack-row">
+      {extras.tokenPacks.map((k) => (
+        <div key={k.id} className={`pack-card${k.note ? " best" : ""}`}>
+          <div>
+            <b>{fmtTokens(k.tokens)} AI Tokens</b>
+            <span className="muted small">≈ {k.analyses} analyses{k.note ? ` · ${k.note}` : ""}</span>
+          </div>
+          <span className="pack-price">${k.priceUsd}</span>
+          <button className="btn plan-btn" disabled={!on || !me || busy || !ai} title={!on ? "Online payment is being set up" : !ai ? "Token packs are for AI plans" : undefined} onClick={() => onPick(k)}>Buy Pack</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+// Buying a pack: the Subscription Terms first, then Stripe's own page.
+function PackConfirm({ pack, termsVersion, onClose }: { pack: Pack; termsVersion: string; onClose: () => void }) {
+  const [terms, setTerms] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const buy = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      window.location.href = (await api.billingPack({ pack: pack.id, terms: termsVersion })).url;
+    } catch (e: any) {
+      setErr(e.message);
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={`Buy ${fmtTokens(pack.tokens)} AI tokens`} onClose={onClose} narrow foot={<>
+      <button className="btn ghost" onClick={onClose}>Back</button>
+      <button className="btn buy" disabled={!terms || busy} onClick={() => void buy()}>{busy ? "Opening…" : "Continue to payment"}</button>
+    </>}>
+      <ul className="small deposit-notes">
+        <li>${pack.priceUsd}, paid once on Stripe's secure page (tax is added where it applies). The tokens are added as soon as Stripe confirms the payment.</li>
+        <li>They are used after your monthly allowance runs out, and never expire.</li>
+      </ul>
+      <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Subscription Terms</button>.</span></label>
+      {err && <p className="down small" role="alert">{err}</p>}
+    </Modal>
+  );
+}
+// Out of AI tokens: opens by itself when they run out (an AI request refused, or the agents used the
+// last of them), or from "Top up" on the usage bar. It offers the token packs only.
+export function TopUpModal({ onClose }: { onClose: () => void }) {
+  const { me } = useAccess();
+  const [extras, setExtras] = useState<PlanExtras | null>(null);
+  const [bill, setBill] = useState<BillingStatus | null>(null);
+  const [pack, setPack] = useState<Pack | null>(null);
+  useEffect(() => {
+    void api.planExtras().then(setExtras).catch(() => {});
+    void api.billing().then(setBill).catch(() => {});
+  }, []);
+  const u = me?.usage;
+  const monthly = !!u && u.limit > 0;
+  const out = monthly && u!.left === 0;
+  const on = !!bill?.on;
+  const refill = monthly ? refillText(u!) : "";
+  return (
+    <Modal title={out ? "You're out of AI tokens" : "Top up AI tokens"} onClose={onClose} wide>
+      <p className="plans-lead">{out ? "You've used all of this month's AI tokens. " : ""}Top up to keep your AI plans and agents working. Packs are used after your monthly allowance and never expire.</p>
+      <ul className="small muted topup-facts">
+        {monthly && <li>This month: {fmtTokens(u!.used)} of {fmtTokens(u!.limit)} used{u!.topup ? `, plus ${fmtTokens(u!.topup)} top-up left` : ""}.</li>}
+        {out && <li>Until you top up, your agents keep managing the trades they hold but make no new plans.</li>}
+        {refill && <li>{refill}</li>}
+      </ul>
+      <div className="packs">
+        {extras ? <PackRow extras={extras} on={on} busy={false} onPick={setPack} /> : <p className="muted small">Loading the packs…</p>}
+      </div>
+      <p className="muted tiny plans-foot">{on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD; tax is added where it applies.</> : <>Online payment is being set up.</>}</p>
+      {pack && bill && <PackConfirm pack={pack} termsVersion={bill.termsVersion} onClose={() => setPack(null)} />}
+    </Modal>
+  );
+}
 
 // The Plans window (the owner's "Plans & AI Credits" mockup): four plans, monthly or yearly, and
 // pay-as-you-go AI token packs, paid by card on Stripe's own page (billing.ts). ask = it opened
@@ -568,7 +663,8 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
   const [extras, setExtras] = useState<PlanExtras | null>(null);
   const [bill, setBill] = useState<BillingStatus | null>(null);
   const [yearly, setYearly] = useState(false);
-  const [pick, setPick] = useState<{ kind: "plan"; plan: PlanInfo } | { kind: "pack"; pack: PlanExtras["tokenPacks"][number] } | { kind: "cancel" } | null>(null);
+  const [pick, setPick] = useState<{ kind: "plan"; plan: PlanInfo } | { kind: "cancel" } | null>(null);
+  const [pack, setPack] = useState<Pack | null>(null);
   const [terms, setTerms] = useState(false);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
@@ -603,7 +699,6 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
     setPick(null);
     reloadMe?.();
   });
-  const confirmPack = (id: string) => run("pack", async () => go((await api.billingPack({ pack: id, terms: bill!.termsVersion })).url));
   const cancel = () => run("cancel", async () => { setBill(await api.billingCancel()); setPick(null); });
   const resume = () => run("resume", async () => { setBill(await api.billingResume()); });
   const manage = () => run("manage", async () => go((await api.billingPortal()).url));
@@ -668,35 +763,24 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
         <div className="packs">
           <div className="packs-title">Need More AI? Pay-As-You-Go Token Packs</div>
           <p className="muted small">Used after your monthly allowance runs out · Tokens never expire · Available on all AI plans.</p>
-          <div className="pack-row">
-            {extras.tokenPacks.map((k) => (
-              <div key={k.id} className={`pack-card${k.note ? " best" : ""}`}>
-                <div>
-                  <b>{fmtTokens(k.tokens)} AI Tokens</b>
-                  <span className="muted small">≈ {k.analyses} analyses{k.note ? ` · ${k.note}` : ""}</span>
-                </div>
-                <span className="pack-price">${k.priceUsd}</span>
-                <button className="btn plan-btn" disabled={!on || !me || !!busy || !(me && (me.permissions ?? []).includes("ai.analyze"))} title={!(me && (me.permissions ?? []).includes("ai.analyze")) ? "Token packs are for AI plans" : undefined} onClick={() => { setTerms(false); setErr(""); setPick({ kind: "pack", pack: k }); }}>Buy Pack</button>
-              </div>
-            ))}
-          </div>
+          <PackRow extras={extras} on={on} busy={!!busy} onPick={(k) => { setErr(""); setPack(k); }} />
         </div>
       )}
       <p className="muted tiny plans-foot">
-        {on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD. </> : <>Online payment is being set up. {me?.role === "admin" && bill?.reason ? bill.reason : ""} </>}
+        {on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD; tax is added where it applies. </> : <>Online payment is being set up. {me?.role === "admin" && bill?.reason ? bill.reason : ""} </>}
         {bill?.canManage && <button className="link-btn tiny" onClick={() => void manage()} disabled={!!busy}>Manage billing</button>}
       </p>
       {err && !pick && <p className="down small">{err}</p>}
       {pick && bill && (
-        <Modal title={pick.kind === "cancel" ? "Cancel your subscription?" : pick.kind === "plan" ? (rankOf(pick.plan.id) < rankOf(current) ? `Switch to ${pick.plan.name}` : `Upgrade to ${pick.plan.name}`) : `Buy ${fmtTokens(pick.pack.tokens)} AI tokens`} onClose={() => setPick(null)} narrow foot={<>
+        <Modal title={pick.kind === "cancel" ? "Cancel your subscription?" : rankOf(pick.plan.id) < rankOf(current) ? `Switch to ${pick.plan.name}` : `Upgrade to ${pick.plan.name}`} onClose={() => setPick(null)} narrow foot={<>
           <button className="btn ghost" onClick={() => setPick(null)}>Back</button>
           {pick.kind === "cancel"
             ? <button className="btn sell" onClick={() => void cancel()} disabled={!!busy}>{busy ? "Cancelling…" : "Cancel subscription"}</button>
-            : <button className="btn buy" disabled={!terms || !!busy} onClick={() => void (pick.kind === "plan" ? confirmPlan(pick.plan) : confirmPack(pick.pack.id))}>{busy ? "Opening…" : sub && pick.kind === "plan" ? "Confirm change" : "Continue to payment"}</button>}
+            : <button className="btn buy" disabled={!terms || !!busy} onClick={() => void confirmPlan(pick.plan)}>{busy ? "Opening…" : sub ? "Confirm change" : "Continue to payment"}</button>}
         </>}>
           {pick.kind === "cancel" ? (
             <p className="small">Your plan stays until {until(sub?.periodEnd)}, then your account returns to Free. Nothing more is charged. You can keep the plan instead any time before then.</p>
-          ) : pick.kind === "plan" ? (
+          ) : (
             <>
               <p><b>{pick.plan.name}</b>: {yearly ? `$${(pick.plan.priceUsd * paid).toLocaleString()} a year` : `$${pick.plan.priceUsd} a month`}.</p>
               <ul className="small deposit-notes">
@@ -707,16 +791,12 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
                 <li>It renews automatically every {yearly ? "year" : "month"} until you cancel. Cancel any time: the plan stays until the end of the period paid.</li>
               </ul>
             </>
-          ) : (
-            <ul className="small deposit-notes">
-              <li>${pick.pack.priceUsd}, paid once on Stripe's secure page. The tokens are added as soon as Stripe confirms the payment.</li>
-              <li>They are used after your monthly allowance runs out, and never expire.</li>
-            </ul>
           )}
           {pick.kind !== "cancel" && <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Subscription Terms</button>.</span></label>}
           {err && <p className="down small" role="alert">{err}</p>}
         </Modal>
       )}
+      {pack && bill && <PackConfirm pack={pack} termsVersion={bill.termsVersion} onClose={() => setPack(null)} />}
     </Modal>
   );
 }
