@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe } from "./api";
+import { type FramePatterns, type MaView, aiText, allBots, api, SIGNIN_EVENT, fmtBig, fmtPct, fmtPrice, fmtTime, fmtUsd, type Analysis, type AppState, type RealTrade, type PlanInfo, type User, type Candle, type PairInfo, type CheckedOrder, type Position, type Status, type Timeframe, type WalletView } from "./api";
 import { Chart, type ChartLine } from "./Chart";
 import { Footer } from "./Footer";
 import { GuidePage } from "./Guide";
@@ -126,6 +126,7 @@ export default function App() {
     return () => window.removeEventListener("resize", set);
   });
   // Growth ladder under Positions: shown on desktop, hidden on tablets / phones, until you choose.
+  const [realCount, setRealCount] = useState(0); // Real mode: coins held in the own wallet (the Positions tab's count)
   const [showLadder, setShowLadder] = useState(() => {
     const v = localStorage.getItem("nexus-ladder");
     return v ? v === "1" : window.innerWidth > 1180;
@@ -201,6 +202,10 @@ export default function App() {
     setToast({ msg, bad });
     setTimeout(() => setToast(null), 4000);
   }, []);
+  // The Auto-Pilot card's "Switch to Paper Mode" (Real mode): the same switch as in the profile.
+  const toPaper = useCallback(() => {
+    api.setTradeMode("paper").then(() => { void loadMe(); notify("Paper mode on: trades use your paper account"); }).catch((e) => notify(e.message, true));
+  }, [loadMe, notify]);
 
   // Re-check status every minute: AI keys, storage, and whether a newer version is deployed.
   useInterval(() => {
@@ -454,8 +459,9 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
+          {me?.tradeMode === "real" && <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} onPaper={toPaper} />}
           {hiddenParts.includes("aiSignal") ? null : demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} maCross={shownPlan?.maCross} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
-          {me?.tradeMode === "real" ? <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} /> : (
+          {me?.tradeMode === "real" ? null : (
             <AgentsPanel state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} defaults={AGENT_DEFAULTS} request={agentReq} onRequestDone={() => setAgentReq(null)} />
           )}
         </aside>
@@ -464,11 +470,11 @@ export default function App() {
           <div className="tabs">
             {(["positions", "trades", "log", "pipeline"] as const).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)} title={t === "pipeline" ? "The steps every trade goes through, and what each one did" : undefined}>
-                {t === "positions" ? `Positions (${state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : t === "log" ? "Agent log" : "Pipeline"}
+                {t === "positions" ? `Positions (${me?.tradeMode === "real" ? realCount : state?.positions.length ?? 0})` : t === "trades" ? "Trade history" : t === "log" ? "Agent log" : "Pipeline"}
               </button>
             ))}
             <span className="tabs-right">
-              {tab === "positions" && (
+              {tab === "positions" && me?.tradeMode !== "real" && (
                 <label className="check small ladder-toggle" title="Show or hide the Growth ladder under your positions">
                   <input type="checkbox" checked={showLadder} onChange={(e) => { setShowLadder(e.target.checked); localStorage.setItem("nexus-ladder", e.target.checked ? "1" : "0"); }} />
                   <span>Growth ladder</span>
@@ -483,15 +489,15 @@ export default function App() {
               </button>
             </span>
           </div>
-          {tab === "positions" && (
+          {tab === "positions" && (me?.tradeMode === "real" ? <RealPositions onCount={setRealCount} /> : (
             <>
               <Positions state={state} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} />
               {showLadder && <GoalLadder state={state} />}
             </>
-          )}
+          ))}
           {tab === "trades" && (me?.tradeMode === "real" ? <RealTrades notify={notify} /> : <Trades state={state} notify={notify} />)}
-          {tab === "log" && <BotLog state={state} />}
-          {tab === "pipeline" && <Pipeline state={state} onOpenLog={() => setTab("log")} />}
+          {tab === "log" && (me?.tradeMode === "real" ? <EmptyState title="No auto-pilot activity yet" line="The real-money auto-pilot's decisions show here once it is on. Your paper agents' log stays in Paper mode." /> : <BotLog state={state} />)}
+          {tab === "pipeline" && (me?.tradeMode === "real" ? <EmptyState title="No real trades in the pipeline" line="Each step of a real auto-pilot trade shows here once it is on. Your paper pipeline stays in Paper mode." /> : <Pipeline state={state} onOpenLog={() => setTab("log")} />)}
         </section>
       </main>
 
@@ -567,12 +573,12 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
         {me && status?.openai && <span className="ai-dot on" title="OpenAI API key">GPT</span>}
         {!me ? null : real ? (
           <div className="equity">
-            <small>WALLET</small>
+            <small>Wallet</small>
             <b>{walletUsd === null ? "…" : fmtUsd(walletUsd)}</b>
           </div>
         ) : (
           <div className="equity">
-            <small>EQUITY</small>
+            <small>Equity</small>
             <b>{fmtUsd(eq)}</b>
             <span className={`equity-pnl ${tabTone(pnl)}`} title={state ? `Your profit or loss so far: your equity now, less the ${fmtUsd(state.startCash)} the account started with.` : undefined}>{pnlText(pnl)}</span>
           </div>
@@ -863,7 +869,7 @@ function SignalPanel(props: { pair: PairInfo | null; tf: Timeframe; sig?: Analys
     <div className={`panel signal-panel ${small ? "small" : ""}`}>
       <div className="panel-title ai-title">
         <span className="ai-title-left">
-          <span>AI SIGNAL</span>
+          <span>AI Signal</span>
           {(() => {
             const can = !!(sig && (explain.why || sig.note));
             return (
@@ -1295,7 +1301,7 @@ function OpenOrders({ state, notify, refresh }: { state: AppState | null; notify
 }
 
 function Positions({ state, notify, refresh, onOpen }: { state: AppState | null; notify: (m: string, bad?: boolean) => void; refresh: () => void; onOpen: (chain: string, pool: string) => void }) {
-  if (!state?.positions.length) return <><p className="muted small pad">No open positions.</p><OpenOrders state={state} notify={notify} refresh={refresh} /></>;
+  if (!state?.positions.length) return <><EmptyState title="No open positions" line="Place an order, or start an agent to trade for you." /><OpenOrders state={state} notify={notify} refresh={refresh} /></>;
   return (
     <>
     <OpenOrders state={state} notify={notify} refresh={refresh} />
@@ -1543,7 +1549,7 @@ function DemoSignal({ pair, price }: { pair: PairInfo | null; price?: number }) 
   const p = price ?? pair?.priceUsd ?? 0;
   return (
     <div className="panel demo-signal">
-      <div className="panel-title"><span>AI SIGNAL</span><span className="demo-badge">DEMO</span></div>
+      <div className="panel-title"><span>AI Signal</span><span className="demo-badge">DEMO</span></div>
       <p className="muted small">This is an example of the plan the AI writes for a coin. Sign in to get real plans{pair ? ` for ${pair.symbol}` : ""}.</p>
       <div className="demo-card">
         <div className="demo-stance"><b className="up">WAIT FOR DIP</b><span className="muted small">example · 58% confidence</span></div>
@@ -1733,13 +1739,62 @@ function RealTrades({ notify }: { notify: (m: string, bad?: boolean) => void }) 
   );
 }
 
-function RealModeNotice({ what, botRunning }: { what: "trade" | "bot"; botRunning?: boolean }) {
+function RealModeNotice({ what, botRunning, onPaper }: { what: "trade" | "bot"; botRunning?: boolean; onPaper: () => void }) {
   return (
     <section className="panel real-notice">
-      <h3>{what === "trade" ? "Trade · Real mode" : "Auto-pilot · Real mode"}</h3>
-      <p>{what === "trade" ? "Buying and selling with your own wallet is switched on in the next update." : "The bot trading your own wallet is switched on in a later update, with limits you set."}</p>
-      {what === "bot" && botRunning && <p className="muted small">Your paper bot is still running on the paper account.</p>}
-      <p className="muted small">To trade now, switch back to <b>Paper</b> in your profile (top right).</p>
+      <div className="real-notice-head">
+        <h3>{what === "trade" ? "Trade" : "Auto-Pilot"}</h3>
+        <span className="mode-pill">Real mode</span>
+      </div>
+      <p>{what === "trade" ? "Buying and selling with your own wallet unlocks in the next update." : "Automated wallet trading unlocks in a future update with customizable risk limits."}</p>
+      {what === "bot" && botRunning && <p className="muted small">Your paper agents keep running on the paper account.</p>}
+      <button className="btn ghost wide" onClick={onPaper}>Switch to Paper Mode</button>
     </section>
+  );
+}
+// A centred note for an empty list (the owner's mockup).
+function EmptyState({ title, line }: { title: string; line: string }) {
+  return (
+    <div className="empty-state">
+      <b>{title}</b>
+      <span>{line}</span>
+    </div>
+  );
+}
+// Real mode's positions: the coins held in the account's own Solana wallet (not SOL or USDC, which
+// pay for trades), read from the blockchain. Nothing here comes from the paper account.
+function RealPositions({ onCount }: { onCount: (n: number) => void }) {
+  const [rows, setRows] = useState<WalletView["holdings"] | null>(null);
+  useEffect(() => {
+    let live = true;
+    const load = () => api.realWallet().then((w) => {
+      // Coins worth at least a cent: wallets also receive junk tokens nobody bought (no price, no value).
+      const held = w.holdings.filter((h) => h.amount > 0 && h.symbol !== "SOL" && h.symbol !== "USDC" && (h.valueUsd ?? 0) >= 0.01);
+      if (!live) return;
+      setRows(held);
+      onCount(held.length);
+    }).catch(() => live && setRows([]));
+    load();
+    const id = setInterval(load, 60_000);
+    return () => { live = false; clearInterval(id); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (rows === null) return <p className="muted small pad">Reading your wallet…</p>;
+  if (!rows.length) return <EmptyState title="No open positions" line="Place an order or switch to Paper mode to simulate trades." />;
+  return (
+    <div className="table-wrap">
+      <table className="scan">
+        <thead><tr><th>Token</th><th className="num">Amount</th><th className="num">Price</th><th className="num">Value</th></tr></thead>
+        <tbody>
+          {rows.map((h) => (
+            <tr key={h.mint}>
+              <td><b>{h.symbol}</b><div className="muted tiny">{h.name}</div></td>
+              <td className="num mono">{h.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+              <td className="num mono">{h.priceUsd === null ? "—" : fmtPrice(h.priceUsd)}</td>
+              <td className="num mono">{h.valueUsd === null ? "—" : fmtUsd(h.valueUsd)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

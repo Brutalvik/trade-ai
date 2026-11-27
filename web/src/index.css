@@ -1458,3 +1458,79 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .mp-frame { width: 100%; height: min(600px, calc(100vh - 290px)); min-height: 360px; border: 0; border-radius: 12px; background: #0b1020; display: block; }
 .mp-step { margin: 10px 0 6px; }
 .mp-pay-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+
+/* ---------- Glass theme (the owner's mockup, 27 Nov 2026) ----------
+   See-through panels with a blur over a soft teal-and-red glow, and every text kept high-contrast:
+   panels stay dark enough (about 70% opaque) that white text reads on any glow behind them, and
+   the muted grey is brighter than before. Accents are teal. */
+:root {
+  --bg: #05090d;
+  --panel: rgba(18, 28, 36, 0.7);
+  --border: rgba(255, 255, 255, 0.09);
+  --text: #eef3fb;
+  --muted: #9cadc6;
+  --cyan: #3ee8c8;
+}
+body {
+  background:
+    radial-gradient(1000px 680px at 14% 4%, rgba(26, 170, 140, 0.42), transparent 62%),
+    radial-gradient(900px 600px at 50% 48%, rgba(24, 128, 104, 0.3), transparent 64%),
+    radial-gradient(820px 560px at 96% 100%, rgba(176, 34, 52, 0.34), transparent 62%),
+    radial-gradient(760px 520px at 100% 2%, rgba(40, 104, 156, 0.26), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+.bg-grid { display: none; }
+.brand b { color: #00c9ed; }
+.logo { color: #04e5f6; text-shadow: 0 0 12px rgba(4, 229, 246, 0.6); }
+
+.topbar { background: rgba(7, 12, 17, 0.6); border-bottom: 1px solid rgba(255, 255, 255, 0.07); backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%); }
+.sound-toggle { width: 34px; height: 32px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.11); background: rgba(255, 255, 255, 0.05); color: #d3dcec; }
+.sound-toggle:hover { border-color: rgba(62, 232, 200, 0.55); color: #fff; }
+.equity { border-left-color: rgba(255, 255, 255, 0.1); }
+.equity small { font-size: 11.5px; color: #aebbd0; }
+
+.panel {
+  background: linear-gradient(180deg, rgba(28, 44, 52, 0.6), rgba(13, 22, 29, 0.7));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 14px 44px rgba(0, 0, 0, 0.38);
+}
+.panel-title { font-family: Inter, system-ui, sans-serif; font-size: 15px; font-weight: 600; letter-spacing: 0.2px; color: var(--text); }
+.modal { background: linear-gradient(180deg, rgba(24, 36, 45, 0.9), rgba(12, 19, 26, 0.94)); border: 1px solid rgba(255, 255, 255, 0.1); backdrop-filter: blur(22px) saturate(140%); -webkit-backdrop-filter: blur(22px) saturate(140%); }
+.modal-head { border-bottom-color: rgba(255, 255, 255, 0.08); }
+.modal-head h2 { color: var(--text); }
+.modal-body { color: #d7e0ee; }
+.dropdown { background: rgba(14, 22, 29, 0.96); border-color: rgba(255, 255, 255, 0.1); backdrop-filter: blur(18px); }
+input { background: rgba(0, 0, 0, 0.32); border-color: rgba(255, 255, 255, 0.12); }
+
+/* Buttons and toggles: neutral glass, teal when chosen */
+.btn.ghost { background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.14); color: var(--text); }
+.btn.ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); border-color: rgba(62, 232, 200, 0.5); }
+.btn.buy { background: linear-gradient(135deg, #2ee8b6, #38cfe8); color: #032019; box-shadow: 0 8px 26px rgba(46, 232, 182, 0.22); }
+.chip { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.12); color: #dfe7f3; }
+.chip:hover { border-color: rgba(62, 232, 200, 0.5); color: #fff; }
+.chip.on, .real-quick .chip.on { background: rgba(255, 255, 255, 0.13); border-color: rgba(255, 255, 255, 0.3); color: #fff; }
+.tabs button { color: #b8c5d8; }
+.tabs button.on { background: rgba(62, 232, 200, 0.14); color: #7ff5da; }
+.tf, .kind-toggle { background: rgba(0, 0, 0, 0.28); border-color: rgba(255, 255, 255, 0.09); }
+.tf button { color: #b8c5d8; }
+.tf button.on, .kind-toggle button.on { background: rgba(62, 232, 200, 0.16); color: #7ff5da; }
+.kind-toggle button { color: #b8c5d8; }
+.trade-tabs button.buy.on { background: rgba(46, 232, 182, 0.16); color: #6ff3cf; }
+.coin-row.on { background: rgba(62, 232, 200, 0.09); box-shadow: inset 0 0 0 1px rgba(62, 232, 200, 0.26); }
+.muted { color: var(--muted); }
+.tiny { font-size: 11.5px; }
+.small { font-size: 12.5px; }
+
+/* The Auto-Pilot card in Real mode, and empty lists */
+.real-notice-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.real-notice h3 { margin: 0; font-family: Inter, system-ui, sans-serif; font-size: 17px; font-weight: 600; letter-spacing: 0.2px; color: var(--text); }
+.real-notice p { color: #dae3f0; font-size: 14px; line-height: 1.5; }
+.real-notice .btn.wide { margin-top: 4px; padding: 10px 14px; font-size: 14px; }
+.mode-pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; color: #7ff5da; background: rgba(62, 232, 200, 0.14); border: 1px solid rgba(62, 232, 200, 0.36); white-space: nowrap; }
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 44px 16px; text-align: center; }
+.empty-state b { font-size: 17px; font-weight: 600; color: #e3eaf5; }
+.empty-state span { color: var(--muted); font-size: 13.5px; }
