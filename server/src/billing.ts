@@ -24,8 +24,8 @@
 // products' tax category, default txcd_10103000 "Software as a service, personal use": Stripe's
 // Managed Payments, on by default on new accounts, needs one to work out sales tax),
 // STRIPE_API_VERSION (default the version this was tested against, below), STRIPE_PUBLISHABLE_KEY
-// (pk_test_... / pk_live_..., the same mode as the secret key: with it, customers pay in Stripe's
-// form inside the app's own window; without it, on Stripe's own page).
+// (pk_test_... / pk_live_..., the same mode as the secret key: with it, customers pay on the app's own
+// checkout form, in its own window; without it, on Stripe's own page).
 import crypto from "node:crypto";
 import { createStore } from "./store.js";
 import { PLAN_ORDER, PLANS, TOKEN_PACKS, YEARLY_MONTHS_PAID, planOf, type PlanId } from "./plans.js";
@@ -57,14 +57,17 @@ export function publishableKey(): string | null {
   const pk = process.env.STRIPE_PUBLISHABLE_KEY?.trim() ?? "";
   return c.on && pk.startsWith(`pk_${c.mode}_`) ? pk : null;
 }
-// Where the customer pays. In the app's window: Stripe's embedded form (ui_mode embedded_page; it
-// finishes there and leaves the app only for a payment method that needs it). Else Stripe's page.
-// (Managed Payments, on by default, allows only these two: no form of the app's own.)
+// Where the customer pays. In the app's window, on the app's own checkout form (the owner's choice,
+// 2026-11-27): ui_mode "elements", Stripe's secure card fields placed in it (card details go to Stripe
+// only), and the app's own summary, total and Pay button. Stripe's Managed Payments (Stripe as the
+// seller, adding sales tax) allows only Stripe's page or its embedded form, so it is off for these
+// payments: no sales tax is added (until Stripe Tax is set up, which needs the business's head
+// office address in Stripe). Without the publishable key: Stripe's own page, as before.
 type Paid = { url: string } | { clientSecret: string; sessionId: string; publishableKey: string };
-function surface(embedded: unknown) {
+function surface(inApp: unknown) {
   const back = `${appUrl()}/app?billing=done&session_id={CHECKOUT_SESSION_ID}`;
-  return embedded && publishableKey()
-    ? { ui_mode: "embedded_page", return_url: back, redirect_on_completion: "if_required" }
+  return inApp && publishableKey()
+    ? { ui_mode: "elements", return_url: back, managed_payments: { enabled: false } }
     : { success_url: back, cancel_url: `${appUrl()}/app?billing=cancelled` };
 }
 const paidAt = (s: any): Paid => (s.client_secret && !s.url ? { clientSecret: String(s.client_secret), sessionId: String(s.id), publishableKey: publishableKey()! } : { url: String(s.url) });

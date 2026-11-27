@@ -629,7 +629,7 @@ function PackConfirm({ pack, bill, onClose, onPaid }: { pack: Pack; bill: Billin
       <button className="btn buy" disabled={!terms || busy} onClick={() => void buy()}>{busy ? "Opening…" : "Continue to payment"}</button>
     </>}>
       <ul className="small deposit-notes">
-        <li>${pack.priceUsd}, paid once {bill.publishableKey ? "right here, in a secure form run by Stripe" : "on Stripe's secure page"} (tax is added where it applies). The tokens are added as soon as Stripe confirms the payment.</li>
+        <li>${pack.priceUsd}, paid once {bill.publishableKey ? "right here, on our secure checkout, powered by Stripe" : "on Stripe's secure page (tax is added where it applies)"}. The tokens are added as soon as Stripe confirms the payment.</li>
         <li>They are used after your monthly allowance runs out, and never expire.</li>
       </ul>
       <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Subscription Terms</button>.</span></label>
@@ -664,72 +664,114 @@ export function TopUpModal({ onClose }: { onClose: () => void }) {
       <div className="packs">
         {extras ? <PackRow extras={extras} on={on} busy={false} onPick={setPack} /> : <p className="muted small">Loading the packs…</p>}
       </div>
-      <p className="muted tiny plans-foot">{on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD; tax is added where it applies.</> : <>Online payment is being set up.</>}</p>
+      <p className="muted tiny plans-foot">{on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD{bill?.publishableKey ? "" : "; tax is added where it applies"}.</> : <>Online payment is being set up.</>}</p>
       {pack && bill && <PackConfirm pack={pack} bill={bill} onClose={() => setPack(null)} onPaid={onClose} />}
     </Modal>
   );
 }
 
-// Paying inside the app's own window: Stripe's embedded checkout form (Stripe holds the card details;
-// the app never sees them, and Stripe adds the sales tax). Only its X or Cancel close it, never
-// Escape, so a payment in progress is not lost by a stray key. When Stripe says it is paid, the server
-// is asked to apply it at once (the webhook does too) and the window says what was bought.
-// Stripe allows one embedded form on a page at a time: each waits for the one before it to be gone
-// (a window closed a moment ago, or React running a window's setup twice while developing).
-let embedQueue: Promise<unknown> = Promise.resolve();
+// Paying inside the app's own window, on the app's own checkout form (the owner's choice): what is
+// bought, the total and the Pay button are the app's; the card details are typed into Stripe's secure
+// fields placed in the form (they go to Stripe only; the app never sees them), styled like the app.
+// Only its X or Cancel close it, never Escape, so a payment in progress is not lost by a stray key.
+// When Stripe says it is paid, the server applies it at once (the webhook does too) and the window
+// shows the app's animated "paid" screen.
+type CheckoutSdk = import("@stripe/stripe-js").StripeCheckoutElementsSdk;
+type CheckoutActions = Extract<Awaited<ReturnType<CheckoutSdk["loadActions"]>>, { type: "success" }>["actions"];
+type CheckoutSession = import("@stripe/stripe-js").StripeCheckoutSession;
+// Stripe's fields in the app's colours and type (read from the page, so a restyle carries over).
+function checkoutLook(): import("@stripe/stripe-js").Appearance {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name: string, or: string) => css.getPropertyValue(name).trim() || or;
+  return {
+    theme: "night",
+    variables: {
+      colorPrimary: v("--cyan", "#3ee8c8"), colorBackground: "#0b1117", colorText: v("--text", "#eef3fb"), colorTextSecondary: v("--muted", "#9cadc6"),
+      colorDanger: v("--down", "#ff3d71"), fontFamily: "Inter, system-ui, sans-serif", fontSizeBase: "14px", borderRadius: "10px", spacingUnit: "4px",
+    },
+    rules: {
+      ".Input": { border: "1px solid rgba(255, 255, 255, 0.12)", boxShadow: "none" },
+      ".Input:focus": { border: `1px solid ${v("--cyan", "#3ee8c8")}`, boxShadow: "0 0 0 3px rgba(62, 232, 200, 0.15)" },
+      ".Label": { color: v("--muted", "#9cadc6"), fontWeight: "500" },
+      ".Tab": { border: "1px solid rgba(255, 255, 255, 0.12)", backgroundColor: "#0b1117" },
+      ".Tab--selected": { borderColor: v("--cyan", "#3ee8c8") },
+    },
+  };
+}
 function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what: string; onClose: () => void; onPaid: () => void }) {
-  const { reloadMe } = useAccess();
+  const { me, reloadMe } = useAccess();
   const box = useRef<HTMLDivElement>(null);
-  const form = useRef<{ destroy: () => void } | null>(null); // Stripe's form, gone the moment it is paid (only the app's own screen after that)
-  const [state, setState] = useState<"loading" | "ready" | "failed" | "done">("loading");
+  const actions = useRef<CheckoutActions | null>(null);
+  const [session, setSession] = useState<CheckoutSession | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "paying" | "failed" | "done">("loading");
+  const [err, setErr] = useState("");
   const [said, setSaid] = useState<{ title: string; text: string }>({ title: "Payment received", text: "Applying it to your account…" });
   useEffect(() => {
     let gone = false;
-    const job = embedQueue.then(async () => {
-      if (gone) return;
+    let field: { destroy: () => void } | null = null;
+    void (async () => {
       try {
         const { loadStripe } = await import("@stripe/stripe-js");
         const stripe = await loadStripe(pay.publishableKey);
         if (!stripe) throw new Error("Stripe did not load");
-        const f = await stripe.createEmbeddedCheckoutPage({
-          fetchClientSecret: async () => pay.clientSecret,
-          onComplete: () => {
-            form.current?.destroy();
-            form.current = null;
-            setState("done");
-            api.billingConfirm(pay.sessionId)
-              .then((b) => {
-                const renews = b.subscription?.periodEnd ? new Date(b.subscription.periodEnd).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }) : "";
-                setSaid(b.paid?.kind === "pack"
-                  ? { title: `${b.paid.tokens ? fmtTokens(b.paid.tokens) : "Your"} AI tokens added`, text: "They're used after your monthly allowance runs out, and they never expire." }
-                  : { title: `You're on ${planName(b.subscription?.plan ?? undefined)}`, text: `Your plan is active now${renews ? ` and renews on ${renews}` : ""}.` });
-              })
-              .catch(() => setSaid({ title: "Payment received", text: "It can take a moment to show in your account." }))
-              .finally(() => reloadMe?.());
-          },
-        });
-        if (gone) return f.destroy();
-        form.current = f;
-        if (box.current) f.mount(box.current);
+        if (gone) return;
+        const sdk = stripe.initCheckoutElementsSdk({ clientSecret: pay.clientSecret, elementsOptions: { appearance: checkoutLook() } });
+        sdk.on("change", (s) => !gone && setSession(s));
+        const el = sdk.createPaymentElement({ layout: "tabs", wallets: { link: "never" } }); // (no Link sign-up box or Stripe badge in the app's own form)
+        el.on("change", () => !gone && setErr("")); // (a declined card's message goes once the card is changed)
+        field = el;
+        if (box.current) el.mount(box.current);
+        const r = await sdk.loadActions();
+        if (gone) return;
+        if (r.type === "error") throw new Error(r.error.message);
+        actions.current = r.actions;
+        setSession(r.actions.getSession());
         setState("ready");
-      } catch (e) {
+      } catch (e: any) {
         console.error("[checkout] the payment form did not load:", e);
-        if (!gone) setState("failed");
+        if (!gone) {
+          setErr(e?.message ? String(e.message) : "");
+          setState("failed");
+        }
       }
-    });
-    embedQueue = job.catch(() => {});
+    })();
     return () => {
       gone = true;
-      form.current?.destroy();
-      form.current = null;
+      field?.destroy();
+      actions.current = null;
     };
   }, [pay.clientSecret]); // eslint-disable-line react-hooks/exhaustive-deps
+  const payNow = async () => {
+    const a = actions.current;
+    if (!a || state !== "ready") return;
+    setState("paying");
+    setErr("");
+    const r = await a.confirm({ redirect: "if_required" });
+    if (r.type === "error") {
+      setErr(r.error.message);
+      setState("ready");
+      return;
+    }
+    setState("done");
+    api.billingConfirm(pay.sessionId)
+      .then((b) => {
+        const renews = b.subscription?.periodEnd ? new Date(b.subscription.periodEnd).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }) : "";
+        setSaid(b.paid?.kind === "pack"
+          ? { title: `${b.paid.tokens ? fmtTokens(b.paid.tokens) : "Your"} AI tokens added`, text: "They're used after your monthly allowance runs out, and they never expire." }
+          : { title: `You're on ${planName(b.subscription?.plan ?? undefined)}`, text: `Your plan is active now${renews ? ` and renews on ${renews}` : ""}.` });
+      })
+      .catch(() => setSaid({ title: "Payment received", text: "It can take a moment to show in your account." }))
+      .finally(() => reloadMe?.());
+  };
   const done = state === "done";
   const close = () => (done ? onPaid() : onClose());
+  const total = session?.total.total.amount ?? "";
+  const tax = session?.total.taxExclusive.minorUnitsAmount ? session.total.taxExclusive.amount : "";
+  const every = session?.recurring ? session.recurring.interval : null;
   return (
     <Modal title={done ? "Payment received" : `Checkout · ${what}`} onClose={close} wide={!done} locked foot={done
       ? <button className="btn buy" onClick={close}>Done</button>
-      : <button className="btn ghost" onClick={close}>Cancel</button>}>
+      : <button className="btn ghost" onClick={close} disabled={state === "paying"}>Cancel</button>}>
       {done ? (
         <div key="paid" className="paid" role="status">
           <svg className="paid-check" viewBox="0 0 52 52" aria-hidden="true">
@@ -740,12 +782,35 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
           <p className="paid-text">{said.text}</p>
         </div>
       ) : (
-        <>
-          {state === "loading" && <p className="muted small">Loading the secure payment form…</p>}
-          {state === "failed" && <p className="down small" role="alert">The payment form did not load. Check your connection and try again.</p>}
-          <div key="form" ref={box} className="stripe-embed" />
-          <p className="muted tiny checkout-note">Card details go to Stripe, our payment processor; this app never sees them.</p>
-        </>
+        <div key="form" className="co">
+          <section className="co-summary" aria-label="Order summary">
+            <div className="co-kicker">You're buying</div>
+            {(session?.lineItems ?? []).map((li) => (
+              <div key={li.id} className="co-line">
+                <span>{li.name.replace(/^TRADING\/\/RUST\s*/, "")}</span>
+                <b>{li.total.amount}</b>
+              </div>
+            ))}
+            {!session && <div className="co-line"><span>{what}</span><b className="muted">…</b></div>}
+            {tax && <div className="co-line small"><span className="muted">Tax</span><span>{tax}</span></div>}
+            <div className="co-total"><span>{every ? "Due today" : "Total"}</span><b>{total || "…"}</b></div>
+            {every && <p className="muted small co-renew">Then {total} every {every}, renewing automatically until you cancel. Cancel any time in the Plans window.</p>}
+            {!every && session && <p className="muted small co-renew">Paid once. The tokens never expire.</p>}
+          </section>
+          <section className="co-pay" aria-label="Payment">
+            <div className="co-field"><span className="co-label">Email</span><div className="co-email">{session?.email ?? me?.email ?? ""}</div></div>
+            <div className="co-field"><span className="co-label">Payment</span><div ref={box} className="co-element" /></div>
+            {state === "loading" && <p className="muted small">Loading the secure payment fields…</p>}
+            {state === "failed" && <p className="down small" role="alert">The payment form did not load{err ? `: ${err}` : ""}. Check your connection and try again.</p>}
+            {state !== "failed" && err && <p className="down small" role="alert">{err}</p>}
+            <button className="btn buy wide co-btn" disabled={state !== "ready" || !session?.canConfirm} onClick={() => void payNow()}>
+              {state === "paying" ? "Processing…" : every ? `Subscribe · ${total}/${every}` : `Pay ${total}`}
+            </button>
+            <p className="muted tiny co-safe">
+              Powered by Stripe · <a href="https://stripe.com/legal/consumer" target="_blank" rel="noopener noreferrer" title="Opens in a new tab">Stripe's Terms and Conditions ↗</a>
+            </p>
+          </section>
+        </div>
       )}
     </Modal>
   );
@@ -866,7 +931,7 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
         </div>
       )}
       <p className="muted tiny plans-foot">
-        {on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD; tax is added where it applies. </> : <>Online payment is being set up. {me?.role === "admin" && bill?.reason ? bill.reason : ""} </>}
+        {on ? <>Payments by Stripe{bill?.mode === "test" ? " (test mode: no real charge)" : ""}. Prices in USD{bill?.publishableKey ? "" : "; tax is added where it applies"}. </> : <>Online payment is being set up. {me?.role === "admin" && bill?.reason ? bill.reason : ""} </>}
         {bill?.canManage && <button className="link-btn tiny" onClick={() => void manage()} disabled={!!busy}>Manage billing</button>}
       </p>
       {err && !pick && <p className="down small">{err}</p>}
@@ -886,7 +951,7 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
                 {sub ? (rankOf(pick.plan.id) < rankOf(current)
                   ? <li>{planName(current)} stays until {until(sub.periodEnd)}; then {pick.plan.name} starts at the new price.</li>
                   : <li>It starts now. Your card is charged the difference for the rest of this period.</li>)
-                  : <li>You pay {bill?.publishableKey ? "right here, in a secure form run by Stripe" : "on Stripe's secure page"}. This app never sees your card.</li>}
+                  : <li>You pay {bill?.publishableKey ? "right here, on our secure checkout, powered by Stripe" : "on Stripe's secure page. This app never sees your card"}.</li>}
                 <li>It renews automatically every {yearly ? "year" : "month"} until you cancel. Cancel any time: the plan stays until the end of the period paid.</li>
               </ul>
             </>
