@@ -34,7 +34,7 @@ import { audit } from "./audit.js";
 import { billingKey, forgetAllowance, type PaidPeriod } from "./allowance.js";
 
 const store = () => createStore();
-export const TERMS_VERSION = "2026-11-27";
+export const TERMS_VERSION = "2026-11-27.2"; // the Payment Terms (web Footer.tsx); a new version must be accepted again
 
 // ---------- Settings ----------
 export function billingConfig(): { on: boolean; mode: "test" | "live" | null; reason: string | null } {
@@ -210,8 +210,8 @@ function checkPlan(plan: unknown, interval: unknown): { plan: PlanId; interval: 
   return { plan: p, interval: i };
 }
 async function acceptTerms(user: string, terms: unknown, what: string) {
-  if (terms !== TERMS_VERSION) throw new Error("Please read and accept the Subscription Terms first.");
-  await audit(user, "billing.terms", `Accepted the Subscription Terms (${TERMS_VERSION}) before ${what}`, { version: TERMS_VERSION });
+  if (terms !== TERMS_VERSION) throw new Error("Please read and accept the Payment Terms first.");
+  await audit(user, "billing.terms", `Accepted the Payment Terms (${TERMS_VERSION}) before ${what}`, { version: TERMS_VERSION });
 }
 // A new subscription: Stripe's own payment page (the browser goes there).
 export async function checkout(user: string, body: any): Promise<Paid | { changed: true; status: Awaited<ReturnType<typeof status>> }> {

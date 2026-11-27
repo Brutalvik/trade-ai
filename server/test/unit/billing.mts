@@ -126,7 +126,7 @@ expect("on in test mode with a test key and the webhook secret", billing.billing
 await store.kvSet("user:ada", { username: "ada", firstName: "Ada", lastName: "L", email: "ada@example.test", salt: "", hash: "", passVer: 1, createdAt: Date.now(), avatarUrl: null });
 await store.kvSet("user:bob", { username: "bob", firstName: "Bob", lastName: "B", email: "bob@example.test", salt: "", hash: "", passVer: 1, createdAt: Date.now(), avatarUrl: null, plan: "max" });
 const T = billing.TERMS_VERSION;
-expect("the Subscription Terms must be accepted first", await fail(billing.checkout("ada", { plan: "starter", interval: "month" })), "Please read and accept the Subscription Terms first.");
+expect("the Payment Terms must be accepted first", await fail(billing.checkout("ada", { plan: "starter", interval: "month" })), "Please read and accept the Payment Terms first.");
 expect("the Free plan is not bought", await fail(billing.checkout("ada", { plan: "free", interval: "month", terms: T })), "Choose a paid plan.");
 const c1 = await billing.checkout("ada", { plan: "starter", interval: "month", terms: T });
 check("Starter monthly: Stripe's payment page", /^https:\/\/checkout\.stripe\.test\//.test(c1.url), c1);
@@ -179,7 +179,7 @@ await send(event("customer.subscription.deleted", subs.get(bobSub)));
 expect("...and keeps it when that subscription ends", await planNow("bob"), "max");
 
 // ---------- AI token packs ----------
-expect("a token pack also needs the Subscription Terms", await fail(billing.buyPack("ada", { pack: "pack5m" })), "Please read and accept the Subscription Terms first.");
+expect("a token pack also needs the Payment Terms", await fail(billing.buyPack("ada", { pack: "pack5m" })), "Please read and accept the Payment Terms first.");
 const pk = await billing.buyPack("ada", { pack: "pack5m", terms: T });
 const ps = pay([...sessions.values()].at(-1).id);
 expect("a pack is a one-time payment of $50", [!!pk.url, ps.mode, prices.find((x) => x.id === ps.price)?.unit_amount], [true, "payment", 5000]);

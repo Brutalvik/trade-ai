@@ -602,7 +602,7 @@ function PackRow({ extras, on, busy, onPick }: { extras: PlanExtras; on: boolean
     </div>
   );
 }
-// Buying a pack: the Subscription Terms first, then Stripe's own page.
+// Buying a pack: the Payment Terms first, then the app's checkout (or Stripe's page).
 function PackConfirm({ pack, bill, onClose, onPaid }: { pack: Pack; bill: BillingStatus; onClose: () => void; onPaid?: () => void }) {
   const [terms, setTerms] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -632,7 +632,7 @@ function PackConfirm({ pack, bill, onClose, onPaid }: { pack: Pack; bill: Billin
         <li>${pack.priceUsd}, paid once {bill.publishableKey ? "right here, on our secure checkout, powered by Stripe" : "on Stripe's secure page (tax is added where it applies)"}. The tokens are added as soon as Stripe confirms the payment.</li>
         <li>They are used after your monthly allowance runs out, and never expire.</li>
       </ul>
-      <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Subscription Terms</button>.</span></label>
+      <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Payment Terms</button>.</span></label>
       {err && <p className="down small" role="alert">{err}</p>}
     </Modal>
   );
@@ -725,7 +725,7 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
           address = a;
           if (addressBox.current) a.mount(addressBox.current);
         }
-        const el = sdk.createPaymentElement({ layout: "tabs", wallets: { link: "never" } }); // (no Link sign-up box or Stripe badge in the app's own form)
+        const el = sdk.createPaymentElement({ layout: "tabs", wallets: { link: "never" }, terms: { card: "never", applePay: "never", googlePay: "never" } }); // (no Link sign-up box or Stripe badge; the authorization line is the app's own, below)
         el.on("change", () => !gone && setErr("")); // (a declined card's message goes once the card is changed)
         field = el;
         if (box.current) el.mount(box.current);
@@ -817,6 +817,12 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
             {state === "loading" && <p className="muted small">Loading the secure payment fields…</p>}
             {state === "failed" && <p className="down small" role="alert">The payment form did not load{err ? `: ${err}` : ""}. Check your connection and try again.</p>}
             {state !== "failed" && err && <p className="down small" role="alert">{err}</p>}
+            <p className="muted small co-authorize">
+              {every
+                ? <>By subscribing, you authorize Trading//Rust to charge your payment method {total} every {every}, plus any tax shown, until you cancel, under our </>
+                : <>By paying, you agree to our </>}
+              <a href="/app#payment-terms" target="_blank" rel="noopener noreferrer" title="Opens in a new tab">Payment Terms ↗</a>.
+            </p>
             <button className="btn buy wide co-btn" disabled={state !== "ready" || !session?.canConfirm} onClick={() => void payNow()}>
               {state === "paying" ? "Processing…" : every ? `Subscribe · ${total}/${every}` : `Pay ${total}`}
             </button>
@@ -970,7 +976,7 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
               </ul>
             </>
           )}
-          {pick.kind !== "cancel" && <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Subscription Terms</button>.</span></label>}
+          {pick.kind !== "cancel" && <label className="terms-ok small"><input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} /> <span>I agree to the <button className="link-btn" onClick={(e) => { e.preventDefault(); openSubscriptionTerms(); }}>Payment Terms</button>.</span></label>}
           {err && <p className="down small" role="alert">{err}</p>}
         </Modal>
       )}

@@ -1682,6 +1682,9 @@ input { background: rgba(0, 0, 0, 0.32); border-color: rgba(255, 255, 255, 0.12)
 .co-email { padding: 9px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.12); background: #0b1117; color: var(--text); }
 .co-element { min-height: 40px; }
 .co-btn { height: 44px; font-size: 15px; }
+.co-authorize { margin: 0; line-height: 1.5; }
+.co-authorize a { color: var(--cyan); text-decoration: none; white-space: nowrap; }
+.co-authorize a:hover { text-decoration: underline; }
 .co-safe { margin: 0; text-align: center; line-height: 1.6; }
 .co-safe a { color: var(--cyan); text-decoration: none; white-space: nowrap; }
 .co-safe a:hover { text-decoration: underline; }
