@@ -17,6 +17,7 @@ const prices: any[] = [], customers: any[] = [], sessions = new Map<string, any>
 const idem = new Map<string, any>();
 const updates: any[] = [];
 let portalConfigs = 0;
+let taxStatus = "pending"; // Stripe Tax in the pretend account
 const versions = new Set<string>(); // the Stripe-Version every call sent
 const productUpdates: { id: string; tax_code: string | null }[] = [];
 const nested = (q: URLSearchParams, key: string) => q.get(key);
@@ -48,7 +49,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
   if (p === "/v1/customers") { const c = { id: nid("cus"), email: q.get("email"), metadata: { user: q.get("metadata[user]") } }; customers.push(c); return out(c); }
   if (p === "/v1/checkout/sessions" && init?.method === "POST") {
     const inApp = q.get("ui_mode") === "elements" || q.get("ui_mode") === "embedded_page";
-    const s = { id: nid("cs"), url: inApp ? null : `https://checkout.stripe.test/${n}`, client_secret: inApp ? `cs_secret_${n}` : null, ui_mode: q.get("ui_mode") ?? "hosted_page", managed: q.get("managed_payments[enabled]"), return_url: q.get("return_url"), success_url: q.get("success_url"), mode: q.get("mode"), customer: q.get("customer"), client_reference_id: q.get("client_reference_id"), price: q.get("line_items[0][price]"), payment_status: "unpaid", subscription: null as string | null,
+    const s = { id: nid("cs"), url: inApp ? null : `https://checkout.stripe.test/${n}`, client_secret: inApp ? `cs_secret_${n}` : null, ui_mode: q.get("ui_mode") ?? "hosted_page", managed: q.get("managed_payments[enabled]"), automatic_tax: { enabled: q.get("automatic_tax[enabled]") === "true" }, customer_update: q.get("customer_update[address]"), return_url: q.get("return_url"), success_url: q.get("success_url"), mode: q.get("mode"), customer: q.get("customer"), client_reference_id: q.get("client_reference_id"), price: q.get("line_items[0][price]"), payment_status: "unpaid", subscription: null as string | null,
       metadata: { user: q.get("metadata[user]"), kind: q.get("metadata[kind]"), pack: q.get("metadata[pack]") ?? undefined, plan: q.get("metadata[plan]") ?? undefined }, subMeta: { user: q.get("subscription_data[metadata][user]") } };
     sessions.set(s.id, s);
     return out(s);
@@ -64,6 +65,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
     return out(s);
   }
   if (sub) return Response.json(subs.get(sub[1]));
+  if (p === "/v1/tax/settings") return Response.json({ status: taxStatus });
   if (p === "/v1/billing_portal/configurations") { portalConfigs++; return out({ id: "bpc_1" }); }
   if (p === "/v1/billing_portal/sessions") return Response.json({ url: `https://billing.stripe.test/${q.get("customer")}` });
   return Response.json({ error: { message: `not faked: ${p}` } }, { status: 404 });
@@ -241,6 +243,23 @@ await store.kvSet("user:erin", { username: "erin", firstName: "Erin", lastName: 
 const ep = await billing.checkout("erin", { plan: "starter", interval: "year", terms: T, embedded: true });
 expect("...a new plan too", ["clientSecret" in ep, [...sessions.values()].at(-1).ui_mode], [true, "elements"]);
 expect("...and Stripe's page still when the app does not ask for the form", "url" in (await billing.buyPack("ada", { pack: "pack2m", terms: T })), true);
+delete process.env.STRIPE_PUBLISHABLE_KEY;
+
+// ---------- Sales tax on the app's own form: Stripe Tax, by the customer's address ----------
+process.env.STRIPE_PUBLISHABLE_KEY = "pk_test_app";
+billing.__forgetTaxForTests();
+const noTax = await billing.buyPack("ada", { pack: "pack2m", terms: T, embedded: true });
+expect("Stripe Tax not active in the account (no head office or registrations): no tax asked for, and the form is told so", [[...sessions.values()].at(-1).automatic_tax.enabled, noTax.tax], [false, false]);
+taxStatus = "active";
+expect("...the answer is kept for 10 minutes (Stripe is not asked on every payment)", await billing.taxActive(), false);
+billing.__forgetTaxForTests();
+const taxed = await billing.buyPack("ada", { pack: "pack2m", terms: T, embedded: true });
+const ts = [...sessions.values()].at(-1);
+expect("Stripe Tax active: tax worked out from the customer's billing address (by province in Canada), the address kept on the customer for renewals, and the form asks for it", [ts.automatic_tax.enabled, ts.customer_update, taxed.tax], [true, "auto", true]);
+process.env.STRIPE_TAX = "off";
+billing.__forgetTaxForTests();
+expect("...STRIPE_TAX=off turns it off here at once", await billing.taxActive(), false);
+delete process.env.STRIPE_TAX;
 delete process.env.STRIPE_PUBLISHABLE_KEY;
 
 finish();

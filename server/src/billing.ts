@@ -61,16 +61,34 @@ export function publishableKey(): string | null {
 // 2026-11-27): ui_mode "elements", Stripe's secure card fields placed in it (card details go to Stripe
 // only), and the app's own summary, total and Pay button. Stripe's Managed Payments (Stripe as the
 // seller, adding sales tax) allows only Stripe's page or its embedded form, so it is off for these
-// payments: no sales tax is added (until Stripe Tax is set up, which needs the business's head
-// office address in Stripe). Without the publishable key: Stripe's own page, as before.
-type Paid = { url: string } | { clientSecret: string; sessionId: string; publishableKey: string };
-function surface(inApp: unknown) {
+// payments. Sales tax is then Stripe Tax's: once it is active in the Stripe account (its head office
+// address and the tax registrations are set, Stripe dashboard, Settings, Tax), every in-app payment
+// has automatic tax, worked out from the customer's billing address (in Canada, by province: GST,
+// HST, PST, QST, as far as the business is registered for them); the form asks for the address.
+// Before that, no tax is added. Without the publishable key: Stripe's own page, as before.
+type Paid = { url: string } | { clientSecret: string; sessionId: string; publishableKey: string; tax: boolean };
+async function surface(inApp: unknown) {
   const back = `${appUrl()}/app?billing=done&session_id={CHECKOUT_SESSION_ID}`;
-  return inApp && publishableKey()
-    ? { ui_mode: "elements", return_url: back, managed_payments: { enabled: false } }
-    : { success_url: back, cancel_url: `${appUrl()}/app?billing=cancelled` };
+  if (!(inApp && publishableKey())) return { success_url: back, cancel_url: `${appUrl()}/app?billing=cancelled` };
+  const tax = await taxActive();
+  return {
+    ui_mode: "elements", return_url: back, managed_payments: { enabled: false },
+    // (Stripe keeps the address on the customer, so renewals are taxed for the same place.)
+    ...(tax ? { automatic_tax: { enabled: true }, customer_update: { address: "auto", name: "auto" } } : {}),
+  };
 }
-const paidAt = (s: any): Paid => (s.client_secret && !s.url ? { clientSecret: String(s.client_secret), sessionId: String(s.id), publishableKey: publishableKey()! } : { url: String(s.url) });
+const paidAt = (s: any): Paid => (s.client_secret && !s.url ? { clientSecret: String(s.client_secret), sessionId: String(s.id), publishableKey: publishableKey()!, tax: !!s.automatic_tax?.enabled } : { url: String(s.url) });
+// Whether Stripe Tax is active in the account (asked at most every 10 minutes; STRIPE_TAX=off turns
+// it off here). Not known (Stripe did not answer): no tax, never a refused payment.
+let taxSeen: { at: number; on: boolean } | null = null;
+export async function taxActive(): Promise<boolean> {
+  if (process.env.STRIPE_TAX?.trim().toLowerCase() === "off") return false;
+  if (taxSeen && Date.now() - taxSeen.at < 600_000) return taxSeen.on;
+  const on = await stripe<{ status?: string }>("GET", "/tax/settings").then((t) => t.status === "active", () => false);
+  taxSeen = { at: Date.now(), on };
+  return on;
+}
+export const __forgetTaxForTests = () => void (taxSeen = null);
 const appUrl = () => (process.env.APP_URL?.trim() || "https://trade-ai-rust.vercel.app").replace(/\/+$/, "");
 
 // ---------- Stripe's API (form-encoded, over HTTPS) ----------
@@ -207,7 +225,7 @@ export async function checkout(user: string, body: any): Promise<Paid | { change
   const s = await stripe("POST", "/checkout/sessions", {
     mode: "subscription", customer: cust, client_reference_id: user.toLowerCase(),
     line_items: [{ price, quantity: 1 }],
-    ...surface(body?.embedded),
+    ...(await surface(body?.embedded)),
     metadata: { user: user.toLowerCase(), kind: "plan", plan, interval },
     subscription_data: { metadata: { user: user.toLowerCase(), plan, interval } },
     allow_promotion_codes: true,
@@ -223,7 +241,7 @@ export async function buyPack(user: string, body: any): Promise<Paid> {
   const s = await stripe("POST", "/checkout/sessions", {
     mode: "payment", customer: cust, client_reference_id: user.toLowerCase(),
     line_items: [{ price, quantity: 1 }],
-    ...surface(body?.embedded),
+    ...(await surface(body?.embedded)),
     metadata: { user: user.toLowerCase(), kind: "pack", pack: pack.id, tokens: String(pack.tokens) },
   });
   return paidAt(s);

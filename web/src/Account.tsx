@@ -701,6 +701,7 @@ function checkoutLook(): import("@stripe/stripe-js").Appearance {
 function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what: string; onClose: () => void; onPaid: () => void }) {
   const { me, reloadMe } = useAccess();
   const box = useRef<HTMLDivElement>(null);
+  const addressBox = useRef<HTMLDivElement>(null); // the billing address, when tax is worked out from it (by province in Canada)
   const actions = useRef<CheckoutActions | null>(null);
   const [session, setSession] = useState<CheckoutSession | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "paying" | "failed" | "done">("loading");
@@ -709,6 +710,7 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
   useEffect(() => {
     let gone = false;
     let field: { destroy: () => void } | null = null;
+    let address: { destroy: () => void } | null = null;
     void (async () => {
       try {
         const { loadStripe } = await import("@stripe/stripe-js");
@@ -717,6 +719,12 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
         if (gone) return;
         const sdk = stripe.initCheckoutElementsSdk({ clientSecret: pay.clientSecret, elementsOptions: { appearance: checkoutLook() } });
         sdk.on("change", (s) => !gone && setSession(s));
+        if (pay.tax) {
+          // Stripe Tax works the tax out from this address (and Stripe keeps it for renewals).
+          const a = sdk.createBillingAddressElement();
+          address = a;
+          if (addressBox.current) a.mount(addressBox.current);
+        }
         const el = sdk.createPaymentElement({ layout: "tabs", wallets: { link: "never" } }); // (no Link sign-up box or Stripe badge in the app's own form)
         el.on("change", () => !gone && setErr("")); // (a declined card's message goes once the card is changed)
         field = el;
@@ -738,6 +746,7 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
     return () => {
       gone = true;
       field?.destroy();
+      address?.destroy();
       actions.current = null;
     };
   }, [pay.clientSecret]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -766,7 +775,8 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
   const done = state === "done";
   const close = () => (done ? onPaid() : onClose());
   const total = session?.total.total.amount ?? "";
-  const tax = session?.total.taxExclusive.minorUnitsAmount ? session.total.taxExclusive.amount : "";
+  const taxes = (session?.taxAmounts ?? []).filter((t) => !t.inclusive && t.minorUnitsAmount > 0);
+  const taxWaits = !!pay.tax && session?.tax.status !== "ready";
   const every = session?.recurring ? session.recurring.interval : null;
   return (
     <Modal title={done ? "Payment received" : `Checkout · ${what}`} onClose={close} wide={!done} locked foot={done
@@ -792,13 +802,17 @@ function CheckoutModal({ pay, what, onClose, onPaid }: { pay: EmbeddedPay; what:
               </div>
             ))}
             {!session && <div className="co-line"><span>{what}</span><b className="muted">…</b></div>}
-            {tax && <div className="co-line small"><span className="muted">Tax</span><span>{tax}</span></div>}
+            {taxes.map((t) => (
+              <div key={t.displayName} className="co-line small"><span className="muted">{t.displayName}{t.percentage ? ` (${t.percentage}%)` : ""}</span><span>{t.amount}</span></div>
+            ))}
+            {taxWaits && <div className="co-line small"><span className="muted">Tax</span><span className="muted">from your address</span></div>}
             <div className="co-total"><span>{every ? "Due today" : "Total"}</span><b>{total || "…"}</b></div>
             {every && <p className="muted small co-renew">Then {total} every {every}, renewing automatically until you cancel. Cancel any time in the Plans window.</p>}
             {!every && session && <p className="muted small co-renew">Paid once. The tokens never expire.</p>}
           </section>
           <section className="co-pay" aria-label="Payment">
             <div className="co-field"><span className="co-label">Email</span><div className="co-email">{session?.email ?? me?.email ?? ""}</div></div>
+            {pay.tax && <div className="co-field"><span className="co-label">Billing address</span><div ref={addressBox} className="co-element" /></div>}
             <div className="co-field"><span className="co-label">Payment</span><div ref={box} className="co-element" /></div>
             {state === "loading" && <p className="muted small">Loading the secure payment fields…</p>}
             {state === "failed" && <p className="down small" role="alert">The payment form did not load{err ? `: ${err}` : ""}. Check your connection and try again.</p>}

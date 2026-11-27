@@ -160,7 +160,7 @@ export type PlanExtras = { tokenPacks: { id: string; tokens: number; priceUsd: n
 export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: string; aiTokens: number; feePct: number; freeTrades: number; bots?: number; permissions: Permission[]; features: string[]; popular?: boolean }; // freeTrades -1 = unlimited
 // Paying for plans by card (server/src/billing.ts, Stripe).
 // A payment made in Stripe's form inside the app's own window (the server's embedded_page session).
-export type EmbeddedPay = { clientSecret: string; sessionId: string; publishableKey: string };
+export type EmbeddedPay = { clientSecret: string; sessionId: string; publishableKey: string; tax?: boolean }; // tax: Stripe Tax by the billing address (the form asks for it)
 export type BillingStatus = {
   on: boolean; mode: "test" | "live" | null; reason: string | null; termsVersion: string; plan: PlanId;
   publishableKey?: string | null; // set: customers pay in Stripe's form inside the app (else on Stripe's page)
