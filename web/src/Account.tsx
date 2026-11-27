@@ -630,7 +630,7 @@ export function PlansModal({ onClose, ask }: { onClose: () => void; ask?: { reas
         </div>
       )}
       <div className="plans-top">
-        <p className="plans-lead">Paper trading is free. Upgrade for zero trade fees, Auto-Pilot AI agents, and monthly Claude AI token allowances.</p>
+        <p className="plans-lead">Paper trading is free. Upgrade for zero trade fees, Auto-Pilot AI agents, and monthly AI token allowances.</p>
         <div className="billing-toggle" role="radiogroup" aria-label="Billing period">
           <button role="radio" aria-checked={!yearly} className={!yearly ? "on" : ""} onClick={() => setYearly(false)}>Monthly</button>
           <button role="radio" aria-checked={yearly} className={yearly ? "on" : ""} onClick={() => setYearly(true)}>Yearly <span className="save">{free === 1 ? "1 month free" : `${free} months free`}</span></button>
