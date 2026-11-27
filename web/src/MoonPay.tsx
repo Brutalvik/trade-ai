@@ -42,13 +42,17 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
 // ---------- The wallets ----------
 // Four wallets, made for the person by MoonPay (with no click: at sign-up, or the first time the app
 // and MoonPay know it is them). The Ethereum one is a single address on all the EVM networks.
-export const CHAIN_INFO: Record<WalletChain, { name: string; networks: string; holds: string; qr: (a: string) => string }> = {
-  solana: { name: "Solana", networks: "Solana", holds: "SOL and Solana tokens, such as USDC and the coins this app trades.", qr: (a) => `solana:${a}` },
-  ethereum: { name: "Ethereum & EVM", networks: "Ethereum · BNB Chain · Base · Polygon · Arbitrum · Optimism · Avalanche", holds: "One address on all these networks: ETH, BNB, POL, AVAX and their tokens (USDT, USDC…).", qr: (a) => `ethereum:${a}` },
-  bitcoin: { name: "Bitcoin", networks: "Bitcoin", holds: "BTC.", qr: (a) => `bitcoin:${a}` },
-  tron: { name: "Tron", networks: "Tron", holds: "TRX and USDT on Tron (TRC-20).", qr: (a) => a },
+export const CHAIN_INFO: Record<WalletChain, { name: string; networks: string; holds: string; coin: string; glyph: string; qr: (a: string) => string }> = {
+  solana: { name: "Solana", networks: "Solana", holds: "SOL and Solana tokens, such as USDC and the coins this app trades.", coin: "SOL", glyph: "◎", qr: (a) => `solana:${a}` },
+  ethereum: { name: "Ethereum & EVM", networks: "Ethereum · BNB Chain · Base · Polygon · Arbitrum · Optimism · Avalanche", holds: "One address on all these networks: ETH, BNB, POL, AVAX and their tokens (USDT, USDC…).", coin: "ETH", glyph: "Ξ", qr: (a) => `ethereum:${a}` },
+  bitcoin: { name: "Bitcoin", networks: "Bitcoin", holds: "BTC.", coin: "BTC", glyph: "₿", qr: (a) => `bitcoin:${a}` },
+  tron: { name: "Tron", networks: "Tron", holds: "TRX and USDT on Tron (TRC-20).", coin: "TRX", glyph: "T", qr: (a) => a },
 };
-const amountText = (n: number | null, symbol: string) => (n === null ? "—" : `${n === 0 ? "0" : n < 0.0001 ? n.toExponential(2) : n.toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 6 : 4 })} ${symbol}`);
+// The networks the Ethereum wallet's one address works on, each with its own colour dot.
+const EVM_CHIPS: [string, string][] = [["Ethereum", "eth"], ["BNB Chain", "bnb"], ["Base", "base"], ["Polygon", "pol"], ["Arbitrum", "arb"], ["Optimism", "op"], ["Avalanche", "avax"]];
+const amountNum = (n: number) => (n === 0 ? "0" : n < 0.0001 ? n.toExponential(2) : n.toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 6 : 4 }));
+const amountText = (n: number | null, symbol: string) => (n === null ? "—" : `${amountNum(n)} ${symbol}`);
+const shortAddress = (a: string) => `${a.slice(0, 6)}…${a.slice(-6)}`;
 function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | null; reload: () => void; notify: Notify; toBuy: () => void }) {
   const [bal, setBal] = useState<Partial<Record<WalletChain, BalanceRow[]>> | null>(null);
   const [deposit, setDeposit] = useState<ChainWallet | null>(null);
@@ -73,46 +77,76 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
         )}
       </div>
     );
+  const mine = WALLET_KINDS.map((k) => all.find((w) => w.chain === k)).filter((w): w is ChainWallet => !!w);
   const missing = WALLET_KINDS.filter((k) => !all.some((w) => w.chain === k));
+  const read = bal !== null && mine.every((w) => bal[w.chain] !== undefined);
+  const empty = read && mine.every((w) => (bal![w.chain] ?? []).every((r) => !r.amount));
   return (
     <div className="wallet-tab">
       <div className="wallets-top">
         <p className="muted small">Your own wallets, kept safe with your email sign-in. This app can see them but can never move money out of them.</p>
         <div className="wallet-actions">
           <button className="btn buy" onClick={toBuy}>Buy</button>
-          <button className="btn ghost" onClick={() => { reload(); void loadBal(true); }}>↻ Refresh</button>
+          <button className="btn ghost" onClick={() => { reload(); setBal(null); void loadBal(true); }}>↻ Refresh</button>
         </div>
       </div>
-      <div className="wallet-cards">
-        {WALLET_KINDS.map((k) => all.find((w) => w.chain === k)).filter((w): w is ChainWallet => !!w).map((w) => {
-          const info = CHAIN_INFO[w.chain];
-          const rows = bal?.[w.chain];
-          return (
-            <div key={w.chain} className="chain-card">
-              <div className="chain-head">
-                <div>
-                  <div className="chain-name">{info.name}</div>
-                  <div className="muted tiny">{info.networks}</div>
-                </div>
-                <button className="btn ghost small" onClick={() => setDeposit(w)}>Deposit</button>
-              </div>
-              <button className="link-btn mono small chain-address" onClick={() => void copy(w.address, notify)} title="Copy the full address">{w.address} ⧉</button>
-              <div className="chain-bal">
-                {rows === undefined
-                  ? <span className="muted tiny">Reading balances…</span>
-                  : rows.map((r) => (
-                    <div key={`${r.network}-${r.symbol}`} className={`chain-row${r.test ? " test" : ""}`}>
-                      <span className="muted">{r.network}</span>
-                      <span className="mono">{amountText(r.amount, r.symbol)}</span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          );
-        })}
+      <div className="wl-list">
+        {mine.map((w) => <WalletRow key={w.chain} w={w} rows={bal === null ? undefined : bal[w.chain]} notify={notify} onDeposit={() => setDeposit(w)} />)}
       </div>
+      {empty && <p className="wl-hint small">Your wallets are empty. <button className="link-btn" onClick={toBuy}>Buy crypto</button>, or press Deposit to send some from an exchange or another wallet.</p>}
       {missing.length > 0 && <p className="muted tiny">Your {missing.map((k) => CHAIN_INFO[k].name).join(" and ")} {missing.length > 1 ? "wallets are" : "wallet is"} made the next time you sign in.</p>}
       {deposit && <DepositModal wallet={deposit} sandbox={view.buying.mode === "sandbox"} onClose={() => setDeposit(null)} notify={notify} />}
+    </div>
+  );
+}
+// One wallet: its coin's mark, name, short address (click to copy), what it holds (only what is not
+// zero; the Ethereum one can list every network), and Deposit.
+function WalletRow({ w, rows, notify, onDeposit }: { w: ChainWallet; rows: BalanceRow[] | undefined; notify: Notify; onDeposit: () => void }) {
+  const info = CHAIN_INFO[w.chain];
+  const [open, setOpen] = useState(false);
+  const held = (rows ?? []).filter((r) => (r.amount ?? 0) > 0);
+  const unread = rows !== undefined && rows.length > 0 && rows.every((r) => r.amount === null);
+  const onTest = rows !== undefined && rows.length === 1 && rows[0].test;
+  return (
+    <div className="wl-row">
+      <div className={`wl-icon ${w.chain}`} aria-hidden="true">{info.glyph}</div>
+      <div className="wl-main">
+        <div className="wl-name">{info.name}</div>
+        <button className="wl-addr mono" onClick={() => void copy(w.address, notify)} title={`Copy the full address: ${w.address}`}>{shortAddress(w.address)} <span aria-hidden="true">⧉</span></button>
+        {w.chain === "ethereum" && <div className="wl-chips">{EVM_CHIPS.map(([n, c]) => <span key={n} className={`wl-chip ${c}`}>{n}</span>)}</div>}
+      </div>
+      <div className="wl-bal">
+        {rows === undefined ? (
+          <span className="muted tiny">Reading…</span>
+        ) : held.length ? (
+          held.map((r) => (
+            <div key={`${r.network}-${r.symbol}`}>
+              <b className="mono">{amountNum(r.amount!)}</b> {r.symbol}
+              {w.chain === "ethereum" && <span className="muted tiny"> on {r.test ? "Sepolia" : r.network}</span>}
+              {r.test && <span className="wl-test">test</span>}
+            </div>
+          ))
+        ) : (
+          <div title={unread ? "The network did not answer just now. Try Refresh." : undefined}>
+            <b className="mono">{unread ? "—" : "0"}</b> {info.coin}
+            {onTest && <span className="wl-test">test network</span>}
+          </div>
+        )}
+        {w.chain === "ethereum" && rows !== undefined && <button className="link-btn tiny" onClick={() => setOpen(!open)}>{open ? "Hide networks" : `All ${rows.length} networks`}</button>}
+      </div>
+      <div className="wl-actions">
+        <button className="btn ghost small" onClick={onDeposit}>Deposit</button>
+      </div>
+      {open && rows && (
+        <div className="wl-nets">
+          {rows.map((r) => (
+            <div key={`${r.network}-${r.symbol}`} className="chain-row">
+              <span className="muted">{r.network}{r.test && <span className="wl-test">test</span>}</span>
+              <span className="mono">{amountText(r.amount, r.symbol)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

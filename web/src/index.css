@@ -1397,18 +1397,40 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .mp .tabs { margin-bottom: 12px; }
 .mp-sandbox { color: var(--amber); background: rgba(255, 200, 87, 0.07); border: 1px solid rgba(255, 200, 87, 0.28); border-radius: 10px; padding: 7px 10px; margin: 0 0 12px; }
 .mp-card { border: 1px solid rgba(0, 229, 255, 0.14); background: rgba(0, 229, 255, 0.03); border-radius: 14px; padding: 14px 16px; }
-/* The four wallets: one card each (network, address, balances by network) */
-.wallets-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+/* The four wallets: one row each (coin mark, name and short address, what it holds, Deposit) */
+.wallets-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .wallets-top p { margin: 0; }
-.wallet-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-bottom: 8px; }
-.chain-card { border: 1px solid rgba(0, 229, 255, 0.14); background: rgba(0, 229, 255, 0.03); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.chain-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.chain-name { font-weight: 700; color: var(--text); }
-.chain-address { text-align: left; word-break: break-all; padding: 0; }
-.chain-bal { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
+.wl-list { display: flex; flex-direction: column; border: 1px solid rgba(0, 229, 255, 0.14); border-radius: 14px; background: rgba(0, 229, 255, 0.025); overflow: hidden; }
+.wl-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: center; gap: 6px 16px; padding: 14px 18px; }
+.wl-row + .wl-row { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.wl-row:hover { background: rgba(0, 229, 255, 0.03); }
+.wl-icon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-size: 19px; font-weight: 700; color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15); }
+.wl-icon.solana { background: linear-gradient(135deg, #9945ff, #14f195); }
+.wl-icon.ethereum { background: linear-gradient(135deg, #8aa2ff, #627eea); }
+.wl-icon.bitcoin { background: linear-gradient(135deg, #ffb347, #f7931a); }
+.wl-icon.tron { background: linear-gradient(135deg, #ff5a6e, #eb0029); }
+.wl-main { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.wl-name { font-weight: 700; color: var(--text); font-size: 14.5px; }
+.wl-addr { background: none; border: 0; padding: 0; color: var(--cyan); cursor: pointer; font-size: 12.5px; }
+.wl-addr:hover { text-decoration: underline; }
+.wl-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.wl-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; line-height: 1.6; padding: 0 8px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.1); color: #c6d2f0; }
+.wl-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--chip, #8a94b8); }
+.wl-chip.eth { --chip: #627eea; } .wl-chip.bnb { --chip: #f0b90b; } .wl-chip.base { --chip: #0052ff; } .wl-chip.pol { --chip: #8247e5; }
+.wl-chip.arb { --chip: #28a0f0; } .wl-chip.op { --chip: #ff0420; } .wl-chip.avax { --chip: #e84142; }
+.wl-bal { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; white-space: nowrap; font-size: 13px; color: #c6d2f0; }
+.wl-bal b { font-size: 15px; color: var(--text); font-weight: 600; }
+.wl-test { margin-left: 6px; font-size: 10px; padding: 0 6px; border-radius: 999px; color: var(--amber); border: 1px solid rgba(255, 200, 87, 0.35); vertical-align: middle; }
+.wl-nets { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; padding: 10px 12px; margin-top: 4px; border-radius: 10px; background: rgba(0, 0, 0, 0.25); }
 .chain-row { display: flex; justify-content: space-between; gap: 8px; }
-.chain-row.test .muted::after { content: " · test"; color: var(--amber); }
-@media (max-width: 640px) { .wallets-top { flex-direction: column; align-items: stretch; } }
+.wl-hint { margin: 10px 2px 0; color: #c6d2f0; }
+@media (max-width: 640px) {
+  .wallets-top { flex-direction: column; align-items: stretch; }
+  .wl-row { grid-template-columns: 36px minmax(0, 1fr) auto; padding: 12px; }
+  .wl-icon { width: 36px; height: 36px; font-size: 17px; }
+  .wl-actions { grid-column: 2 / -1; }
+  .wl-actions .btn { width: 100%; }
+}
 .mp-card h3 { margin: 0 0 6px; font-size: 15px; }
 .mp-form { display: grid; gap: 10px; margin: 12px 0 8px; max-width: 420px; }
 .mp-form label { display: grid; gap: 4px; }
