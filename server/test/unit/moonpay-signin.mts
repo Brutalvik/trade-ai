@@ -131,4 +131,15 @@ server.close();
   const starts = [...web.matchAll(/mx\.start\(([^)]*)\)/g)].map((m) => m[1]);
   expect("Sign in asks MoonPay for its email / Google / Apple window, with no outside-wallet setting", [starts.length > 0, starts.every((a) => a.includes("loginMethods") && !a.includes("walletChainType"))], [true, true]);
 }
+// The wallet window says "your wallet", not "MoonPay" (the owner's request, 27 Nov 2026): the wallet
+// tab, the tab's name, the test-mode line and the messages after connecting. MoonPay's name stays
+// only where MoonPay takes the payment (Buy, the payment window, a purchase's details).
+{
+  const panel = fs.readFileSync(new URL("../../../web/src/MoonPay.tsx", import.meta.url), "utf8");
+  const signIn = fs.readFileSync(new URL("../../../web/src/MoonPaySignIn.tsx", import.meta.url), "utf8");
+  const walletTab = panel.slice(panel.indexOf("function WalletTab"), panel.indexOf("// ---------- ", panel.indexOf("function WalletTab")));
+  const shown = (code: string) => code.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  expect("the wallet tab, its name and the test-mode line do not say MoonPay", [walletTab.length > 200, /MoonPay/.test(shown(walletTab)), panel.includes('["wallet", "Your wallet"]'), /mp-sandbox[^\n]*MoonPay/.test(panel)], [true, false, true, false]);
+  expect("...nor the messages after connecting", ["MoonPay wallet is connected", "and MoonPay wallet are ready", "kept safe by MoonPay"].map((t) => signIn.includes(t)), [false, false, false]);
+}
 finish();

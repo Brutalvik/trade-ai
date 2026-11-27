@@ -86,7 +86,7 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
   const tokens = async () => {
     await mx.findOrCreateWallet("solana").catch(() => null);
     const t = await mx.getSessionTokens();
-    if (!t) throw new Error("Your MoonPay sign-in expired. Please sign in again.");
+    if (!t) throw new Error("Your sign-in expired. Please sign in again.");
     return { accessToken: t.accessToken, identityToken: t.identityToken };
   };
   const link = async () => {
@@ -100,7 +100,7 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
         setUser(r.user);
         onChange();
         window.dispatchEvent(new Event(MOONPAY_WALLET_EVENT));
-        notify(`Welcome, ${r.user.firstName}! Your account and MoonPay wallet are ready.`);
+        notify(`Welcome, ${r.user.firstName}! Your account and wallet are ready.`);
       }
     } catch (e: any) {
       notify(e.message, true);
@@ -115,7 +115,7 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
       if (v.wallet || !v.wallets.on) return;
       await api.moonpayWalletSync(await tokens());
       window.dispatchEvent(new Event(MOONPAY_WALLET_EVENT));
-      notify("Your MoonPay wallet is connected.");
+      notify("Your wallet is connected.");
     } catch (e: any) {
       if (loud) notify(e.message, true);
     }
@@ -188,7 +188,7 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
       {setup && (
         <SetupProfileModal
           initial={setup}
-          walletNote="Your MoonPay wallet is already made: it is yours, kept safe by MoonPay with this sign-in."
+          walletNote="Your wallet is already made: it is yours, kept safe with this sign-in."
           onClose={() => { declined.current = true; setSetup(null); void mx.logout().catch(() => {}); }}
           onDone={(u) => {
             setSetup(null);
@@ -196,7 +196,7 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
             setUser(u);
             onChange();
             window.dispatchEvent(new Event(MOONPAY_WALLET_EVENT));
-            notify(`Welcome, ${u.firstName}! Your account and MoonPay wallet are ready.`);
+            notify(`Welcome, ${u.firstName}! Your account and wallet are ready.`);
           }}
           complete={async (f) => api.moonpayComplete({ ...(await tokens()), ...f })}
         />

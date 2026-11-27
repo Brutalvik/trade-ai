@@ -20,7 +20,7 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
     window.addEventListener(MOONPAY_WALLET_EVENT, again);
     return () => window.removeEventListener(MOONPAY_WALLET_EVENT, again);
   }, []);
-  const tabs: [Tab, string][] = [["wallet", "MoonPay wallet"], ["buy", "Buy"], ["history", "Transactions"], ["previous", "Previous wallet"]];
+  const tabs: [Tab, string][] = [["wallet", "Your wallet"], ["buy", "Buy"], ["history", "Transactions"], ["previous", "Previous wallet"]];
   return (
     <div className="mp">
       <div className="tabs" role="tablist">
@@ -28,7 +28,7 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
-      {view?.buying.mode === "sandbox" && tab !== "previous" && <p className="mp-sandbox small">Test mode: MoonPay's sandbox. No real money moves, and coins arrive on Solana's test network.</p>}
+      {view?.buying.mode === "sandbox" && tab !== "previous" && <p className="mp-sandbox small">Test mode: no real money moves, and coins arrive on Solana's test network.</p>}
       {err && tab !== "previous" && <p className="down small">{err}</p>}
       {tab === "wallet" && <WalletTab view={view} reload={load} notify={notify} toBuy={() => setTab("buy")} />}
       {tab === "buy" && <BuyTab view={view} toWallet={() => setTab("wallet")} toHistory={() => setTab("history")} />}
@@ -45,15 +45,15 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
   if (!w)
     return (
       <div className="mp-card">
-        <h3>Your MoonPay wallet</h3>
-        <p className="small">A wallet of your own, kept safe by MoonPay with your email sign-in. Crypto you buy here goes into it. This app can see it but can never move money out of it.</p>
+        <h3>Your wallet</h3>
+        <p className="small">A wallet of your own, kept safe with your email sign-in. Crypto you buy here goes into it. This app can see it but can never move money out of it.</p>
         {view.wallets.on ? (
           <>
-            <p className="muted small">Sign in with MoonPay using your account's email (a code MoonPay emails you, or Google or Apple). Your wallet is made and connected in the same step.</p>
-            <button className="btn buy" onClick={() => window.dispatchEvent(new Event(SIGNIN_EVENT))}>Connect with MoonPay</button>
+            <p className="muted small">Sign in with your account's email (a code is emailed to you), or with Google or Apple. Your wallet is made and connected in the same step.</p>
+            <button className="btn buy" onClick={() => window.dispatchEvent(new Event(SIGNIN_EVENT))}>Connect wallet</button>
           </>
         ) : (
-          <p className="muted small">MoonPay wallets are not switched on in this app yet.</p>
+          <p className="muted small">Wallets are not switched on in this app yet.</p>
         )}
       </div>
     );
@@ -61,7 +61,7 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
     <div className="wallet-tab">
       <div className="wallet-head">
         <div>
-          <div className="label-sm">MoonPay wallet · Solana</div>
+          <div className="label-sm">Your wallet · Solana</div>
           <div className="wallet-total">{view.balance?.sol === null || view.balance?.sol === undefined ? "…" : `${view.balance.sol.toFixed(4)} SOL`}</div>
           <button className="link-btn mono small" onClick={() => void copy(w.address, notify)} title="Copy the full address">{w.address.slice(0, 6)}…{w.address.slice(-6)} ⧉</button>
           {view.balance && <div className="muted tiny">{view.balance.network}</div>}
@@ -71,7 +71,7 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
           <button className="btn ghost" onClick={reload}>↻ Refresh</button>
         </div>
       </div>
-      <p className="muted small">Your own wallet: MoonPay keeps it safe with your email sign-in. This app can see it but can never move money out of it.</p>
+      <p className="muted small">Your own wallet, kept safe with your email sign-in. This app can see it but can never move money out of it.</p>
     </div>
   );
 }
@@ -100,7 +100,7 @@ function BuyTab({ view, toWallet, toHistory }: { view: MoonWalletView | null; to
   const go = async () => {
     setMsg(null);
     if (!view?.buying.on) return setMsg({ text: "Buying is not switched on in this app yet.", bad: true });
-    if (!into) return setMsg({ text: "Connect your MoonPay wallet first: your crypto goes into it.", bad: true });
+    if (!into) return setMsg({ text: "Connect your wallet first: your crypto goes into it.", bad: true });
     // Apple Pay and Google Pay: MoonPay's own tab, opened now (in the click) so the browser allows it.
     const tab = payWith === "card" ? null : window.open("about:blank", "_blank");
     setBusy(true);
@@ -125,9 +125,9 @@ function BuyTab({ view, toWallet, toHistory }: { view: MoonWalletView | null; to
       <h3>Buy crypto</h3>
       <p className="small">
         Pay with a card, Apple Pay or Google Pay. The crypto goes straight into{" "}
-        {into ? (into.which === "moonpay" ? <>your MoonPay wallet (<span className="mono">{short(into.address)}</span>)</> : <>your current wallet (<span className="mono">{short(into.address)}</span>), as test coins</>) : "your wallet"}.
+        {into ? (into.which === "moonpay" ? <>your wallet (<span className="mono">{short(into.address)}</span>)</> : <>your current wallet (<span className="mono">{short(into.address)}</span>), as test coins</>) : "your wallet"}.
       </p>
-      {!into && view && <p className="small"><button className="link-btn" onClick={toWallet}>Connect your MoonPay wallet</button> first.</p>}
+      {!into && view && <p className="small"><button className="link-btn" onClick={toWallet}>Connect your wallet</button> first.</p>}
       <div className="mp-form">
         <label>
           <span className="label-sm">You pay</span>
