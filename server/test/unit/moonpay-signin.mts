@@ -122,4 +122,13 @@ delete process.env.MOONX_PUBLISHABLE_KEY;
 expect("real trades: with MoonPay wallets switched off, from the previous wallet again", await rw(bob.cookie), [A("BBPRIVY"), "previous"]);
 expect("switched off, a MoonPay sign-in says so plainly", await err(tokens("mx_ada", "ada@example.test")), "Signing in with MoonPay is not switched on. MoonPay wallets are not set up (no MOONX_PUBLISHABLE_KEY).");
 server.close();
+
+// The browser's Sign in button (web/src/MoonPaySignIn.tsx): MoonPay's kit shows its email / Google /
+// Apple window only when start() is not given a walletChainType (with one, it waits for an outside
+// wallet and nothing shows, as happened on the live site on 27 Nov 2026).
+{
+  const web = fs.readFileSync(new URL("../../../web/src/MoonPaySignIn.tsx", import.meta.url), "utf8");
+  const starts = [...web.matchAll(/mx\.start\(([^)]*)\)/g)].map((m) => m[1]);
+  expect("Sign in asks MoonPay for its email / Google / Apple window, with no outside-wallet setting", [starts.length > 0, starts.every((a) => a.includes("loginMethods") && !a.includes("walletChainType"))], [true, true]);
+}
 finish();

@@ -134,7 +134,10 @@ function MoonPayAccountButton({ notify, onChange, state }: AccountButtonProps) {
     asked.current = true;
     declined.current = false;
     try {
-      await mx.start({ loginMethods: METHODS, walletChainType: "solana" });
+      // No walletChainType here: in start() MoonPay's kit reads it as "sign in with an outside
+      // wallet" and hides its email / Google / Apple window (nothing showed at all). The Solana
+      // wallet is still MoonPay's own, made at sign-up (the provider's walletChainType above).
+      await mx.start({ loginMethods: METHODS });
     } catch (e: any) {
       if (!cancelled(e)) notify(`MoonPay sign-in failed: ${e?.message ?? e}`, true);
     }
