@@ -2380,7 +2380,7 @@ function autoAssign(cfg: BotConfig, found: { coin: AgentCoin; pair: PairInfo; co
   const passes = !c.vetoes.length && c.total >= AGENT_PASS;
   const costNote = `${cost && cost.pct !== null ? ` Buying and selling its ${usd0(cost.funds)} there costs about ${pct1(cost.pct)}.` : ""}${cost && dear.length ? ` It passed over ${nameList(dear.slice(0, 4).map((d) => `${d.symbol} (${pct1(d.pct)})`))}${dear.length > 4 ? ` and ${dear.length - 4} more` : ""}, higher on the list: more than the ${cost.max}% it accepts.` : ""}`;
   log(`Auto-pick: ${why}${same ? `${pair.symbol} is still the best coin that is free, so it stays on it` : `chose ${pair.symbol}`} (the scouts' score ${c.total} of 100${passes ? ", passes every scout check" : c.timing.length ? `; the scouts' timing check says "${c.timing[0]}", so its AI decides when to buy` : `, under the ${AGENT_PASS} that passes; fit to trade`}).${costNote} Its AI reads the charts now.`, "good", {
-    act: "pick", coin: pair.symbol,
+    act: "pick", coin: pair.symbol, score: c.total, ...(cost && cost.pct !== null ? { costPct: Math.round(cost.pct * 100) / 100 } : {}),
     why: shortWhy(`${moved ? `${moved}; ` : ""}${same ? "still the best coin that is free; " : ""}the scouts' score ${c.total} of 100${cost && cost.pct !== null ? `, costs ${pct1(cost.pct)} to trade with its ${usd0(cost.funds)}` : ""}${cost && dear.length ? `; passed over ${nameList(dear.slice(0, 4).map((d) => `${d.symbol} (${pct1(d.pct)})`))}` : ""}`, 220),
   });
   acct().dirty = true;
@@ -2665,11 +2665,12 @@ function planDecision(cfg: BotConfig, c: Consensus, results: ModelResult[]): Dec
   const used = c.orders.filter((o) => !o.warning);
   if (c.stance !== "AVOID" && used.length) {
     if (used.some((o) => o.kind === "buy_now")) return undefined;
-    return { act: "order", coin: cfg.symbol, why: shortWhy(`waits for ${used.map((o) => `${at(o)} (${odds(o)})`).join(" or ")}${said ? ` \u00b7 ${said}` : ""}`, 220) };
+    const first = used[0];
+    return { act: "order", coin: cfg.symbol, ...(first.prediction ? { winPct: Math.round(first.prediction.pWin), needPct: Math.ceil(first.prediction.needPct) } : {}), ...(first.triggerPrice ? { price: first.triggerPrice } : {}), why: shortWhy(`waits for ${used.map((o) => `${at(o)} (${odds(o)})`).join(" or ")}${said ? ` \u00b7 ${said}` : ""}`, 220) };
   }
   const gap = (o: CheckedOrder) => (o.prediction ? o.prediction.needPct - o.prediction.pWin : 0);
   const best = [...c.orders].sort((x, y) => gap(x) - gap(y))[0];
-  return { act: "skip", coin: cfg.symbol, why: shortWhy(`${said || "its AI sees no bet worth taking"}${best ? ` \u00b7 closest: ${at(best)}, ${odds(best)}` : ""}`, 220) };
+  return { act: "skip", coin: cfg.symbol, ...(best?.prediction ? { winPct: Math.round(best.prediction.pWin), needPct: Math.ceil(best.prediction.needPct) } : {}), why: shortWhy(`${said || "its AI sees no bet worth taking"}${best ? ` \u00b7 closest: ${at(best)}, ${odds(best)}` : ""}`, 220) };
 }
 
 // true = the agent stopped (its budget is gone)
@@ -2893,7 +2894,7 @@ async function newCoinsStep(cfg: BotConfig) {
 // A sale, for the one-line log: the result in dollars and in % of the money that was put in (after costs).
 function soldDecision(t: Trade, why: string): Decision {
   const pnl = Math.round((t.pnlUsd ?? 0) * 100) / 100, put = t.usd - (t.pnlUsd ?? 0);
-  return { act: "exit", coin: t.symbol, pnl, ...(put > 0 ? { pct: Math.round(((t.pnlUsd ?? 0) / put) * 1000) / 10 } : {}), why: shortWhy(why, 220) };
+  return { act: "exit", coin: t.symbol, pnl, price: t.price, ...(put > 0 ? { pct: Math.round(((t.pnlUsd ?? 0) / put) * 1000) / 10 } : {}), why: shortWhy(why, 220) };
 }
 
 const lockNoted = new Map<string, number>();
@@ -3534,7 +3535,8 @@ async function tickBot(persist: boolean) {
       if (sig.patterns) t.patterns = patternTags(sig.patterns);
       if (isCoinAgent(cfg)) t.strategy = "agents";
       log(`BUY ${pair.symbol} $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)} (risking about $${riskUsd.toFixed(2)}, ${((riskUsd / equity()) * 100).toFixed(1)}% of the account); at ${fmt(o.target)} it starts trailing.${ac ? ` A round trip of this size in this pool costs about ${ac.pct.toFixed(1)}%${ac.usd < ac.funds - 0.5 ? `: it invests $${ac.usd.toFixed(0)} of its $${ac.funds.toFixed(0)}, because all of it would cost ${ac.fullPct.toFixed(1)}%` : ""}.` : ""}`, "good", {
-        act: "enter", coin: pair.symbol, usd, ...(ac ? { of: ac.funds } : {}),
+        act: "enter", coin: pair.symbol, usd, ...(ac ? { of: ac.funds, costPct: Math.round(ac.pct * 100) / 100 } : {}), price: t.price,
+        ...(o.prediction ? { winPct: Math.round(o.prediction.pWin), needPct: Math.ceil(o.prediction.needPct) } : { winPct: o.winChancePct }),
         why: shortWhy(`${(() => { const r = sig.results.find((x) => x.ok); return r && r.ok && r.signal.reasoning ? `${shortWhy(r.signal.reasoning, 130)} \u00b7 ` : ""; })()}${label}${o.prediction ? ` \u00b7 ${Math.round(o.prediction.pWin)}% chance, needs ${Math.ceil(o.prediction.needPct)}%` : ""}${ac ? ` \u00b7 costs ${ac.pct.toFixed(1)}% to trade` : ""}`, 260),
       });
       alert(`🤖 Bought ${pair.symbol}: $${usd.toFixed(2)} @ ${fmt(t.price)} (${label}). Exit below ${fmt(o.stopLoss)}, target ${fmt(o.target)}. Risking ~$${riskUsd.toFixed(2)}.`);

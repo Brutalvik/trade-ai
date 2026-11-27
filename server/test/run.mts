@@ -38,6 +38,7 @@ const UNIT: Job[] = [
   { name: "moonpay", file: "unit/moonpay.mts", what: "buying with MoonPay: the server starts a purchase into the customer's own wallet, believes MoonPay asked directly (never the browser), takes only signed messages, and finds purchases the browser never reported" },
   { name: "wallet-tx", file: "unit/wallet-tx.mts", what: "customers' real-money transactions: one row each, kept the same way in the database and the local file; the same message twice counts once, older news never overwrites newer, never across customers" },
   { name: "quality", file: "unit/quality.mts", what: "the quality step's sums: what a coin is known to cost for an agent's money, when it is measured again, the verdict on each coin of the list" },
+  { name: "pipeline-trace", file: "unit/pipeline-trace.mts", what: "the Pipeline's coin trace: how far each coin got through the six steps and what each step did, from the decisions kept with the log" },
   { name: "pipeline", file: "unit/pipeline.mts", what: "the Pipeline tab: six steps (scan, check, AI, size, execute, log), each with what it did, worked out from the decisions kept with the log" },
   { name: "user-prefs", file: "unit/user-prefs.mts", what: "a part of the app a user hides in Settings stays hidden on every sign-in: the choice is saved on the account" },
   { name: "tab-title", file: "unit/tab-title.mts", what: "the browser tab: T//R and the account's profit or loss, green or red icon" },

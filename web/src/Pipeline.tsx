@@ -1,41 +1,37 @@
-// The Pipeline tab: the work every agent's trade goes through, as six stages that each show what
-// they did. SCAN -> CHECK -> AI ODDS -> SIZE -> EXEC -> LOG.
+// The Pipeline tab: one coin at a time, traced through the six steps every agent trade goes
+// through. SCAN -> CHECK -> AI PLAN -> SIZE -> EXECUTE -> LOG. Pick a coin above to trace it.
 //
-// A view only: it changes nothing about how the agents trade. Its figures come from the decisions
-// kept with the log (pipelineSteps.ts works them out), the scouts' latest list and the open trades.
-// It moves with the trading: light runs along the stage strip as far as the stage that last acted,
-// a stage that is working breathes, a stage that has just done something flashes and shows its
-// new event, and its figure counts to the new value. (All still for people who ask for less motion.)
+// A view only: it changes nothing about how the agents trade. The traces come from the decisions
+// kept with the log (pipelineTrace.ts); the scouts' list gives how many coins were scanned and the
+// coins' pictures. It moves with the trading: the step bar lights up to the step the coin reached,
+// the step it is at breathes, and when the coin moves on, that step's card flashes. (All still for
+// people who ask for less motion.)
 import { useEffect, useRef, useState } from "react";
 import { useAgentLog } from "./agentLog";
 import { aiText, api, type AppState } from "./api";
-import { decisionRows, decisionSummary } from "./decisions";
-import { pipelineSteps, type Step, type StepKey } from "./pipelineSteps";
+import { coinTraces, price, type CoinTrace, type TraceKey } from "./pipelineTrace";
 
-type Scan = { scanned: number; passing: number; top: string[] };
+type Scan = { scanned: number; icons: Record<string, string> };
 
-// How each stage is titled on its card and on the strip, with a line on what it does (the full
-// role and the rule it never breaks are in the title's tooltip).
-const LOOK: Record<StepKey, { title: string; strip: string; line: string }> = {
-  scan: { title: "Scanner", strip: "Scan", line: "8 scouts scoring the busy Solana coins" },
-  check: { title: "Quality check", strip: "Check", line: "Holders, movement & cost gate" },
-  ai: { title: "AI & odds", strip: "AI odds", line: "AI chart planner & odds check" },
-  size: { title: "Sizer", strip: "Size", line: "Agent budget · cost cap 2.5%" },
-  exec: { title: "Executor", strip: "Exec", line: "5 s monitor · +5% net profit lock" },
-  log: { title: "Logger", strip: "Log", line: "Every decision kept a week" },
+const STEP: Record<TraceKey, { bar: string; card: string; idle: string }> = {
+  scan: { bar: "Scan", card: "Scanner", idle: "Eight scouts score every busy Solana coin." },
+  check: { bar: "Check", card: "Quality check", idle: "Holders, movement and the cost of trading, before any AI." },
+  ai: { bar: "AI Plan", card: "AI & odds", idle: "The AI reads the charts; each order must have the odds." },
+  size: { bar: "Size", card: "Sizer", idle: "The agent's budget, less where trading costs over 2.5%." },
+  exec: { bar: "Execute", card: "Executor", idle: "Buys, watches every 5 seconds, locks +5% after costs." },
+  log: { bar: "Log", card: "Logger", idle: "Every decision written down with its reason, for a week." },
 };
+const KEYS: TraceKey[] = ["scan", "check", "ai", "size", "exec", "log"];
 
 export function Pipeline({ state, onOpenLog }: { state: AppState | null; onOpenLog: () => void }) {
   const [range, setRange] = useState<"today" | "week">("today");
   const { lines, more, busy, err, bots, midnight } = useAgentLog(state, range, true);
-  // The scouts' list (market data, the same for everyone): read when the tab opens and once a
-  // minute while it is open. Without it the Scanner says what it can from the log.
   const [scan, setScan] = useState<Scan | null>(null);
   useEffect(() => {
     let off = false;
     const load = () => api.agents()
-      .then((s) => { if (!off) setScan({ scanned: s.scanned, passing: s.coins.filter((c) => !c.vetoes.length && c.total >= s.pass).length, top: s.coins.map((c) => c.symbol) }); })
-      .catch(() => { /* the Scanner's card goes without it */ });
+      .then((s) => { if (!off) setScan({ scanned: s.scanned, icons: Object.fromEntries(s.coins.filter((c) => c.icon).map((c) => [c.symbol, c.icon!])) }); })
+      .catch(() => { /* the trace goes without it */ });
     load();
     const id = window.setInterval(load, 60_000);
     return () => {
@@ -44,13 +40,14 @@ export function Pipeline({ state, onOpenLog }: { state: AppState | null; onOpenL
     };
   }, []);
   const running = bots.filter((b) => b.bot.running).length;
-  const open = (state?.positions ?? []).filter((p) => p.source === "bot").length;
-  const steps = pipelineSteps({ lines, now: Date.now(), scan, open, running });
-  const s = decisionSummary(decisionRows(lines));
-  // How far the light runs along the strip: to the furthest stage that is working now.
-  const reach = steps.reduce((r, st, i) => (st.on ? i : r), -1);
-  const flashes = useFlashes(steps);
-  const when = (t: number) => `${t >= midnight ? "" : `${new Date(t).toLocaleDateString([], { weekday: "short" })} `}${new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  const icons: Record<string, string> = { ...(scan?.icons ?? {}) };
+  for (const b of bots) if (b.bot.config?.symbol && b.bot.config.imageUrl) icons[b.bot.config.symbol] = b.bot.config.imageUrl;
+  const traces = coinTraces(lines, { scanned: scan?.scanned ?? null });
+  const [picked, setPicked] = useState<string | null>(null);
+  const tr = traces.find((t) => t.coin === picked) ?? traces[0] ?? null;
+  const flash = useFlash(tr);
+  const when = (t: number) => `${t >= midnight ? "" : `${new Date(t).toLocaleDateString([], { weekday: "short" })} `}${new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+  const reached = tr?.reached ?? 0;
   return (
     <div className="pf">
       <div className="pf-bar">
@@ -58,99 +55,89 @@ export function Pipeline({ state, onOpenLog }: { state: AppState | null; onOpenL
           <button className={range === "today" ? "on" : ""} aria-pressed={range === "today"} onClick={() => setRange("today")}>Today</button>
           <button className={range === "week" ? "on" : ""} aria-pressed={range === "week"} onClick={() => setRange("week")}>Last 7 days</button>
         </div>
-        <span className="pf-sum" title={err ? `The earlier lines could not be loaded (${err})` : undefined}>
-          Auto-Pilot · <b className={running ? "up" : "pf-idle"}>{running ? `${running} running` : "Idle"}</b> · {s.bought} Bought · {s.sold} Sold · {s.notTraded} Skipped
-          {more ? " (so far)" : ""}{busy ? " · loading…" : ""}
+        <span className={`pf-live ${running ? "on" : ""}`} title={err ? `The earlier lines could not be loaded (${err})` : undefined}>
+          <i aria-hidden="true" />Auto-Pilot · <b>{running ? "Active Trace" : "Idle"}</b>{busy ? " · loading…" : more ? " · more loading" : ""}
         </span>
       </div>
 
-      <div className={`pf-strip ${reach >= 0 ? "live" : ""}`} aria-label="The stages every trade goes through, in order">
-        {steps.map((st, i) => [
-          i ? <span key={`to-${st.key}`} className={`pf-link ${i <= reach ? "flow" : ""}`} aria-hidden="true"><i>{"→"}</i></span> : null,
-          <span key={st.key} className={`pf-node s-${st.key} ${st.on ? "on" : ""} ${flashes.has(st.key) ? "flash" : ""}`} title={`${LOOK[st.key].title}: ${st.role}`}>
-            <em>{String(i + 1).padStart(2, "0")}</em> {LOOK[st.key].strip}
-          </span>,
-        ])}
+      <div className="pf-tracebar">
+        <span className="pf-tracelabel">Tracing coin:</span>
+        <div className="pf-chips" role="listbox" aria-label="Coins to trace">
+          {traces.slice(0, 8).map((t) => (
+            <button key={t.coin} role="option" aria-selected={t === tr} className={`pf-chip o-${t.outcome} ${t === tr ? "on" : ""}`} onClick={() => setPicked(t.coin)}>
+              <CoinIcon src={icons[t.coin]} symbol={t.coin} />
+              <b>{t.coin}</b> · <span>{t.chip}</span>
+            </button>
+          ))}
+          {!traces.length && <span className="muted small">No coin in this stretch yet: start an agent, and every coin it looks at shows here.</span>}
+        </div>
+        {tr && (
+          <span className="pf-traceinfo">
+            <b>{tr.coin}</b> · Solana{tr.entry?.price ? <> · Entry {price(tr.entry.price)}</> : null}{tr.entry?.usd ? <> · Size ${tr.entry.usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</> : null}
+          </span>
+        )}
+      </div>
+
+      <div className="pf-steps" aria-label="The steps of this coin's trade">
+        {KEYS.map((k, i) => {
+          const st = tr?.steps[i];
+          const mark = !st || st.state === "todo" ? "" : st.state === "done" ? "✓" : st.state === "stopped" ? "✕" : "…";
+          return [
+            i ? <span key={`a-${k}`} className={`pf-arrow ${i < reached ? "lit" : ""}`} aria-hidden="true" /> : null,
+            <span key={k} className={`pf-stepnode s-${k} st-${st?.state ?? "todo"} ${i + 1 === reached ? "cur" : ""}`}>
+              <small>Step {i + 1}</small>
+              <b>{STEP[k].bar} {mark && <em className={`m-${st?.state}`}>{mark}</em>}</b>
+            </span>,
+          ];
+        })}
       </div>
 
       <div className="pf-cards">
-        {steps.map((st, i) => <StageCard key={st.key} st={st} n={i + 1} flash={flashes.has(st.key)} when={when} />)}
+        {KEYS.map((k, i) => {
+          const st = tr?.steps[i];
+          return (
+            <div key={k} className={`pf-card s-${k} st-${st?.state ?? "todo"} ${i + 1 === reached && running ? "on" : ""} ${flash === k ? "flash" : ""}`}>
+              {k === "ai" && <span className="pf-ai-badge" aria-hidden="true">AI</span>}
+              {k === "ai" && <svg className="pf-brain" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a2 2 0 0 0-3-1Zm6 0a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg>}
+              <div className="pf-name"><span>Step {i + 1} ·</span> {STEP[k].card}</div>
+              <span className={`pf-pill p-${st?.state ?? "todo"}`}>{st ? st.pill : "—"}{st?.state === "done" ? " ✓" : st?.state === "stopped" ? " ✕" : ""}</span>
+              <div className="pf-what">{st ? st.line : STEP[k].idle}</div>
+              <div className="pf-figbox">
+                <div className="pf-fig">{st ? st.figure : "—"}</div>
+                <div className="pf-cap">{st ? aiText(st.caption) : ""}</div>
+              </div>
+              <div className="pf-when">{st?.t ? <><span className="mono">{when(st.t)}</span> · {st.event}</> : <span className="muted">{st ? "—" : "Waiting for a coin"}</span>}</div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="pf-foot">
-        <span className="muted tiny">Six stages every agent trade goes through, live from your agents' decisions. A view only: it changes nothing about how they trade.</span>
-        <button className="link-btn" onClick={onOpenLog}>Read full decisions in Agent log →</button>
+        <span className="muted tiny">Click any coin above to trace each step the Auto-Pilot AI took, from discovery to execution. A view only: it changes nothing about how the agents trade.</span>
+        <button className="link-btn" onClick={onOpenLog}>Inspect full Agent log →</button>
       </div>
     </div>
   );
 }
 
-function StageCard({ st, n, flash, when }: { st: Step; n: number; flash: boolean; when: (t: number) => string }) {
-  const look = LOOK[st.key];
-  return (
-    <div className={`pf-card s-${st.key} ${st.on ? "on" : ""} ${flash ? "flash" : ""}`}>
-      {st.key === "ai" && <span className="pf-ai-badge" aria-hidden="true">AI</span>}
-      <div className="pf-top">
-        <span className="pf-n">{String(n).padStart(2, "0")}</span>
-        <span className="pf-state" title={st.on ? "It did something in the last few minutes." : "Nothing in the last few minutes."}>{st.on && <i aria-hidden="true" />}{st.on ? "ACTIVE" : "IDLE"}</span>
-      </div>
-      <div className="pf-title" title={`${st.role} ${st.rule}`}>
-        {look.title}
-        {st.key === "ai" && <svg className="pf-spark" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 2v6M12 16v6M2 12h6M16 12h6M5 5l4 4M15 15l4 4M19 5l-4 4M9 15l-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" /></svg>}
-      </div>
-      <div className="pf-line">{look.line}</div>
-      <div className="pf-fig"><CountUp text={st.figure} /></div>
-      <div className="pf-cap">{st.caption}</div>
-      <div className="pf-event" key={st.last?.t ?? 0}>
-        <b>Latest event</b>
-        <div>{st.last ? <><span className="mono">{when(st.last.t)}</span> · {aiText(st.last.text)}</> : <span className="muted">Nothing in this stretch yet.</span>}</div>
-      </div>
-    </div>
-  );
+function CoinIcon({ src, symbol }: { src?: string; symbol: string }) {
+  const [bad, setBad] = useState(false);
+  return src && !bad ? <img className="pf-coin" src={src} alt="" onError={() => setBad(true)} /> : <span className="pf-coin letter" aria-hidden="true">{symbol.slice(0, 1)}</span>;
 }
 
-// The stages whose newest event changed since the last look: they flash for a moment.
-function useFlashes(steps: Step[]): Set<StepKey> {
-  const seen = useRef<Map<StepKey, number> | null>(null);
-  const [on, setOn] = useState<Set<StepKey>>(new Set());
-  const sig = steps.map((s) => `${s.key}:${s.last?.t ?? 0}`).join("|");
+// The step a traced coin has just reached flashes when it gets there (not on the first look, and
+// not when another coin is picked).
+function useFlash(tr: CoinTrace | null): TraceKey | null {
+  const seen = useRef<{ coin: string; t: number } | null>(null);
+  const [key, setKey] = useState<TraceKey | null>(null);
   useEffect(() => {
-    const now = new Map(steps.map((s) => [s.key, s.last?.t ?? 0]));
     const before = seen.current;
-    seen.current = now;
-    if (!before) return; // (the first look shows what is there, without flashing)
-    const changed = steps.filter((s) => (s.last?.t ?? 0) > (before.get(s.key) ?? 0)).map((s) => s.key);
-    if (!changed.length) return;
-    setOn(new Set(changed));
-    const id = window.setTimeout(() => setOn(new Set()), 1600);
+    seen.current = tr ? { coin: tr.coin, t: tr.lastT } : null;
+    if (!tr || !before || before.coin !== tr.coin || tr.lastT <= before.t) return;
+    const newest = [...tr.steps].filter((s) => s.t !== null && s.key !== "log").sort((a, b) => (b.t ?? 0) - (a.t ?? 0))[0];
+    setKey(newest?.key ?? "log");
+    const id = window.setTimeout(() => setKey(null), 1600);
     return () => window.clearTimeout(id);
-  }, [sig]); // eslint-disable-line react-hooks/exhaustive-deps
-  return on;
-}
-
-// A figure like "231 scanned" or "$9,870.67" counts from its old value to the new one.
-function CountUp({ text }: { text: string }) {
-  const m = /^([^0-9-]*)(-?[\d,]+(?:\.\d+)?)([\s\S]*)$/.exec(text);
-  const target = m ? Number(m[2].replace(/,/g, "")) : NaN;
-  const decimals = m && m[2].includes(".") ? m[2].split(".")[1].length : 0;
-  const [shown, setShown] = useState(target);
-  const from = useRef(target);
-  useEffect(() => {
-    if (!Number.isFinite(target)) return;
-    const start = from.current;
-    from.current = target;
-    if (!Number.isFinite(start) || start === target || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return void setShown(target);
-    const t0 = performance.now(), ms = 700;
-    let raf = 0;
-    const step = (t: number) => {
-      const k = Math.min(1, (t - t0) / ms), ease = 1 - (1 - k) ** 3;
-      setShown(start + (target - start) * ease);
-      if (k < 1) raf = requestAnimationFrame(step);
-    };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
-  }, [target]);
-  if (!m || !Number.isFinite(target)) return <>{text}</>;
-  const num = (Number.isFinite(shown) ? shown : target).toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-  return <>{m[1]}{num}{m[3]}</>;
+  }, [tr?.coin, tr?.lastT]); // eslint-disable-line react-hooks/exhaustive-deps
+  return key;
 }

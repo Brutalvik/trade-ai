@@ -1298,70 +1298,89 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .log .log-older { align-self: flex-start; margin: 6px 0 2px; cursor: pointer; }
 /* The Pipeline tab: six steps, each saying what it did. --s is the step's own colour (R, G, B).
    (The steps' classes are s-scan, s-check...: plain "check" and "log" are other things in this file.) */
-/* The Pipeline tab (Pipeline.tsx): a stage strip, six glass cards, and motion that follows the trading */
+/* The Pipeline tab (Pipeline.tsx): one coin traced through the six steps; motion follows the trade */
 .pf { display: flex; flex-direction: column; gap: 14px; container-type: inline-size; }
-.pf > * { flex-shrink: 0; } /* (the strip and cards keep their height when the panel is short) */
-.pf-scan, .pf-node, .pf-card { --s: 0, 229, 255; }
+.pf > * { flex-shrink: 0; } /* (the bars and cards keep their height when the panel is short) */
+.pf-card, .pf-stepnode { --s: 0, 229, 255; }
 .s-scan { --s: 255, 200, 87; } .s-check { --s: 255, 77, 120; } .s-ai { --s: 0, 229, 255; }
 .s-size { --s: 167, 139, 250; } .s-exec { --s: 0, 245, 160; } .s-log { --s: 255, 159, 67; }
-.pf-bar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; }
+
+/* Header: the days, and the Auto-Pilot pill */
+.pf-bar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
 .pf-range { display: inline-flex; padding: 3px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); }
-.pf-range button { border: 0; background: none; color: #aab4d4; font-size: 12.5px; padding: 5px 12px; border-radius: 8px; cursor: pointer; }
-.pf-range button.on { background: rgba(255, 255, 255, 0.12); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); }
-.pf-sum { font-size: 12.5px; color: #aab4d4; }
-.pf-sum b { font-weight: 600; } .pf-sum .pf-idle { color: var(--up); opacity: 0.85; }
+.pf-range button { border: 0; background: none; color: #b9c3e2; font-size: 12.5px; padding: 5px 12px; border-radius: 8px; cursor: pointer; }
+.pf-range button.on { background: rgba(255, 255, 255, 0.13); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+.pf-live { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 10px; font-size: 12.5px; color: #c6d2f0; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); }
+.pf-live i { width: 7px; height: 7px; border-radius: 50%; background: #8a94b8; }
+.pf-live b { font-weight: 600; color: #c6d2f0; }
+.pf-live.on { border-color: rgba(0, 245, 160, 0.45); background: rgba(0, 245, 160, 0.08); }
+.pf-live.on i { background: var(--up); box-shadow: 0 0 8px var(--up); animation: pf-dot 1.2s ease-in-out infinite; }
+.pf-live.on b { color: var(--up); }
 
-/* The strip: the stages in order, light running along the links up to the stage that last acted */
-.pf-strip { display: flex; align-items: center; gap: 0; padding: 7px 10px; border-radius: 14px; background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(255, 255, 255, 0.07); overflow-x: auto; }
-.pf-node { flex: none; padding: 6px 14px; border-radius: 10px; font-family: Orbitron, "JetBrains Mono", monospace; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(var(--s), 0.25); white-space: nowrap; transition: box-shadow 0.4s, border-color 0.4s; }
-.pf-node em { font-style: normal; color: rgb(var(--s)); margin-right: 4px; }
-.pf-node.on { border-color: rgba(var(--s), 0.8); box-shadow: 0 0 14px rgba(var(--s), 0.35); }
-.pf-node.flash { animation: pf-node-flash 1.5s ease-out; }
-.pf-link { flex: 1 1 24px; min-width: 24px; height: 2px; position: relative; margin: 0 4px; border-radius: 2px; background: linear-gradient(90deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.22)); }
-.pf-link i { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -54%); font-style: normal; font-size: 13px; color: #8a94b8; background: #0b111d; padding: 0 3px; line-height: 1; }
-.pf-link.flow { background: linear-gradient(90deg, transparent 0%, rgba(0, 229, 255, 0) 20%, rgba(0, 245, 200, 0.95) 50%, rgba(0, 229, 255, 0) 80%, transparent 100%) 0 0 / 200% 100%, rgba(0, 229, 255, 0.28); animation: pf-flow 1.6s linear infinite; }
-.pf-link.flow i { color: #7ff3ff; }
+/* Tracing coin: the coins to pick, and the traced coin's entry */
+.pf-tracebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); }
+.pf-tracelabel { color: #c6d2f0; font-size: 13px; }
+.pf-chips { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.pf-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 12px 4px 4px; border-radius: 999px; cursor: pointer; font-size: 12.5px; color: #c6d2f0; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.12); transition: border-color 0.3s, box-shadow 0.3s; }
+.pf-chip b { color: var(--text); font-weight: 600; }
+.pf-chip.on { border-color: rgba(0, 245, 160, 0.7); background: rgba(0, 245, 160, 0.1); box-shadow: 0 0 14px rgba(0, 245, 160, 0.25); }
+.pf-chip.o-executed span, .pf-chip.o-sold span { color: var(--up); }
+.pf-chip.o-stopped span { color: #ff8aa6; } .pf-chip.o-skipped span, .pf-chip.o-waiting span { color: #ffd27a; }
+.pf-coin { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; flex: none; background: rgba(255, 255, 255, 0.1); }
+.pf-coin.letter { display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--text); }
+.pf-traceinfo { margin-left: auto; font-size: 13px; color: #c6d2f0; white-space: nowrap; }
+.pf-traceinfo b { color: var(--text); }
 
-/* The cards */
-.pf-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+/* The step bar: lit arrows up to the step the coin reached */
+.pf-steps { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 2px; overflow-x: auto; }
+.pf-stepnode { flex: none; display: flex; flex-direction: column; align-items: center; padding: 6px 14px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.12); transition: box-shadow 0.4s, border-color 0.4s; }
+.pf-stepnode small { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #aab4d4; }
+.pf-stepnode b { font-size: 13.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text); }
+.pf-stepnode em { font-style: normal; } .pf-stepnode .m-done { color: var(--up); } .pf-stepnode .m-stopped { color: #ff8aa6; } .pf-stepnode .m-waiting { color: #ffd27a; }
+.pf-stepnode.st-todo { opacity: 0.55; }
+.pf-stepnode.cur { border-color: rgba(var(--s), 0.85); background: rgba(var(--s), 0.12); box-shadow: 0 0 16px rgba(var(--s), 0.4); }
+.pf-arrow { flex: 1 1 40px; min-width: 28px; height: 3px; position: relative; border-radius: 3px; background: rgba(255, 255, 255, 0.14); }
+.pf-arrow::after { content: ""; position: absolute; right: -2px; top: 50%; width: 8px; height: 8px; border-top: 3px solid rgba(255, 255, 255, 0.22); border-right: 3px solid rgba(255, 255, 255, 0.22); transform: translateY(-50%) rotate(45deg); }
+.pf-arrow.lit { background: linear-gradient(90deg, rgba(0, 229, 255, 0.35), #6ff7ff 50%, rgba(0, 229, 255, 0.35)) 0 0 / 200% 100%; box-shadow: 0 0 10px rgba(0, 229, 255, 0.6); animation: pf-flow 1.8s linear infinite; }
+.pf-arrow.lit::after { border-color: #6ff7ff; filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.8)); }
+
+/* The six step cards, with a chevron between them */
+.pf-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 @container (min-width: 760px) { .pf-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@container (min-width: 1180px) { .pf-cards { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@container (min-width: 1180px) { .pf-cards { grid-template-columns: repeat(6, minmax(0, 1fr)); } .pf-card + .pf-card::before { content: "›"; position: absolute; left: -12px; top: 52%; transform: translate(-50%, -50%); font-size: 22px; line-height: 1; color: rgba(var(--s), 0.9); text-shadow: 0 0 8px rgba(var(--s), 0.6); } }
 @container (max-width: 460px) { .pf-cards { grid-template-columns: minmax(0, 1fr); } }
-.pf-card { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 14px 14px 12px; border-radius: 16px; min-width: 0;
-  background: linear-gradient(180deg, rgba(var(--s), 0.13), rgba(var(--s), 0.03) 38%, rgba(255, 255, 255, 0.02)), rgba(10, 16, 28, 0.6);
-  border: 1px solid rgba(var(--s), 0.45); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 rgba(var(--s), 0); transition: border-color 0.4s, box-shadow 0.4s; }
-.pf-card.on { border-color: rgba(var(--s), 0.85); animation: pf-breathe 2.6s ease-in-out infinite; }
+.pf-card { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 9px; padding: 16px 12px 0; border-radius: 16px; min-width: 0;
+  background: linear-gradient(180deg, rgba(var(--s), 0.16), rgba(var(--s), 0.05) 45%, rgba(255, 255, 255, 0.02)), rgba(10, 16, 28, 0.62);
+  border: 1px solid rgba(var(--s), 0.5); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07); transition: border-color 0.4s, box-shadow 0.4s, opacity 0.4s; }
+.pf-card.st-todo { opacity: 0.6; }
+.pf-card.on { border-color: rgba(var(--s), 0.95); animation: pf-breathe 2.6s ease-in-out infinite; }
 .pf-card.flash { animation: pf-flash 1.5s ease-out; }
-.pf-top { display: flex; align-items: center; justify-content: space-between; }
-.pf-n { font-family: Orbitron, "JetBrains Mono", monospace; font-size: 19px; font-weight: 700; color: rgb(var(--s)); }
-.pf-state { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; padding: 2px 8px; border-radius: 999px; color: #aab4d4; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.14); }
-.pf-card.on .pf-state { color: rgb(var(--s)); border-color: rgba(var(--s), 0.6); background: rgba(var(--s), 0.12); }
-.pf-state i { width: 6px; height: 6px; border-radius: 50%; background: rgb(var(--s)); animation: pf-dot 1.2s ease-in-out infinite; }
-.pf-title { display: flex; align-items: center; gap: 8px; justify-content: space-between; margin-top: 6px; font-family: Orbitron, sans-serif; font-size: 15px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: rgb(var(--s)); }
-.pf-spark { color: rgb(var(--s)); opacity: 0.8; flex: none; }
-.pf-card.on .pf-spark { animation: pf-spin 6s linear infinite; }
-.pf-line { color: #c6d2f0; font-size: 12.5px; line-height: 1.35; min-height: 2.7em; }
-.pf-fig { margin-top: 6px; font-family: "JetBrains Mono", monospace; font-size: 21px; font-weight: 700; line-height: 1.15; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.pf-cap { color: #aab4d4; font-size: 12px; line-height: 1.35; flex: 1; }
-.pf-event { margin-top: 8px; padding: 9px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.09); font-size: 11.5px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; animation: pf-in 0.6s ease-out; }
-.pf-event b { display: block; font-size: 12px; margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px dashed rgba(255, 255, 255, 0.12); }
-.pf-event .mono { color: #aab4d4; }
-.pf-ai-badge { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); padding: 3px 9px; border-radius: 9px; font-family: Orbitron, sans-serif; font-size: 11px; font-weight: 700; color: #bff8ff; background: rgba(0, 229, 255, 0.18); border: 1px solid rgba(0, 229, 255, 0.7); box-shadow: 0 0 14px rgba(0, 229, 255, 0.45); }
-.pf-card.on .pf-ai-badge { animation: pf-badge 2s ease-in-out infinite; }
+.pf-name { font-size: 12.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text); }
+.pf-name span { font-weight: 500; color: #c6d2f0; }
+.pf-pill { font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 12px; border-radius: 999px; color: #b9c3e2; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.14); }
+.pf-pill.p-done { color: #8dffd2; background: rgba(0, 245, 160, 0.12); border-color: rgba(0, 245, 160, 0.45); }
+.pf-pill.p-stopped { color: #ffb3c4; background: rgba(255, 61, 113, 0.14); border-color: rgba(255, 61, 113, 0.5); }
+.pf-pill.p-waiting { color: #ffe2a3; background: rgba(255, 200, 87, 0.12); border-color: rgba(255, 200, 87, 0.5); }
+.pf-what { font-size: 14px; line-height: 1.35; color: var(--text); min-height: 2.7em; display: flex; align-items: center; }
+.pf-figbox { align-self: stretch; padding: 12px 8px; border-radius: 12px; background: rgba(0, 0, 0, 0.32); border: 1px solid rgba(255, 255, 255, 0.08); }
+.pf-fig { font-size: 21px; font-weight: 700; line-height: 1.15; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pf-cap { margin-top: 8px; font-size: 12.5px; line-height: 1.4; color: #d6def5; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.pf-when { align-self: stretch; margin-top: auto; padding: 9px 4px 10px; border-top: 1px solid rgba(255, 255, 255, 0.09); font-size: 11.5px; color: #c6d2f0; }
+.pf-when .mono { color: #aab4d4; }
+.pf-ai-badge { position: absolute; top: -14px; left: 50%; transform: translateX(-50%); padding: 3px 9px; border-radius: 9px; font-family: Orbitron, sans-serif; font-size: 12px; font-weight: 700; color: #d9fbff; background: rgba(0, 229, 255, 0.2); border: 1px solid rgba(0, 229, 255, 0.75); box-shadow: 0 0 14px rgba(0, 229, 255, 0.5); animation: pf-badge 2.4s ease-in-out infinite; }
+.pf-brain { position: absolute; top: 10px; right: 10px; color: rgb(var(--s)); opacity: 0.85; }
 .pf-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
-.pf-foot .link-btn { color: var(--up); }
+.pf-foot .muted { color: #b9c3e2; }
+.pf-foot .link-btn { color: #6ff7ff; }
 .panel.bottom.maximized .pf { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
 
-@keyframes pf-flow { from { background-position: 100% 0, 0 0; } to { background-position: -100% 0, 0 0; } }
-@keyframes pf-breathe { 0%, 100% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 6px rgba(var(--s), 0.12); } 50% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 22px rgba(var(--s), 0.38); } }
-@keyframes pf-flash { 0% { box-shadow: 0 0 0 0 rgba(var(--s), 0.7), 0 0 30px rgba(var(--s), 0.6); transform: translateY(-2px); } 100% { box-shadow: 0 0 0 14px rgba(var(--s), 0), 0 0 8px rgba(var(--s), 0.1); transform: none; } }
-@keyframes pf-node-flash { 0% { box-shadow: 0 0 0 0 rgba(var(--s), 0.8); } 100% { box-shadow: 0 0 0 10px rgba(var(--s), 0); } }
+@keyframes pf-flow { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes pf-breathe { 0%, 100% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 6px rgba(var(--s), 0.15); } 50% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 24px rgba(var(--s), 0.45); } }
+@keyframes pf-flash { 0% { box-shadow: 0 0 0 0 rgba(var(--s), 0.75), 0 0 32px rgba(var(--s), 0.6); transform: translateY(-3px); } 100% { box-shadow: 0 0 0 16px rgba(var(--s), 0), 0 0 8px rgba(var(--s), 0.1); transform: none; } }
 @keyframes pf-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.7); } }
-@keyframes pf-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@keyframes pf-spin { to { transform: rotate(360deg); } }
-@keyframes pf-badge { 0%, 100% { box-shadow: 0 0 10px rgba(0, 229, 255, 0.35); } 50% { box-shadow: 0 0 22px rgba(0, 229, 255, 0.75); } }
+@keyframes pf-badge { 0%, 100% { box-shadow: 0 0 10px rgba(0, 229, 255, 0.35); } 50% { box-shadow: 0 0 24px rgba(0, 229, 255, 0.8); } }
 @media (prefers-reduced-motion: reduce) {
-  .pf-link.flow, .pf-card.on, .pf-card.flash, .pf-node.flash, .pf-state i, .pf-card.on .pf-spark, .pf-card.on .pf-ai-badge, .pf-event { animation: none; }
+  .pf-arrow.lit, .pf-card.on, .pf-card.flash, .pf-live.on i, .pf-ai-badge { animation: none; }
 }
 /* The one-line view ("Decisions"): time, what was decided, the coin, the size or the result; the reason under it. */
 .log.decisions { gap: 0; max-height: 440px; }

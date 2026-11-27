@@ -25,7 +25,14 @@ const store = createStore();
 //   lock      a trade reached its minimum profit    start / stop = the agent itself
 export type DecisionAct = "enter" | "exit" | "skip" | "filtered" | "order" | "pick" | "left" | "wait" | "lock" | "start" | "stop";
 // by = for a coin that was ruled out or let go: which check did it (the scouts, the numbers, the cost of trading).
-export type Decision = { act: DecisionAct; coin?: string; why: string; by?: "scouts" | "numbers" | "cost"; usd?: number; of?: number; pnl?: number; pct?: number };
+export type Decision = {
+  act: DecisionAct; coin?: string; why: string; by?: "scouts" | "numbers" | "cost"; usd?: number; of?: number; pnl?: number; pct?: number;
+  // The figures behind it, for the Pipeline's trace of a coin (since v0.80; older lines have them in `why` only):
+  score?: number; // the scouts' score of the coin, 0-100 (a pick)
+  costPct?: number; // what buying and selling its money there costs, % (a pick, a buy)
+  winPct?: number; needPct?: number; // the order's chance of reaching its target, and what it needs (an AI plan, a buy)
+  price?: number; // the price of the buy or sale, or the price an order waits for
+};
 export type LogLine = { t: number; bot: string; sym?: string; msg: string; level: "info" | "good" | "bad"; d?: Decision };
 
 // A reason short enough for one line: single spaces, no full stop at the end, cut at `max`.

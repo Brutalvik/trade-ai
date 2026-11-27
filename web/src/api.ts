@@ -109,7 +109,14 @@ export type AppState = {
 // What a log line decided (server/src/botlog.ts): bought, sold, stayed out and why, chose a coin...
 export type DecisionAct = "enter" | "exit" | "skip" | "filtered" | "order" | "pick" | "left" | "wait" | "lock" | "start" | "stop";
 // by = for a coin ruled out or let go: which check did it.
-export type Decision = { act: DecisionAct; coin?: string; why: string; by?: "scouts" | "numbers" | "cost"; usd?: number; of?: number; pnl?: number; pct?: number };
+export type Decision = {
+  act: DecisionAct; coin?: string; why: string; by?: "scouts" | "numbers" | "cost"; usd?: number; of?: number; pnl?: number; pct?: number;
+  // The figures behind it, for the Pipeline's trace of a coin (since v0.80; older lines have them in `why` only):
+  score?: number; // the scouts' score of the coin, 0-100 (a pick)
+  costPct?: number; // what buying and selling its money there costs, % (a pick, a buy)
+  winPct?: number; needPct?: number; // the order's chance of reaching its target, and what it needs (an AI plan, a buy)
+  price?: number; // the price of the buy or sale, or the price an order waits for
+};
 // Lines of the quality step (it works for all of the account's agents, so they are no one agent's)
 // carry this in place of an agent's number.
 export const STEP_BOT = "0";
