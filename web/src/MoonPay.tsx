@@ -398,6 +398,19 @@ function DepositModal({ wallet, sandbox, onClose, notify }: { wallet: ChainWalle
 }
 
 // ---------- Buying ----------
+// The address MoonPay sees from this browser: its payment window accepts the link only from that
+// address. The app's own server can see another one (the app is reached over IPv4, MoonPay over
+// IPv6 when the connection has it), so the page asks MoonPay and the server signs that address.
+async function moonpaySeenIp(publishableKey: string | null | undefined): Promise<string | null> {
+  if (!publishableKey) return null;
+  try {
+    const r = await fetch(`https://api.moonpay.com/v4/ip_address?apiKey=${encodeURIComponent(publishableKey)}`, { signal: AbortSignal.timeout(5_000) });
+    const j = await r.json();
+    return typeof j?.ipAddress === "string" ? j.ipAddress : null;
+  } catch {
+    return null; // (the server then signs the address it sees)
+  }
+}
 // The app's own form; the payment itself in MoonPay's window, built and signed by the server (so
 // nothing in it can be changed here), shown in a modal. Card payments run in the modal; Apple Pay
 // and Google Pay cannot run inside an embedded window, so they open MoonPay's own tab.
@@ -430,7 +443,8 @@ function BuyTab({ view, toWallet, toHistory }: { view: MoonWalletView | null; to
     const tab = payWith === "card" ? null : window.open("about:blank", "_blank");
     setBusy(true);
     try {
-      const r = await api.buyWidget({ fiatCurrency: fiat!.code, asset, fiatAmount: n, payWith });
+      const seenIp = await moonpaySeenIp(view?.buying.publishableKey);
+      const r = await api.buyWidget({ fiatCurrency: fiat!.code, asset, fiatAmount: n, payWith, ...(seenIp ? { seenIp } : {}) });
       if (tab) {
         tab.opener = null;
         tab.location.href = r.url;

@@ -343,6 +343,18 @@ export function canonicalIp(ip: string): string {
 // testing): then the address MoonPay sees is asked of MoonPay itself (server and browser are the
 // same machine). On Vercel the customer's public address is always there.
 const isPrivateIp = (ip: string) => !ip || ip === "localhost" || /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || ip === "::1" || /^f[cd][0-9a-f]{2}:/i.test(ip) || /^fe80:/i.test(ip);
+// A public address the customer's browser reports as the one MoonPay sees from it (MoonPay's own
+// /v4/ip_address, asked from the page). It is the address MoonPay's window checks the link
+// against, and it can differ from the one this server sees: the app is reached over IPv4 only, and
+// MoonPay over IPv6 when the customer has it (seen 27 Nov 2026: "IP address mismatch on signed
+// URL", shown as "Unverified connection"). Anything that is not a public IPv4 or IPv6 address is
+// ignored. (A wrong one only spoils the customer's own link, into their own wallet.)
+export function reportedPublicIp(v: unknown): string | null {
+  const ip = canonicalIp(String(v ?? "").slice(0, 64));
+  if (!ip || isPrivateIp(ip)) return null;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return ip.split(".").every((o) => Number(o) <= 255) ? ip : null;
+  return /^[0-9a-f:.]+$/.test(ip) && ip.includes(":") ? ip : null;
+}
 async function publicIpFor(observed: string | undefined): Promise<string> {
   const ip = canonicalIp(observed ?? "");
   if (!isPrivateIp(ip)) return ip;
@@ -387,7 +399,9 @@ export async function widgetBuy(key: string, user: { solanaAddress?: string | nu
     apiKey: c.publishableKey, currencyCode: asset, baseCurrencyCode: fiatCurrency, baseCurrencyAmount: String(fiatAmount), lockAmount: "true",
     walletAddress: into.address, externalTransactionId: tx.id, externalCustomerId: ref, paymentMethod: pay, theme: "dark",
   });
-  q.set("allowedIpAddress", crypto.createHmac("sha256", c.secretKey).update(await publicIpFor(deviceIp)).digest("base64"));
+  // The address MoonPay sees from the customer's browser when the page could ask MoonPay, else the one this server sees.
+  const ip = reportedPublicIp(body?.seenIp) ?? (await publicIpFor(deviceIp));
+  q.set("allowedIpAddress", crypto.createHmac("sha256", c.secretKey).update(ip).digest("base64"));
   const search = `?${q.toString()}`;
   const signature = crypto.createHmac("sha256", c.secretKey).update(search).digest("base64");
   return { id: tx.id, url: `${WIDGET(c.mode)}/${search}&signature=${encodeURIComponent(signature)}`, walletAddress: into.address, which: into.which, fiatCurrency, fiatAmount, asset };

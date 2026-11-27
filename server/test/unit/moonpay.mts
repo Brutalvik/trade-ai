@@ -209,6 +209,15 @@ expect("it is signed the way MoonPay checks: HMAC-SHA256 of the query, with the 
 expect("...and tied to the customer's address, which this account requires in sandbox too", qs.get("allowedIpAddress"), crypto.createHmac("sha256", "sk_test_secret").update("203.0.113.42").digest("base64"));
 const local = await moonpay.widgetBuy("ada", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 60 }, "127.0.0.1");
 expect("on the customer's own machine (the server sees 'localhost'), the address MoonPay sees is asked of MoonPay", new URL(local.url).searchParams.get("allowedIpAddress"), crypto.createHmac("sha256", "sk_test_secret").update("198.51.100.23").digest("base64"));
+// The app is reached over IPv4 only; MoonPay over IPv6 when the customer has it. MoonPay's window
+// checks the link against the address IT sees (27 Nov 2026: "IP address mismatch on signed URL",
+// shown as "Unverified connection"), so the page asks MoonPay and the server signs that address.
+await store.kvSet("moonpay-wallet:ivy", { address: "WalletIvy1111", chain: "solana", via: "test", at: Date.now() });
+const ipOf = async (seenIp: unknown, server = "203.0.113.42") => new URL((await moonpay.widgetBuy("ivy", {}, { fiatCurrency: "usd", asset: "sol", fiatAmount: 60, seenIp }, server)).url).searchParams.get("allowedIpAddress");
+const hmacIp = (ip: string) => crypto.createHmac("sha256", "sk_test_secret").update(ip).digest("base64");
+expect("the address MoonPay sees from the browser (IPv6 here) is the one signed, not the server's IPv4", await ipOf("2604:3D09:0:0:0:0:0:1"), hmacIp("2604:3d09::1"));
+expect("...an IPv4 one too", await ipOf("198.51.100.7"), hmacIp("198.51.100.7"));
+expect("anything that is not a public address falls back to the address the server sees", [await ipOf("10.0.0.7"), await ipOf("not-an-ip"), await ipOf("999.1.1.1"), await ipOf(undefined)], [hmacIp("203.0.113.42"), hmacIp("203.0.113.42"), hmacIp("203.0.113.42"), hmacIp("203.0.113.42")]);
 expect("without a MoonPay wallet nothing is bought, sandbox included: a wallet from before MoonPay (Privy's) is never paid into", await wfail(moonpay.widgetBuy("eve", { solanaAddress: "EveCurrent11111111111111111111111111111111" }, { fiatCurrency: "usd", asset: "sol", fiatAmount: 40 }, "203.0.113.9")), "Your wallet is not set up yet.")
 // The modal asks how it is going: the server asks MoonPay for the purchases carrying our reference.
 expect("before the customer pays, MoonPay knows of no purchase: still started", (await moonpay.checkBuy("ada", w.id)).status, "started");
