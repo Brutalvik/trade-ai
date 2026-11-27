@@ -2,15 +2,16 @@
 // Apple Pay on the app's own screen, and every real-money transaction in a table.
 // Everything shown comes from the server, which records only what MoonPay itself confirms: no
 // price, fee or "paid" is ever made up here.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
-import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, WALLET_KINDS, type BalanceRow, type ChainWallet, type MoonWalletView, type TxStatus, type WalletChain, type WalletTx, type WalletTxEvent } from "./api";
+import { ChainLogo, type LogoId } from "./ChainLogo";
+import { api, fmtUsd, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, WALLET_KINDS, type BalanceRow, type ChainWallet, type MoonWalletView, type TxStatus, type WalletChain, type WalletTx, type WalletTxEvent } from "./api";
 
-type Tab = "wallet" | "buy" | "history" | "previous";
+type Tab = "wallet" | "buy" | "history";
 type Notify = (m: string, bad?: boolean) => void;
 
-export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: ReactNode }) {
+export function MoonPayPanel({ notify }: { notify: Notify }) {
   const [tab, setTab] = useState<Tab>("wallet");
   const [view, setView] = useState<MoonWalletView | null>(null);
   const [err, setErr] = useState("");
@@ -21,7 +22,7 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
     window.addEventListener(MOONPAY_WALLET_EVENT, again);
     return () => window.removeEventListener(MOONPAY_WALLET_EVENT, again);
   }, []);
-  const tabs: [Tab, string][] = [["wallet", "Your wallets"], ["buy", "Buy"], ["history", "Transactions"], ...(previous ? ([["previous", "Previous wallet"]] as [Tab, string][]) : [])];
+  const tabs: [Tab, string][] = [["wallet", "Your wallets"], ["buy", "Buy"], ["history", "Transactions"]];
   return (
     <div className="mp">
       <div className="tabs" role="tablist">
@@ -29,12 +30,11 @@ export function MoonPayPanel({ notify, previous }: { notify: Notify; previous: R
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
-      {view?.buying.mode === "sandbox" && tab !== "previous" && <p className="mp-sandbox small">Test mode: no real money moves, and bought coins arrive on test networks.</p>}
-      {err && tab !== "previous" && <p className="down small">{err}</p>}
+      {view?.buying.mode === "sandbox" && <p className="mp-sandbox small">Test mode: no real money moves, and bought coins arrive on test networks.</p>}
+      {err && <p className="down small">{err}</p>}
       {tab === "wallet" && <WalletTab view={view} reload={load} notify={notify} toBuy={() => setTab("buy")} />}
       {tab === "buy" && <BuyTab view={view} toWallet={() => setTab("wallet")} toHistory={() => setTab("history")} />}
       {tab === "history" && <TxTable notify={notify} sandbox={view?.buying.mode !== "live"} />}
-      {tab === "previous" && previous}
     </div>
   );
 }
@@ -48,16 +48,27 @@ export const CHAIN_INFO: Record<WalletChain, { name: string; networks: string; h
   bitcoin: { name: "Bitcoin", networks: "Bitcoin", holds: "BTC.", coin: "BTC", glyph: "₿", qr: (a) => `bitcoin:${a}` },
   tron: { name: "Tron", networks: "Tron", holds: "TRX and USDT on Tron (TRC-20).", coin: "TRX", glyph: "T", qr: (a) => a },
 };
-// The networks the Ethereum wallet's one address works on, each with its own colour dot.
-const EVM_CHIPS: [string, string][] = [["Ethereum", "eth"], ["BNB Chain", "bnb"], ["Base", "base"], ["Polygon", "pol"], ["Arbitrum", "arb"], ["Optimism", "op"], ["Avalanche", "avax"]];
-const amountNum = (n: number) => (n === 0 ? "0" : n < 0.0001 ? n.toExponential(2) : n.toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 6 : 4 }));
+// The networks the Ethereum wallet's one address works on, with their marks.
+const NET_LOGO: Record<string, LogoId> = { Ethereum: "eth", "BNB Chain": "bnb", Base: "base", Polygon: "pol", Arbitrum: "arb", Optimism: "op", Avalanche: "avax" };
+const amountNum = (n: number) =>
+  n === 0 ? "0.00" : n < 0.000001 ? n.toExponential(2) : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: n < 1 ? 6 : 4 });
 const amountText = (n: number | null, symbol: string) => (n === null ? "—" : `${amountNum(n)} ${symbol}`);
-const shortAddress = (a: string) => `${a.slice(0, 6)}…${a.slice(-6)}`;
+const shortAddress = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+const CopyIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></svg>
+);
+const QrIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3" /></svg>
+);
+const ShieldIcon = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 4.6 3.4 8.3 8 9 4.6-.7 8-4.4 8-9V6Z" /><path d="m9 12 2 2 4-4" /></svg>
+);
 function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | null; reload: () => void; notify: Notify; toBuy: () => void }) {
-  const [bal, setBal] = useState<Partial<Record<WalletChain, BalanceRow[]>> | null>(null);
+  const [bal, setBal] = useState<{ balances: Partial<Record<WalletChain, BalanceRow[]>>; totalUsd: number | null; complete: boolean } | null>(null);
   const [deposit, setDeposit] = useState<ChainWallet | null>(null);
   const all = view?.all ?? (view?.wallet ? [view.wallet as ChainWallet] : []);
-  const loadBal = (fresh = false) => api.moonBalances(fresh).then((r) => setBal(r.balances)).catch(() => setBal({}));
+  const loadBal = (fresh = false) =>
+    api.moonBalances(fresh).then((r) => setBal({ balances: r.balances, totalUsd: r.totalUsd ?? null, complete: r.complete !== false })).catch(() => setBal({ balances: {}, totalUsd: null, complete: false }));
   useEffect(() => {
     if (all.length) void loadBal();
   }, [all.map((w) => w.address).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -77,76 +88,81 @@ function WalletTab({ view, reload, notify, toBuy }: { view: MoonWalletView | nul
         )}
       </div>
     );
-  const mine = WALLET_KINDS.map((k) => all.find((w) => w.chain === k)).filter((w): w is ChainWallet => !!w);
-  const missing = WALLET_KINDS.filter((k) => !all.some((w) => w.chain === k));
-  const read = bal !== null && mine.every((w) => bal[w.chain] !== undefined);
-  const empty = read && mine.every((w) => (bal![w.chain] ?? []).every((r) => !r.amount));
+  const sandbox = view.buying.mode === "sandbox";
+  const of = (k: WalletChain) => all.find((w) => w.chain === k);
+  const left = of("ethereum");
+  const right = (["solana", "bitcoin", "tron"] as WalletChain[]).map(of).filter((w): w is ChainWallet => !!w);
+  const missing = WALLET_KINDS.filter((k) => !of(k));
+  const card = (w: ChainWallet) => <WalletCard key={w.chain} w={w} rows={bal?.balances[w.chain]} sandbox={sandbox} notify={notify} onDeposit={() => setDeposit(w)} />;
+  const empty = bal !== null && bal.totalUsd === 0 && bal.complete;
   return (
     <div className="wallet-tab">
-      <div className="wallets-top">
-        <p className="muted small">Your own wallets, kept safe with your email sign-in. This app can see them but can never move money out of them.</p>
+      <div className="wl-summary">
+        <div className="wl-total">
+          <small>Total Balance</small>
+          <b>{bal === null ? "…" : bal.totalUsd === null ? "—" : fmtUsd(bal.totalUsd)}</b>
+          {bal !== null && !bal.complete && <span className="muted tiny" title="A network did not answer, or a coin has no price just now. Refresh to try again.">some figures missing</span>}
+        </div>
+        <div className="wl-protect">
+          <ShieldIcon />
+          <div>Protected by your email sign-in.<br />Read-only access — this app can never move your funds.</div>
+        </div>
         <div className="wallet-actions">
           <button className="btn buy" onClick={toBuy}>Buy</button>
           <button className="btn ghost" onClick={() => { reload(); setBal(null); void loadBal(true); }}>↻ Refresh</button>
         </div>
       </div>
-      <div className="wl-list">
-        {mine.map((w) => <WalletRow key={w.chain} w={w} rows={bal === null ? undefined : bal[w.chain]} notify={notify} onDeposit={() => setDeposit(w)} />)}
+      <div className={`wl-grid${left && right.length ? "" : " one"}`}>
+        {left && <div className="wl-col">{card(left)}</div>}
+        {right.length > 0 && <div className="wl-col">{right.map(card)}</div>}
       </div>
       {empty && <p className="wl-hint small">Your wallets are empty. <button className="link-btn" onClick={toBuy}>Buy crypto</button>, or press Deposit to send some from an exchange or another wallet.</p>}
       {missing.length > 0 && <p className="muted tiny">Your {missing.map((k) => CHAIN_INFO[k].name).join(" and ")} {missing.length > 1 ? "wallets are" : "wallet is"} made the next time you sign in.</p>}
-      {deposit && <DepositModal wallet={deposit} sandbox={view.buying.mode === "sandbox"} onClose={() => setDeposit(null)} notify={notify} />}
+      {deposit && <DepositModal wallet={deposit} sandbox={sandbox} onClose={() => setDeposit(null)} notify={notify} />}
     </div>
   );
 }
-// One wallet: its coin's mark, name, short address (click to copy), what it holds (only what is not
-// zero; the Ethereum one can list every network), and Deposit.
-function WalletRow({ w, rows, notify, onDeposit }: { w: ChainWallet; rows: BalanceRow[] | undefined; notify: Notify; onDeposit: () => void }) {
+// One wallet: its mark, name, short address (copy; QR opens Deposit), Deposit, and what it holds on
+// each network it works on.
+function WalletCard({ w, rows, sandbox, notify, onDeposit }: { w: ChainWallet; rows: BalanceRow[] | undefined; sandbox: boolean; notify: Notify; onDeposit: () => void }) {
   const info = CHAIN_INFO[w.chain];
-  const [open, setOpen] = useState(false);
-  const held = (rows ?? []).filter((r) => (r.amount ?? 0) > 0);
-  const unread = rows !== undefined && rows.length > 0 && rows.every((r) => r.amount === null);
-  const onTest = rows !== undefined && rows.length === 1 && rows[0].test;
+  const label = (r: BalanceRow) =>
+    w.chain === "solana" ? (r.test || sandbox ? "Solana Devnet · Testnet" : "Solana Mainnet")
+      : w.chain === "bitcoin" ? "Bitcoin Mainnet"
+      : w.chain === "tron" ? (r.symbol === "USDT" ? "USDT (TRC-20)" : "TRX (Tron)")
+      : r.test ? "Sepolia · Testnet" : r.network;
+  const logo = (r: BalanceRow): LogoId | null => (w.chain === "ethereum" ? (r.test ? "test" : NET_LOGO[r.network] ?? null) : w.chain === "tron" && r.symbol === "USDT" ? "usdt" : null);
+  const real = (rows ?? []).filter((r) => !r.test), test = (rows ?? []).filter((r) => r.test);
+  const line = (r: BalanceRow) => {
+    const mark = logo(r);
+    return (
+      <div key={`${r.network}-${r.symbol}`} className="wc-row" title={typeof r.usd === "number" && r.amount ? fmtUsd(r.usd) : r.amount === null ? "The network did not answer just now. Try Refresh." : undefined}>
+        <span className="wc-net">{mark && <ChainLogo id={mark} size={20} />}{label(r)}</span>
+        <span className="wc-amt">{amountText(r.amount, r.symbol)}</span>
+      </div>
+    );
+  };
   return (
-    <div className="wl-row">
-      <div className={`wl-icon ${w.chain}`} aria-hidden="true">{info.glyph}</div>
-      <div className="wl-main">
-        <div className="wl-name">{info.name}</div>
-        <button className="wl-addr mono" onClick={() => void copy(w.address, notify)} title={`Copy the full address: ${w.address}`}>{shortAddress(w.address)} <span aria-hidden="true">⧉</span></button>
-        {w.chain === "ethereum" && <div className="wl-chips">{EVM_CHIPS.map(([n, c]) => <span key={n} className={`wl-chip ${c}`}>{n}</span>)}</div>}
-      </div>
-      <div className="wl-bal">
-        {rows === undefined ? (
-          <span className="muted tiny">Reading…</span>
-        ) : held.length ? (
-          held.map((r) => (
-            <div key={`${r.network}-${r.symbol}`}>
-              <b className="mono">{amountNum(r.amount!)}</b> {r.symbol}
-              {w.chain === "ethereum" && <span className="muted tiny"> on {r.test ? "Sepolia" : r.network}</span>}
-              {r.test && <span className="wl-test">test</span>}
-            </div>
-          ))
-        ) : (
-          <div title={unread ? "The network did not answer just now. Try Refresh." : undefined}>
-            <b className="mono">{unread ? "—" : "0"}</b> {info.coin}
-            {onTest && <span className="wl-test">test network</span>}
-          </div>
-        )}
-        {w.chain === "ethereum" && rows !== undefined && <button className="link-btn tiny" onClick={() => setOpen(!open)}>{open ? "Hide networks" : `All ${rows.length} networks`}</button>}
-      </div>
-      <div className="wl-actions">
-        <button className="btn ghost small" onClick={onDeposit}>Deposit</button>
-      </div>
-      {open && rows && (
-        <div className="wl-nets">
-          {rows.map((r) => (
-            <div key={`${r.network}-${r.symbol}`} className="chain-row">
-              <span className="muted">{r.network}{r.test && <span className="wl-test">test</span>}</span>
-              <span className="mono">{amountText(r.amount, r.symbol)}</span>
-            </div>
-          ))}
+    <div className={`wc ${w.chain}`}>
+      <div className="wc-head">
+        <ChainLogo id={w.chain} size={40} />
+        <div className="wc-id">
+          <div className="wc-name">{info.name}</div>
+          <span className="wc-addr">
+            <button className="mono" onClick={() => void copy(w.address, notify)} title={`Copy the full address: ${w.address}`}>{shortAddress(w.address)}</button>
+            <button onClick={() => void copy(w.address, notify)} title="Copy address" aria-label="Copy address"><CopyIcon /></button>
+            <button onClick={onDeposit} title="Show the QR code" aria-label="Show the QR code"><QrIcon /></button>
+          </span>
         </div>
-      )}
+        <button className="btn ghost small wc-deposit" onClick={onDeposit}>Deposit</button>
+      </div>
+      <div className="wc-rows">
+        {rows === undefined ? <span className="muted tiny">Reading balances…</span> : <>
+          {real.map(line)}
+          {test.length > 0 && real.length > 0 && <div className="wc-sep" />}
+          {test.map(line)}
+        </>}
+      </div>
     </div>
   );
 }

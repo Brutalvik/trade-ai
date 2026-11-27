@@ -17,7 +17,7 @@ import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import * as moonpay from "./moonpay.js";
 import * as moonwallet from "./moonwallet.js";
-import { balances as chainBalances } from "./chainbal.js";
+import { balances as chainBalances, totalUsd as chainTotal } from "./chainbal.js";
 import * as wallettx from "./wallettx.js";
 import { searchCoins, coinList } from "./lists.js";
 import { AGENT_PASS, scanAgents } from "./agents.js";
@@ -316,7 +316,8 @@ app.get("/api/moonpay/balances", signedIn(async (req, res) => {
   try {
     const a = (await auth.requestAuth(req))!;
     res.setHeader("Cache-Control", "no-store");
-    res.json({ balances: await chainBalances(await moonwallet.myWallets(a.key), moonpay.config().mode !== "live", req.query.fresh === "1") });
+    const balances = await chainBalances(await moonwallet.myWallets(a.key), moonpay.config().mode !== "live", req.query.fresh === "1");
+    res.json({ balances, ...chainTotal(balances) });
   } catch (e) {
     txError(res, e);
   }

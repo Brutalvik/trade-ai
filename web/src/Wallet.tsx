@@ -1,13 +1,10 @@
-// The wallet window, opened from the wallet button in the header. Real mode: the customer's
-// MoonPay wallet, buying with MoonPay, and every real-money transaction (MoonPay.tsx). An account
-// that had a wallet before MoonPay (made by Privy, no longer used) sees it under "Previous wallet",
-// view only: nothing in the app can sign for it any more.
-import { useEffect, useState } from "react";
-import { api, fmtPct, fmtPrice, fmtUsd, type AppState, type WalletView } from "./api";
+// The wallet window, opened from the wallet button in the header. Real mode: the customer's own
+// wallets, buying, and every real-money transaction (MoonPay.tsx). Paper mode: the paper account.
+import { useState } from "react";
+import { fmtPct, fmtPrice, fmtUsd, type AppState } from "./api";
 import { Modal, useAccess } from "./Account";
 import { MoonPayPanel } from "./MoonPay";
 
-const fmtAmount = (n: number) => (n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n >= 1 ? n.toFixed(4) : n.toPrecision(4));
 
 // Header button where the PAPER MODE chip used to be: wallet icon plus the current mode.
 export function WalletButton({ notify, state }: { notify: (m: string, bad?: boolean) => void; state: AppState | null }) {
@@ -34,7 +31,7 @@ function WalletModal({ notify, state, onClose }: { notify: (m: string, bad?: boo
   const real = me?.tradeMode === "real";
   return (
     <Modal title="Wallet" onClose={onClose} wide>
-      {real ? <MoonPayPanel notify={notify} previous={me?.solanaAddress ? <SolanaWallet notify={notify} /> : null} /> : <PaperAccount state={state} />}
+      {real ? <MoonPayPanel notify={notify} /> : <PaperAccount state={state} />}
     </Modal>
   );
 }
@@ -87,78 +84,4 @@ function PaperAccount({ state }: { state: AppState | null }) {
       <p className="muted tiny">Practice money only: nothing real is bought or sold.</p>
     </div>
   );
-}
-
-function SolanaWallet({ notify }: { notify: (m: string, bad?: boolean) => void }) {
-  const { me } = useAccess();
-  const [view, setView] = useState<WalletView | null>(null);
-  const [err, setErr] = useState("");
-  const [loading, setLoading] = useState(false);
-  const load = (fresh = false) => {
-    setLoading(true);
-    setErr("");
-    api.wallet(fresh).then(setView).catch((e) => setErr(e.message)).finally(() => setLoading(false));
-  };
-  useEffect(() => {
-    if (me) load();
-  }, [me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const address = view?.address ?? me?.solanaAddress ?? null;
-  return (
-    <>
-      {!address ? (
-        <p className="muted small">This account has no wallet from before MoonPay.</p>
-      ) : (
-        <div className="wallet-tab">
-          <div className="wallet-head">
-            <div>
-              <div className="label-sm">Previous wallet · Solana · view only</div>
-              <div className="wallet-total">{view ? fmtUsd(view.totalUsd) : "…"}</div>
-              <button className="link-btn mono small" onClick={() => void copy(address, notify)} title="Copy the full address">{address.slice(0, 6)}…{address.slice(-6)} ⧉</button>
-            </div>
-            <div className="wallet-actions">
-              <button className="btn ghost" onClick={() => load(true)} disabled={loading}>{loading ? "Refreshing…" : "↻ Refresh"}</button>
-            </div>
-          </div>
-          <p className="small down">
-            Your wallet from before MoonPay (made by Privy, which this app no longer uses). The app can't
-            send from it any more, so don't send money to it. Your wallet is in the first tab.
-          </p>
-          {err && <p className="down small">{err}</p>}
-          {view && (
-            <div className="table-wrap">
-              <table className="scan wallet-table">
-                <thead><tr><th>Token</th><th className="num col-amount">Amount</th><th className="num col-price">Price</th><th className="num">Value</th></tr></thead>
-                <tbody>
-                  {view.holdings.map((h) => (
-                    <tr key={h.mint + h.symbol}>
-                      <td>
-                        <div className="token-cell">
-                          {h.imageUrl ? <img src={h.imageUrl} alt="" /> : <span className="dot" />}
-                          <span><b>{h.symbol}</b><div className="muted tiny">{h.name}</div><div className="muted tiny mono amount-under">{fmtAmount(h.amount)} {h.symbol}</div></span>
-                        </div>
-                      </td>
-                      <td className="num col-amount">{fmtAmount(h.amount)}</td>
-                      <td className="num col-price">{h.priceUsd === null ? "–" : fmtPrice(h.priceUsd)}</td>
-                      <td className="num">{h.valueUsd === null ? "–" : fmtUsd(h.valueUsd)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="muted tiny">Updated {new Date(view.updatedAt).toLocaleTimeString()}{view.rpc === "public" ? " · using the public Solana network connection (can be slow)" : ""}</p>
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-}
-
-async function copy(text: string, notify: (m: string, bad?: boolean) => void) {
-  try {
-    await navigator.clipboard.writeText(text);
-    notify("Wallet address copied");
-  } catch {
-    notify(text);
-  }
 }

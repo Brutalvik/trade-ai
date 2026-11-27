@@ -137,6 +137,8 @@ expect("an account with only a Solana wallet gets the kinds MoonPay made later, 
 people.mx_dot = { status: "active", wallets: [] };
 const dot = await call("/api/auth/moonpay-complete", { ...tokens("mx_dot", "dot@example.test"), username: "dot", firstName: "Dot", lastName: "C" });
 expect("when MoonPay has made none yet, connecting says to try again", (await call("/api/moonpay/wallet/sync", tokens("mx_dot", "dot@example.test"), dot.cookie)).body.error, "Your wallets have not been made yet. Try again in a moment.");
+expect("Real mode: an account with its own wallets on file can switch to it", (await call("/api/auth/trade-mode", { mode: "real" }, cat.cookie)).body.user?.tradeMode, "real");
+expect("...one without them cannot, and is told how to finish making them", (await call("/api/auth/trade-mode", { mode: "real" }, dot.cookie)).body.error, "Your wallets aren't made yet: open Wallet and sign in once to finish making them, then try again.");
 delete process.env.MOONX_PUBLISHABLE_KEY;
 expect("real trades: with MoonPay wallets switched off, from no wallet at all", await rw(bob.cookie), [null, null]);
 expect("switched off, a MoonPay sign-in says so plainly", await err(tokens("mx_ada", "ada@example.test")), "Signing in with MoonPay is not switched on. MoonPay wallets are not set up (no MOONX_PUBLISHABLE_KEY).");

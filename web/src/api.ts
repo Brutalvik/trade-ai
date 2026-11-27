@@ -208,7 +208,7 @@ export type MoonWallet = { address: string; chain: "solana"; via: string; moonxU
 export const WALLET_KINDS = ["solana", "ethereum", "bitcoin", "tron"] as const;
 export type WalletChain = (typeof WALLET_KINDS)[number];
 export type ChainWallet = { address: string; chain: WalletChain; via: string; moonxUserId: string | null; at: number };
-export type BalanceRow = { network: string; symbol: string; amount: number | null; test?: boolean };
+export type BalanceRow = { network: string; symbol: string; amount: number | null; usd?: number | null; test?: boolean };
 export type BuyOptions = { coins: { id: string; label: string; wallet?: WalletChain }[]; fiats: { code: string; min: number; max: number }[] };
 export type MoonWalletView = { wallet: MoonWallet | null; all?: ChainWallet[]; wallets: MoonWalletsStatus; buying: MoonPayStatus; options: BuyOptions | null; buyInto: { address: string; which: "moonpay" | "current-test" } | null; balance: { sol: number | null; network: string } | null };
 
@@ -216,7 +216,7 @@ export const api = {
   walletTxs: (before?: number) => req<{ transactions: WalletTx[]; moonpay: MoonPayStatus }>(`/wallet/transactions?limit=50${before ? `&before=${before}` : ""}`),
   walletTx: (id: string) => req<{ tx: WalletTx; events: WalletTxEvent[] }>(`/wallet/transactions/${encodeURIComponent(id)}`),
   moonWallet: () => req<MoonWalletView>("/moonpay/wallet"),
-  moonBalances: (fresh = false) => req<{ balances: Partial<Record<WalletChain, BalanceRow[]>> }>(`/moonpay/balances${fresh ? "?fresh=1" : ""}`),
+  moonBalances: (fresh = false) => req<{ balances: Partial<Record<WalletChain, BalanceRow[]>>; totalUsd?: number; complete?: boolean }>(`/moonpay/balances${fresh ? "?fresh=1" : ""}`),
   moonSession: () => req<{ sessionToken: string }>("/moonpay/session", {}),
   moonChallenge: () => req<{ message: string; expiresAt: number }>("/moonpay/wallet/challenge", {}),
   moonProve: (body: { address: string; signature: string; accessToken: string; identityToken: string }) => req<{ wallet: MoonWallet }>("/moonpay/wallet/prove", body),

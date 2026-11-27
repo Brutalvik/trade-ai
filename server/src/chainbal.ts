@@ -3,7 +3,7 @@
 // does not answer shows no figure (null), never a made-up zero.
 import type { Chain, ChainWallet } from "./moonwallet.js";
 
-export type BalanceRow = { network: string; symbol: string; amount: number | null; test?: boolean };
+export type BalanceRow = { network: string; symbol: string; amount: number | null; usd?: number | null; test?: boolean };
 
 // The Ethereum wallet's one address works on all of these (the "EVM" networks), each with its own coin.
 export const EVM_NETWORKS = [
@@ -27,6 +27,41 @@ let get = async (url: string, init?: RequestInit): Promise<any> => {
 export function __setFetchForTests(f: (url: string, init?: RequestInit) => Promise<any>) {
   get = f;
   cache.clear();
+  priceCache = null;
+}
+
+// Dollar prices: Coinbase's public rates (one call for all the coins), TRX from OKX (Coinbase has
+// none). Kept a minute. A coin with no price counts as unknown in the total, never as zero.
+let priceCache: { at: number; px: Record<string, number> } | null = null;
+export async function usdPrices(): Promise<Record<string, number>> {
+  if (priceCache && Date.now() - priceCache.at < 60_000) return priceCache.px;
+  const px: Record<string, number> = {};
+  try {
+    const rates = (await get("https://api.coinbase.com/v2/exchange-rates?currency=USD"))?.data?.rates ?? {};
+    for (const sym of ["SOL", "ETH", "BNB", "POL", "AVAX", "BTC", "USDT", "USDC"]) {
+      const r = Number(rates[sym]);
+      if (r > 0) px[sym] = 1 / r;
+    }
+  } catch { /* no prices from Coinbase just now */ }
+  try {
+    const last = Number((await get("https://www.okx.com/api/v5/market/ticker?instId=TRX-USDT"))?.data?.[0]?.last);
+    if (last > 0) px.TRX = last * (px.USDT ?? 1);
+  } catch { /* no TRX price just now */ }
+  if (Object.keys(px).length) priceCache = { at: Date.now(), px };
+  return px;
+}
+// The dollar value of everything in the wallets. Test coins are worth nothing and are left out.
+// complete = false when a network did not answer or a coin held has no price (the total is then a floor).
+export function totalUsd(b: Partial<Record<Chain, BalanceRow[]>>): { totalUsd: number; complete: boolean } {
+  let total = 0, complete = true;
+  for (const rows of Object.values(b)) for (const r of rows ?? []) {
+    if (r.test) continue;
+    if (r.amount === null) { complete = false; continue; }
+    if (r.amount === 0) continue;
+    if (typeof r.usd === "number") total += r.usd;
+    else complete = false;
+  }
+  return { totalUsd: Math.round(total * 100) / 100, complete };
 }
 const safe = async (f: () => Promise<number | null>): Promise<number | null> => {
   try {
@@ -77,6 +112,7 @@ async function rowsFor(w: ChainWallet, sandbox: boolean): Promise<BalanceRow[]> 
 const cache = new Map<string, { at: number; rows: BalanceRow[] }>();
 export async function balances(wallets: ChainWallet[], sandbox: boolean, fresh = false): Promise<Partial<Record<Chain, BalanceRow[]>>> {
   const out: Partial<Record<Chain, BalanceRow[]>> = {};
+  const pricesP = usdPrices().catch(() => ({} as Record<string, number>));
   await Promise.all(wallets.map(async (w) => {
     const k = `${w.chain}:${w.address}:${sandbox}`;
     const hit = cache.get(k);
@@ -85,5 +121,8 @@ export async function balances(wallets: ChainWallet[], sandbox: boolean, fresh =
     if (rows.some((r) => r.amount !== null)) cache.set(k, { at: Date.now(), rows });
     out[w.chain] = rows;
   }));
+  const px = await pricesP;
+  for (const rows of Object.values(out)) for (const r of rows ?? [])
+    r.usd = r.test || r.amount === null || px[r.symbol] === undefined ? null : Math.round(r.amount * px[r.symbol] * 100) / 100;
   return out;
 }

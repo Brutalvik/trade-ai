@@ -327,7 +327,8 @@ export async function setTradeMode(req: Request, res: Response) {
   }
   const mode = req.body?.mode;
   if (mode !== "paper" && mode !== "real") throw new Error("Pick Paper or Real");
-  if (mode === "real" && !user.solanaAddress) throw new Error("Your wallet isn't ready yet. Sign out and back in, then try again.");
+  // Real needs the customer's own wallet on file (made with their MoonPay sign-in), not a wallet from before.
+  if (mode === "real" && !(await moonwallet.myWallet(user.username.toLowerCase()))) throw new Error("Your wallets aren't made yet: open Wallet and sign in once to finish making them, then try again.");
   const from = user.tradeMode === "real" ? "real" : "paper";
   if (from === mode) return { user: { ...pub(user), owner: true } };
   const updated: User = { ...user, tradeMode: mode };

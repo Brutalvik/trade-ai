@@ -1397,39 +1397,40 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .mp .tabs { margin-bottom: 12px; }
 .mp-sandbox { color: var(--amber); background: rgba(255, 200, 87, 0.07); border: 1px solid rgba(255, 200, 87, 0.28); border-radius: 10px; padding: 7px 10px; margin: 0 0 12px; }
 .mp-card { border: 1px solid rgba(0, 229, 255, 0.14); background: rgba(0, 229, 255, 0.03); border-radius: 14px; padding: 14px 16px; }
-/* The four wallets: one row each (coin mark, name and short address, what it holds, Deposit) */
-.wallets-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.wallets-top p { margin: 0; }
-.wl-list { display: flex; flex-direction: column; border: 1px solid rgba(0, 229, 255, 0.14); border-radius: 14px; background: rgba(0, 229, 255, 0.025); overflow: hidden; }
-.wl-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: center; gap: 6px 16px; padding: 14px 18px; }
-.wl-row + .wl-row { border-top: 1px solid rgba(255, 255, 255, 0.06); }
-.wl-row:hover { background: rgba(0, 229, 255, 0.03); }
-.wl-icon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-size: 19px; font-weight: 700; color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15); }
-.wl-icon.solana { background: linear-gradient(135deg, #9945ff, #14f195); }
-.wl-icon.ethereum { background: linear-gradient(135deg, #8aa2ff, #627eea); }
-.wl-icon.bitcoin { background: linear-gradient(135deg, #ffb347, #f7931a); }
-.wl-icon.tron { background: linear-gradient(135deg, #ff5a6e, #eb0029); }
-.wl-main { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.wl-name { font-weight: 700; color: var(--text); font-size: 14.5px; }
-.wl-addr { background: none; border: 0; padding: 0; color: var(--cyan); cursor: pointer; font-size: 12.5px; }
-.wl-addr:hover { text-decoration: underline; }
-.wl-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.wl-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; line-height: 1.6; padding: 0 8px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.1); color: #c6d2f0; }
-.wl-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--chip, #8a94b8); }
-.wl-chip.eth { --chip: #627eea; } .wl-chip.bnb { --chip: #f0b90b; } .wl-chip.base { --chip: #0052ff; } .wl-chip.pol { --chip: #8247e5; }
-.wl-chip.arb { --chip: #28a0f0; } .wl-chip.op { --chip: #ff0420; } .wl-chip.avax { --chip: #e84142; }
-.wl-bal { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; white-space: nowrap; font-size: 13px; color: #c6d2f0; }
-.wl-bal b { font-size: 15px; color: var(--text); font-weight: 600; }
-.wl-test { margin-left: 6px; font-size: 10px; padding: 0 6px; border-radius: 999px; color: var(--amber); border: 1px solid rgba(255, 200, 87, 0.35); vertical-align: middle; }
-.wl-nets { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; padding: 10px 12px; margin-top: 4px; border-radius: 10px; background: rgba(0, 0, 0, 0.25); }
-.chain-row { display: flex; justify-content: space-between; gap: 8px; }
-.wl-hint { margin: 10px 2px 0; color: #c6d2f0; }
-@media (max-width: 640px) {
-  .wallets-top { flex-direction: column; align-items: stretch; }
-  .wl-row { grid-template-columns: 36px minmax(0, 1fr) auto; padding: 12px; }
-  .wl-icon { width: 36px; height: 36px; font-size: 17px; }
-  .wl-actions { grid-column: 2 / -1; }
-  .wl-actions .btn { width: 100%; }
+/* The four wallets: total balance, then Ethereum & EVM on the left and Solana, Bitcoin, Tron on the right */
+.wl-summary { display: flex; align-items: center; gap: 18px; margin-bottom: 14px; }
+.wl-total { display: flex; flex-direction: column; gap: 2px; padding-right: 18px; border-right: 1px solid rgba(255, 255, 255, 0.1); }
+.wl-total small { font-size: 12.5px; color: #aab4d4; }
+.wl-total b { font-size: 26px; line-height: 1.1; color: var(--text); font-weight: 700; letter-spacing: 0.2px; }
+.wl-protect { display: flex; align-items: center; gap: 12px; flex: 1; color: #c6d2f0; font-size: 13px; line-height: 1.45; }
+.wl-protect svg { color: #aab4d4; flex: none; }
+.wl-summary .wallet-actions .btn { min-height: 38px; }
+.wl-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.wl-grid.one { grid-template-columns: minmax(0, 1fr); }
+.wl-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.wc { border-radius: 14px; padding: 14px 16px; background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)); border: 1px solid rgba(255, 255, 255, 0.09); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); min-width: 0; }
+.wc-head { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.wc-head > svg { flex: none; }
+.wc-id { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.wc-name { font-weight: 700; font-size: 15.5px; color: var(--text); }
+.wc-addr { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); color: #c6d2f0; font-size: 12.5px; }
+.wc-addr button { background: none; border: 0; color: inherit; cursor: pointer; padding: 2px 4px; border-radius: 5px; display: inline-flex; align-items: center; font-size: inherit; }
+.wc-addr button:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+.wc-deposit.btn { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.14); color: var(--text); }
+.wc-deposit.btn:hover { background: rgba(255, 255, 255, 0.12); }
+.wc-rows { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; }
+.wc-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 14px; }
+.wc-net { display: inline-flex; align-items: center; gap: 10px; color: #d6def5; min-width: 0; }
+.wc-net svg { flex: none; }
+.wc-amt { color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wc-sep { height: 1px; background: rgba(255, 255, 255, 0.08); margin: 6px 0; }
+.wl-hint { margin: 12px 2px 0; color: #c6d2f0; }
+@media (max-width: 760px) {
+  .wl-summary { flex-wrap: wrap; }
+  .wl-total { border-right: 0; padding-right: 0; }
+  .wl-protect { flex-basis: 100%; order: 3; }
+  .wl-summary .wallet-actions { margin-left: auto; }
+  .wl-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .mp-card h3 { margin: 0 0 6px; font-size: 15px; }
 .mp-form { display: grid; gap: 10px; margin: 12px 0 8px; max-width: 420px; }

@@ -536,11 +536,11 @@ function TopBar({ status, state, onSelect, notify, refresh }: { status: Status |
 
   const { me } = useAccess();
   const real = me?.tradeMode === "real";
-  // Real mode: the header shows your own wallet's value instead of the paper equity.
+  // Real mode: the header shows the dollar value of your own wallets (all four) instead of the paper equity.
   const [walletUsd, setWalletUsd] = useState<number | null>(null);
   useEffect(() => {
     if (!real) return setWalletUsd(null);
-    const load = () => api.wallet().then((w) => setWalletUsd(w.totalUsd)).catch(() => {});
+    const load = () => api.moonBalances().then((w) => setWalletUsd(w.totalUsd ?? null)).catch(() => {});
     load();
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);

@@ -1,7 +1,7 @@
 // Header controls: Settings (wrench) and the account (sign in / profile).
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, fmtPrice, fmtUsd, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type Trade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
+import { api, fmtPrice, fmtUsd, SIGNIN_EVENT, type AdminUser, type AppState, type AuditEntry, type Trade, type RealTrade, type Permission, type PlanExtras, type PlanId, type PlanInfo, type User } from "./api";
 
 // ---------- Shared modal ----------
 
@@ -288,6 +288,19 @@ function AuthModal({ onClose, onDone }: { onClose: () => void; onDone: (u: User)
 export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOutOverride }: { user: User; state: AppState | null; onClose: () => void; onSignedOut: () => void; notify: (m: string, bad?: boolean) => void; signOutOverride?: () => Promise<void> }) {
   const access = useAccess();
   const [activityOpen, setActivityOpen] = useState(false);
+  // Paper and Real are kept apart: Paper shows the paper account, Real shows the customer's own
+  // wallets and their real trades only (never paper figures).
+  const real = (access.me?.tradeMode ?? user.tradeMode) === "real";
+  const [realView, setRealView] = useState<{ totalUsd: number | null; complete: boolean; trades: RealTrade[] | null } | null>(null);
+  useEffect(() => {
+    if (!real) return setRealView(null);
+    let live = true;
+    Promise.all([
+      api.moonBalances().then((r) => ({ totalUsd: r.totalUsd ?? null, complete: r.complete !== false })).catch(() => ({ totalUsd: null, complete: false })),
+      api.realTrades(200).catch(() => null),
+    ]).then(([b, trades]) => live && setRealView({ ...b, trades }));
+    return () => void (live = false);
+  }, [real]);
   // This login's own paper account at a glance.
   const acc = state && !state.signedOut ? state : null;
   const eq = acc?.equityNow ?? 0;
@@ -320,15 +333,6 @@ export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOu
     await api.signOut().catch(() => {});
     onSignedOut();
   };
-  const copyWallet = async () => {
-    if (!user.solanaAddress) return;
-    try {
-      await navigator.clipboard.writeText(user.solanaAddress);
-      notify("Wallet address copied");
-    } catch {
-      notify(user.solanaAddress);
-    }
-  };
   return (
     <Modal title="Profile" onClose={onClose} narrow foot={<button className="btn ghost" onClick={signOut}>Sign out</button>}>
       <div className="profile-hero">
@@ -340,7 +344,9 @@ export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOu
         </div>
       </div>
 
-      {acc && (
+      {real ? (
+        <RealStats view={realView} />
+      ) : acc && (
         <div className="profile-stats">
           <div><small>Equity</small><b>{fmtUsd(eq)}</b></div>
           <div><small>Since start</small><b className={pnl >= 0 ? "up" : "down"}>{pnl >= 0 ? "+" : ""}{fmtUsd(pnl)}<em>{pnl >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%</em></b></div>
@@ -362,10 +368,11 @@ export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOu
         <div><dt>Username</dt><dd>@{user.username} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Name</dt><dd>{user.firstName} {user.lastName} <span className="lock" title="Can't be changed">🔒</span></dd></div>
         <div><dt>Email</dt><dd>{user.email}</dd></div>
-        <div><dt>Wallet (Solana)</dt><dd>{user.solanaAddress ? <button className="link-btn mono" onClick={() => void copyWallet()} title="Copy the full address">{user.solanaAddress.slice(0, 6)}…{user.solanaAddress.slice(-4)} ⧉</button> : "Not created yet"}</dd></div>
-        <div><dt>Started with</dt><dd>{acc ? fmtUsd(acc.startCash) : "–"}</dd></div>
+        {!real && <div><dt>Started with</dt><dd>{acc ? fmtUsd(acc.startCash) : "–"}</dd></div>}
       </dl>
-      <p className="muted tiny">Your paper account is yours alone: other logins have their own balance, trades and bot.</p>
+      <p className="muted tiny">{real
+        ? "Real mode shows your own wallets and your real trades only. Your paper account is kept apart and does not change."
+        : "Your paper account is yours alone: other logins have their own balance, trades and bot."}</p>
       {user.hasPassword === false ? null : !resetting ? (
         <button className="btn ghost" onClick={() => setResetting(true)}>🔑 Reset password</button>
       ) : (
@@ -385,6 +392,21 @@ export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOu
   );
 }
 
+
+// Real mode in the profile: the dollar value of the customer's own wallets and their real trades.
+function RealStats({ view }: { view: { totalUsd: number | null; complete: boolean; trades: RealTrade[] | null } | null }) {
+  const done = view?.trades?.filter((t) => t.status === "Success") ?? [];
+  const buys = done.filter((t) => t.side === "BUY").length, sells = done.length - buys;
+  const volume = done.reduce((sum, t) => sum + (t.usd ?? 0), 0);
+  return (
+    <div className="profile-stats">
+      <div><small>Wallet balance</small><b>{view === null ? "…" : view.totalUsd === null ? "—" : fmtUsd(view.totalUsd)}<em>{view && !view.complete ? "some figures missing" : "all your wallets"}</em></b></div>
+      <div><small>Real trades</small><b>{view?.trades ? done.length : "…"}<em>{done.length ? `${buys} bought · ${sells} sold` : "none yet"}</em></b></div>
+      <div><small>Traded</small><b>{view?.trades ? fmtUsd(volume) : "…"}<em>in real trades</em></b></div>
+      <div><small>Auto-pilot</small><b>Off<em>for real money: not on yet</em></b></div>
+    </div>
+  );
+}
 
 // Paper or Real: which money the app shows and trades. Going Real asks for a clear "I understand".
 function TradeModeSwitch({ user, notify }: { user: User; notify: (m: string, bad?: boolean) => void }) {
@@ -431,7 +453,7 @@ function TradeModeSwitch({ user, notify }: { user: User; notify: (m: string, bad
           <button className="btn ghost" onClick={() => setConfirming(false)}>Stay on Paper</button>
           <button className="btn sell" disabled={busy} onClick={() => void save("real")}>{busy ? "Switching…" : "I understand"}</button>
         </>}>
-          <p>Real mode uses the money in <b>your own wallet</b>{user.solanaAddress ? <> (<span className="mono">{user.solanaAddress.slice(0, 4)}…{user.solanaAddress.slice(-4)}</span>)</> : null}, not practice money.</p>
+          <p>Real mode uses the money in <b>your own wallets</b>, not practice money.</p>
           <ul className="small deposit-notes">
             <li>Crypto prices move fast. You can lose some or all of what you trade.</li>
             <li>The AI's plans are estimates, not promises, and not financial advice.</li>
