@@ -20,6 +20,7 @@ import { STEP_BOT } from "./api";
 import { Pipeline } from "./Pipeline";
 import { MaCrossChips } from "./MaCross";
 import { pnlText, showTab, tabTone } from "./tabTitle";
+import { AutopilotPanel } from "./Autopilot";
 
 const TFS: Timeframe[] = ["1s", "5s", "1m", "5m", "15m", "1h", "4h", "1d"];
 const isSeconds = (tf: Timeframe) => tf === "1s" || tf === "5s";
@@ -470,7 +471,7 @@ export default function App() {
 
         <aside className="side right">
           {me?.tradeMode === "real" ? <RealTradePanel pair={pair} notify={notify} /> : <TradePanel pair={pair} state={state} notify={notify} refresh={() => api.state().then(setState)} />}
-          {me?.tradeMode === "real" && <RealModeNotice what="bot" botRunning={allBots(state).some((b) => b.bot.running)} onPaper={toPaper} />}
+          {me?.tradeMode === "real" && <AutopilotPanel notify={notify} onPaper={toPaper} />}
           {hiddenParts.includes("aiSignal") ? null : demo ? <DemoSignal pair={pair} price={candles.at(-1)?.close ?? pair?.priceUsd} /> : <SignalPanel pair={pair} tf={tf} sig={sig} results={results} cost={state?.roundTripCostPct ?? 3} onResult={gotAnalysis} price={candles.at(-1)?.close ?? pair?.priceUsd} botOnThisCoin={botOnThisCoin} botPlanning={botPlanning} botPaused={botPausedHere} analyzedAt={shownPlan?.at} patterns={shownPlan?.patterns} maCross={shownPlan?.maCross} notify={notify} hasAI={!!(status?.claude || status?.openai)} multi={!!(status?.claude && status?.openai)} botMinWin={botHere?.bot.running && botHere.bot.config ? (botHere.bot.config.allowRisky ? Math.min(botHere.bot.config.minConfidence, botHere.bot.config.riskyMinWin ?? 30) : botHere.bot.config.minConfidence) : undefined} botWaitForHold={botHere?.bot.running ? botHere.bot.config?.waitForHold : undefined} />}
           {me?.tradeMode === "real" ? null : (
             <AgentsPanel state={state} limit={me?.botLimit ?? (access.can("bot.run") ? 1 : 0)} notify={notify} refresh={() => api.state().then(setState)} onOpen={openPool} defaults={AGENT_DEFAULTS} request={agentReq} onRequestDone={() => setAgentReq(null)} />
@@ -1713,8 +1714,6 @@ function BotLog({ state }: { state: AppState | null }) {
   );
 }
 
-// Real mode: trading and the bot with your own wallet aren't switched on yet, so nothing
-// pretends to trade real money. The paper bot (if on) keeps running in the background.
 // Real mode's Trade history: swaps from your own wallet, each with its Solscan link.
 function RealTrades({ notify }: { notify: (m: string, bad?: boolean) => void }) {
   const [rows, setRows] = useState<RealTrade[] | null>(null);
@@ -1752,19 +1751,6 @@ function RealTrades({ notify }: { notify: (m: string, bad?: boolean) => void }) 
   );
 }
 
-function RealModeNotice({ what, botRunning, onPaper }: { what: "trade" | "bot"; botRunning?: boolean; onPaper: () => void }) {
-  return (
-    <section className="panel real-notice">
-      <div className="real-notice-head">
-        <h3>{what === "trade" ? "Trade" : "Auto-Pilot"}</h3>
-        <span className="mode-pill">Real mode</span>
-      </div>
-      <p>{what === "trade" ? "Buying and selling with your own wallet unlocks in the next update." : "Automated wallet trading unlocks in a future update with customizable risk limits."}</p>
-      {what === "bot" && botRunning && <p className="muted small">Your paper agents keep running on the paper account.</p>}
-      <button className="btn ghost wide" onClick={onPaper}>Switch to Paper Mode</button>
-    </section>
-  );
-}
 // A centred note for an empty list (the owner's mockup).
 function EmptyState({ title, line }: { title: string; line: string }) {
   return (

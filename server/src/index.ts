@@ -16,6 +16,7 @@ import { logHistory } from "./botlog.js";
 import { rpcHealth, walletView } from "./wallet.js";
 import * as live from "./live.js";
 import * as send from "./send.js";
+import * as autopilot from "./autopilot.js";
 import * as moonpay from "./moonpay.js";
 import * as fx from "./fx.js";
 import * as moonwallet from "./moonwallet.js";
@@ -129,6 +130,7 @@ app.get("/api/status", async (req, res) => {
       storageStats: engine.storageStats(), // calls and bytes to the storage since this server copy started
       moonpay: moonpay.publicStatus(), // on or off and why (never a key; the publishable key is public by design)
       moonpayWallets: moonwallet.moonxStatus(), // the same for MoonPay's wallets
+      autopilot: autopilot.autopilotConfig(), // the real-money auto-pilot: on, or why not
       node: process.versions.node, // MoonPay's wallet pre-generation needs Node 22 or later
       // Only when storage isn't working: names (not values) of database settings the server can see.
       ...(engine.storeKind() === "temp" || storageError ? { storageEnvNames: storageEnvNames() } : {}),
@@ -226,6 +228,28 @@ app.get("/api/plans", (_req, res) => void res.json(publicPlans()));
 // Permanent history: your activity (consents, bot, AI use, account) and every trade.
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
 // Your real Solana wallet (read-only): SOL and token balances with USD values.
+// ---------- The real-money auto-pilot (autopilot.ts) ----------
+// Its agent's trades are copied with real money, within the customer's limits.
+engine.onRealTrade(autopilot.onAgentTrade);
+const ap = (fn: (a: Signed, req: Request) => Promise<unknown>) => signedIn(async (req, res) => {
+  try {
+    await engine.ensureStore();
+    const a = (await auth.requestAuth(req))!;
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await fn(a, req));
+  } catch (e: any) {
+    if (res.statusCode < 400) res.status(400);
+    res.json({ error: e?.message ?? String(e) });
+  }
+});
+app.get("/api/autopilot", ap((a) => autopilot.status(a.key)));
+app.post("/api/autopilot/allow/start", ap((a) => autopilot.grantStart(a.key)));
+app.post("/api/autopilot/allow/finish", ap((a, req) => autopilot.grantFinish(a.key, { email: a.user.email, moonxId: a.user.moonxId }, req.body ?? {})));
+app.post("/api/autopilot/revoke", ap((a) => autopilot.revoke(a.key, { plan: a.plan, role: a.role })));
+app.post("/api/autopilot/limits", ap((a, req) => autopilot.setLimits(a.key, req.body ?? {})));
+app.post("/api/autopilot/start", ap((a) => autopilot.start(a.key, { plan: a.plan, role: a.role }, a.user)));
+app.post("/api/autopilot/stop", ap((a) => autopilot.stop(a.key, "Stopped by you", { plan: a.plan, role: a.role })));
+
 // Real trades from the user's own wallet (Jupiter): quote -> user signs in the browser -> execute.
 // The wallet they trade from: their MoonPay wallet on file (MoonPay wallets on). The server decides;
 // the quote names it, and the browser signs with that wallet only. A wallet from before MoonPay
@@ -495,7 +519,14 @@ app.post("/api/auth/moonpay-login", authRoute(auth.moonpayLogin));
 app.post("/api/auth/moonpay-complete", authRoute(auth.moonpayCompleteProfile));
 app.post("/api/moonpay/wallet/sync", authRoute(auth.moonpayWalletSync));
 app.post("/api/auth/password", authRoute(auth.changePassword));
-app.post("/api/auth/trade-mode", authRoute(auth.setTradeMode));
+// Switching to Paper also stops the real auto-pilot (it sells what it holds first).
+app.post("/api/auth/trade-mode", async (req, res) => {
+  if (req.body?.mode === "paper") {
+    const a = await auth.requestAuth(req).catch(() => null);
+    if (a && (await autopilot.status(a.key).catch(() => null))?.on) await autopilot.stop(a.key, "Switched to Paper", { plan: a.plan, role: a.role }).catch((e) => console.error("[autopilot] stop on Paper:", e));
+  }
+  return authRoute(auth.setTradeMode)(req, res);
+});
 app.post("/api/auth/prefs", authRoute(auth.setPrefs));
 // The currencies the app can show money in, with their rates against the US dollar (fx.ts).
 app.get("/api/currencies", async (_req, res) => {
@@ -586,6 +617,8 @@ app.get("/api/bot/tick", async (req, res) => {
     waitUntil(work);
     // Customers' MoonPay purchases that are not finished: asked about again (does nothing while MoonPay is not set up).
     waitUntil(moonpay.reconcile(15_000).catch((e) => console.error("[moonpay] check failed:", e?.message ?? e)));
+    // The real auto-pilot: sales that did not go through are tried again; a pause for the day ends.
+    waitUntil(autopilot.everyMinute().catch((e) => console.error("[autopilot] every minute:", e?.message ?? e)));
     res.json({ ok: true, started: true, accounts: (await engine.activeAccounts()).length });
   } catch (e) {
     // The storage is not answering. Said in a normal reply, not as a failed call: a scheduler

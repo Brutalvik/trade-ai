@@ -179,7 +179,7 @@ export function GuidePage({ plans, onClose }: { plans: PlanInfo[]; onClose: () =
           <ul>
             <li><b>Your wallet</b>: a Solana wallet made for you by MoonPay when you sign up, secured by MoonPay with your sign-in. Open it from the wallet icon in the header to see your balance and address, buy crypto or deposit. Send only Solana-network funds to it.</li>
             <li><b>You approve every trade</b>: each buy or sell is a Jupiter swap you review and sign. Once confirmed on the blockchain it can't be undone.</li>
-            <li><b>Solana coins only</b>; each real trade is capped at $100 for now. {bot ? "Agents don't trade real money yet." : ""}</li>
+            <li><b>Solana coins only</b>; each real trade is capped at $100 for now. {bot ? "In Real mode the auto-pilot can trade your wallet for you, only after you allow it, within your limits per trade, per day and for losses." : ""}</li>
             <li>Switch back to <b>Paper</b> any time; your practice account is untouched.</li>
           </ul>
         </>

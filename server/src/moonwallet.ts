@@ -182,20 +182,21 @@ export async function verifySession(accessToken: string, identityToken: string):
 // Who MoonPay says the signed-in person is, and their wallets: MoonPay's own record, asked with the
 // person's access token (GET <issuer>/v0/sdk/auth/users/public/me). The wallet the app keeps on file
 // comes from here, never from the browser.
-export async function moonxMe(accessToken: string): Promise<{ userId: string; status: string | null; solana: string | null; wallets: Partial<Record<Chain, string>> }> {
+export async function moonxMe(accessToken: string): Promise<{ userId: string; status: string | null; solana: string | null; wallets: Partial<Record<Chain, string>>; ids: Partial<Record<Chain, string>> }> {
   const c = moonxConfig();
   if (!c.on) throw new Error(c.reason ?? "MoonPay wallets are off.");
   const r = await fetch(`${c.issuer}/v0/sdk/auth/users/public/me`, { headers: { Authorization: `PublicToken ${c.publishableKey}`, "X-MoonX-Access-Token": accessToken, Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
   if (!r.ok) throw new Error(`MoonPay could not confirm the sign-in (HTTP ${r.status}).`);
   const j: any = await r.json();
   const all: any[] = Array.isArray(j?.wallets) ? j.wallets : [];
-  const wallets: Partial<Record<Chain, string>> = {};
+  const wallets: Partial<Record<Chain, string>> = {}, ids: Partial<Record<Chain, string>> = {};
   for (const chain of CHAINS) {
     const of = all.filter((w) => w?.wallet_type === chain && ADDRESS[chain].test(String(w?.public_address ?? "")));
     of.sort((x, y) => Date.parse(x?.created_at ?? "") - Date.parse(y?.created_at ?? "")); // (the first one made)
     if (of[0]) wallets[chain] = String(of[0].public_address);
+    if (of[0]?.id) ids[chain] = String(of[0].id); // MoonPay's own id for the wallet (the auto-pilot's signer is granted over it)
   }
-  return { userId: String(j?.user_id ?? ""), status: j?.status ? String(j.status) : null, solana: wallets.solana ?? null, wallets };
+  return { userId: String(j?.user_id ?? ""), status: j?.status ? String(j.status) : null, solana: wallets.solana ?? null, wallets, ids };
 }
 // A sign-in with MoonPay, fully checked: MoonPay's tokens (checked here against its published keys),
 // then MoonPay's own record of the same person, who must be active. Returns who it is and their
@@ -212,7 +213,7 @@ export async function moonxSignIn(accessToken: string, identityToken: string) {
   const me = await moonxMe(String(accessToken));
   if (me.userId !== s.sub) throw new Error("MoonPay's sign-in could not be confirmed (it names another person). Sign in again.");
   if (me.status && me.status !== "active") throw new Error("This MoonPay account cannot be used. Contact support.");
-  return { ...s, email: s.email?.toLowerCase() ?? null, wallet: me.solana, wallets: me.wallets };
+  return { ...s, email: s.email?.toLowerCase() ?? null, wallet: me.solana, wallets: me.wallets, walletIds: me.ids };
 }
 // Puts the person's MoonPay wallet on file for the account (from MoonPay's own record), unless one
 // is there already: the first one stays, another is never put in its place.

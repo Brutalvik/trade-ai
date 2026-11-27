@@ -146,7 +146,7 @@ export type PlanInfo = { id: PlanId; name: string; priceUsd: number; blurb: stri
 export type User = { prefs?: { hide: string[]; currency?: string }; username: string; firstName: string; lastName: string; email: string; createdAt: number; avatarUrl: string | null; owner?: boolean; plan?: PlanId; role?: "user" | "admin"; permissions?: Permission[]; botLimit?: number; usage?: Usage; solanaAddress?: string | null; hasPassword?: boolean; tradeMode?: "paper" | "real" };
 export type AdminUser = User & { usage: Usage };
 export type RealQuote = { requestId: string; transaction: string; wallet: string; side: "BUY" | "SELL"; pay: "SOL" | "USDC"; symbol: string; mint: string; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; priceImpactPct: number; slippageBps: number | null; router: string | null; swapFeeBps: number; platformFee: { bps: number; note: string }; networkFeeSol: number; gasless: boolean; expiresAt: number; maxTradeUsd: number };
-export type RealTrade = { t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: "SOL" | "USDC"; status: "Success" | "Failed"; signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; feeBps: number; error?: string };
+export type RealTrade = { t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: "SOL" | "USDC"; status: "Success" | "Failed"; signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string; usd: number | null; feeBps: number; error?: string; auto?: true };
 export type ListKind = "crypto" | "top" | "trending" | "held" | "graduated" | "bonding" | "community";
 export type ListCoin = { mint: string; symbol: string; name: string; icon?: string; priceUsd: number; mcap: number; change24h: number; holders?: number; volume24h?: number; liquidity?: number; verified?: boolean; buys?: number; buyers?: number; pair?: PairInfo; score?: number | null; verdict?: "BUY ZONE" | "WAIT" | "AVOID"; why?: string; rank?: number; query?: string };
 export type Holding = { mint: string; symbol: string; name: string; amount: number; priceUsd: number | null; valueUsd: number | null; imageUrl?: string; pool?: string };
@@ -219,6 +219,18 @@ export type BalanceRow = { network: string; symbol: string; amount: number | nul
 export type BuyOptions = { coins: { id: string; label: string; wallet?: WalletChain }[]; fiats: { code: string; min: number; max: number }[] };
 export type MoonWalletView = { wallet: MoonWallet | null; all?: ChainWallet[]; wallets: MoonWalletsStatus; buying: MoonPayStatus; options: BuyOptions | null; buyInto: { address: string; which: "moonpay" | "current-test" } | null; balance: { sol: number | null; network: string } | null };
 
+// The real-money auto-pilot (server/src/autopilot.ts).
+export type AutopilotLimits = { perTradeUsd: number; dailySpendUsd: number; dailyLossUsd: number };
+export type AutopilotStatus = {
+  available: boolean; reason: string | null;
+  on: boolean; paused: boolean; stopReason: string | null; limits: AutopilotLimits; maxPerTradeUsd: number;
+  allowed: { address: string; expiresAt: number } | null; allowProblem: string | null;
+  today: { spentUsd: number; pnlUsd: number; signatures: number; signatureLimit: number; buys: number; sells: number };
+  agent: { running: boolean; watching: string | null };
+  holding: { symbol: string; costUsd: number; at: number; changePct: number | null; sellError: string | null }[];
+  trades: RealTrade[];
+};
+
 export const api = {
   walletTxs: (before?: number) => req<{ transactions: WalletTx[]; moonpay: MoonPayStatus }>(`/wallet/transactions?limit=50${before ? `&before=${before}` : ""}`),
   walletTx: (id: string) => req<{ tx: WalletTx; events: WalletTxEvent[] }>(`/wallet/transactions/${encodeURIComponent(id)}`),
@@ -243,6 +255,13 @@ export const api = {
   // The wallet real trades come from (the MoonPay wallet on file) and its balances.
   realWallet: (fresh = false) => req<WalletView & { via: "moonpay" | null }>(`/real/wallet${fresh ? "?fresh=1" : ""}`),
   realTrades: (limit = 50) => req<RealTrade[]>(`/real/trades?limit=${limit}`),
+  autopilot: () => req<AutopilotStatus>("/autopilot"),
+  autopilotAllowStart: () => req<{ apiPubHex: string; address: string; expiresAt: number }>("/autopilot/allow/start", {}),
+  autopilotAllowFinish: (b: { apiPubHex: string; walletId: string; expiresAt: number; accessToken: string; identityToken: string }) => req<AutopilotStatus>("/autopilot/allow/finish", b),
+  autopilotRevoke: () => req<AutopilotStatus & { apiPubHex: string | null }>("/autopilot/revoke", {}),
+  autopilotLimits: (l: AutopilotLimits) => req<AutopilotStatus>("/autopilot/limits", l),
+  autopilotStart: () => req<AutopilotStatus>("/autopilot/start", {}),
+  autopilotStop: () => req<AutopilotStatus>("/autopilot/stop", {}),
   list: (kind: ListKind) => req<{ kind: ListKind; coins: ListCoin[] }>(`/lists/${kind}`),
   pair: (chain: string, pool: string) => req<PairInfo>(`/pair/${chain}/${pool}`),
   // before = unix seconds: the page of candles just older than that (for scrolling back in time).

@@ -564,6 +564,21 @@ select { font: inherit; color: var(--text); background: rgba(0, 0, 0, 0.35); bor
 .mode-switch:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .real-notice h3 { margin: 0 0 8px; font-family: Orbitron, sans-serif; font-size: 13px; letter-spacing: 1.5px; color: var(--cyan); }
 .real-notice p { margin: 0 0 8px; font-size: 13px; color: #c6d2f0; }
+/* Real mode's Auto-pilot card (Autopilot.tsx) */
+.autopilot .real-notice-head .ap-chip { margin-left: auto; }
+.ap-chip { font-family: Inter, system-ui, sans-serif; font-size: 10.5px; letter-spacing: 0.4px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.ap-chip.up { color: var(--up); } .ap-chip.amber { color: var(--amber); }
+.ap-status p { margin: 0 0 6px; }
+.ap-today { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 12px; }
+.ap-today div { padding: 8px 10px; border-radius: 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); }
+.ap-today dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+.ap-today dd { margin: 2px 0 0; font-size: 14px; color: var(--text); font-variant-numeric: tabular-nums; }
+.ap-today dd em { font-style: normal; font-size: 11px; color: var(--muted); margin-left: 4px; }
+.ap-trades { list-style: none; padding: 0; margin: 12px 0 8px; display: flex; flex-direction: column; gap: 4px; }
+.ap-limits label { display: flex; flex-direction: column; gap: 4px; }
+.ap-money { display: flex; align-items: center; gap: 6px; }
+.ap-money input { flex: 1; }
+.ap-ok { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0 4px; color: var(--text); }
 @media (max-width: 640px) {
   .wallet-table .col-price { display: none; }
   .wallet-total { font-size: 24px; }

@@ -80,7 +80,7 @@ function TermsModal({ onClose, onPrivacy }: { onClose: () => void; onPrivacy: ()
             <li><b>You approve every real trade.</b> Each one is a swap routed by Jupiter that you review and sign yourself. Once signed and confirmed on the blockchain it can't be reversed.</li>
             <li><b>Prices move.</b> What you receive can differ from the quote within the slippage shown, and network fees apply. A swap can fail; failed swaps don't move your funds but may cost a network fee.</li>
             <li><b>Solana only.</b> Real trading supports Solana tokens. Coins on other chains are paper-only. Sending funds from another network to your wallet can lose them.</li>
-            <li><b>Limits.</b> While real trading is new, each real trade is capped (currently $100). The bots don't trade real money yet.</li>
+            <li><b>Limits.</b> While real trading is new, each real trade is capped (currently $100). The bots trade real money only through the Real mode auto-pilot, after you allow it, within limits you set (per trade, per day, and a daily loss that pauses it); it can lose money.</li>
           </ul>
 
           <h3>5. AI plans and the bots</h3>

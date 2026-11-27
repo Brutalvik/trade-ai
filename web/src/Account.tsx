@@ -291,14 +291,15 @@ export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOu
   // Paper and Real are kept apart: Paper shows the paper account, Real shows the customer's own
   // wallets and their real trades only (never paper figures).
   const real = (access.me?.tradeMode ?? user.tradeMode) === "real";
-  const [realView, setRealView] = useState<{ totalUsd: number | null; complete: boolean; trades: RealTrade[] | null } | null>(null);
+  const [realView, setRealView] = useState<{ totalUsd: number | null; complete: boolean; trades: RealTrade[] | null; autopilot: { on: boolean; paused: boolean } | null } | null>(null);
   useEffect(() => {
     if (!real) return setRealView(null);
     let live = true;
     Promise.all([
       api.moonBalances().then((r) => ({ totalUsd: r.totalUsd ?? null, complete: r.complete !== false })).catch(() => ({ totalUsd: null, complete: false })),
       api.realTrades(200).catch(() => null),
-    ]).then(([b, trades]) => live && setRealView({ ...b, trades }));
+      api.autopilot().then((a) => ({ on: a.on, paused: a.paused })).catch(() => null),
+    ]).then(([b, trades, autopilot]) => live && setRealView({ ...b, trades, autopilot }));
     return () => void (live = false);
   }, [real]);
   // This login's own paper account at a glance.
@@ -395,7 +396,7 @@ export function ProfileModal({ user, state, onClose, onSignedOut, notify, signOu
 
 
 // Real mode in the profile: the dollar value of the customer's own wallets and their real trades.
-function RealStats({ view }: { view: { totalUsd: number | null; complete: boolean; trades: RealTrade[] | null } | null }) {
+function RealStats({ view }: { view: { totalUsd: number | null; complete: boolean; trades: RealTrade[] | null; autopilot: { on: boolean; paused: boolean } | null } | null }) {
   const done = view?.trades?.filter((t) => t.status === "Success") ?? [];
   const buys = done.filter((t) => t.side === "BUY").length, sells = done.length - buys;
   const volume = done.reduce((sum, t) => sum + (t.usd ?? 0), 0);
@@ -404,7 +405,7 @@ function RealStats({ view }: { view: { totalUsd: number | null; complete: boolea
       <div><small>Wallet balance</small><b>{view === null ? "…" : view.totalUsd === null ? "—" : fmtUsd(view.totalUsd)}<em>{view && !view.complete ? "some figures missing" : "all your wallets"}</em></b></div>
       <div><small>Real trades</small><b>{view?.trades ? done.length : "…"}<em>{done.length ? `${buys} bought · ${sells} sold` : "none yet"}</em></b></div>
       <div><small>Traded</small><b>{view?.trades ? fmtUsd(volume) : "…"}<em>in real trades</em></b></div>
-      <div><small>Auto-pilot</small><b>Off<em>for real money: not on yet</em></b></div>
+      <div><small>Auto-pilot</small><b className={view?.autopilot?.on ? (view.autopilot.paused ? "amber" : "up") : ""}>{view === null ? "…" : view.autopilot?.on ? (view.autopilot.paused ? "Paused" : "On") : "Off"}<em>{view?.autopilot?.on ? (view.autopilot.paused ? "for today: loss limit" : "trading your wallet") : "for real money"}</em></b></div>
     </div>
   );
 }

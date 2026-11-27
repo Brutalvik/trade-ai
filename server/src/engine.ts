@@ -438,6 +438,29 @@ export function withAccount<T>(key: string | null, fn: () => Promise<T>, access?
 }
 export const currentAccountKey = () => acct().key;
 
+// ---------- The real-money auto-pilot's own account ----------
+// A customer's real auto-pilot decides in an account of its own, "<username>~real", never in their
+// paper account (Paper and Real are kept apart). It runs on the customer's own plan and AI tokens,
+// and every trade its agent makes is handed to the real executor (autopilot.ts), which copies it
+// with real money within the customer's limits, or skips it.
+export const REAL_SUFFIX = "~real";
+export const isRealKey = (key: string | null | undefined): key is string => !!key && key.endsWith(REAL_SUFFIX);
+export const ownerOf = (key: string) => (isRealKey(key) ? key.slice(0, -REAL_SUFFIX.length) : key);
+export type MirrorEvent = { side: "BUY" | "SELL"; positionId: string; mint?: string; symbol: string; chain: string; usd: number; price: number; fraction?: number; closed?: boolean };
+let mirrorHook: ((key: string, ev: MirrorEvent) => Promise<unknown>) | null = null;
+export function onRealTrade(fn: ((key: string, ev: MirrorEvent) => Promise<unknown>) | null) {
+  mirrorHook = fn;
+}
+// Queued like the agents' steps, so a watch window waits for the real trade before it ends.
+function mirror(ev: MirrorEvent) {
+  const a = acct();
+  if (!isRealKey(a.key) || !mirrorHook) return;
+  const job = mirrorHook(a.key, ev).catch((e) => console.error("[autopilot] copying a trade failed:", e?.message ?? e));
+  const steps = (a.steps ??= new Set());
+  steps.add(job);
+  void job.finally(() => steps.delete(job));
+}
+
 // Several bots per account: each bot step runs inside one bot (botAls). `state.bot` and
 // `state.lastSignal` then mean that bot's own state; bot 1 is the original `bot` field.
 // Per-coin losing streaks and the daily loss limit stay shared by all bots of the account.
@@ -663,11 +686,11 @@ export async function sync() {
   if (!saved && first) save(); // a brand-new account: keep its starting balance
   if (a.active === undefined) a.active = (await activeAccounts()).includes(a.key);
   if (!a.planAt || Date.now() - a.planAt > 60_000) {
-    const u = await store.kvGet<{ plan?: PlanId; role?: Role }>(`user:${a.key}`);
+    const u = await store.kvGet<{ plan?: PlanId; role?: Role }>(`user:${ownerOf(a.key)}`); // (the real auto-pilot's account: its customer's)
     // The platform owner is its admin on the top plan, even before their record says so
     // (their bot keeps running on the scheduler without them signing in).
     const owner = process.env.OWNER_USERNAME?.trim().toLowerCase() || (await store.kvGet<string>("owner"));
-    const isOwner = owner === a.key && !u?.role;
+    const isOwner = owner === ownerOf(a.key) && !u?.role;
     a.plan = isOwner ? "max" : planOf(u?.plan).id;
     a.role = isOwner ? "admin" : (u?.role ?? "user");
     a.planAt = Date.now();
@@ -675,7 +698,7 @@ export async function sync() {
 }
 
 // ---------- Plans: AI tokens and transaction charges ----------
-const usageKey = (key: string) => `usage:${key}:${month()}`;
+const usageKey = (key: string) => `usage:${ownerOf(key)}:${month()}`; // (the real auto-pilot uses its customer's tokens)
 // AI tokens left this month (app tokens; Infinity for admins).
 async function tokensLeft(): Promise<number> {
   const a = acct();
@@ -684,7 +707,7 @@ async function tokensLeft(): Promise<number> {
   if (!Number.isFinite(limit)) return Infinity;
   if (limit <= 0) return 0; // no AI on this plan (top-ups don't add AI to a plan without it)
   const used = (await store.kvGet<number>(usageKey(a.key))) ?? 0;
-  const topup = (await store.kvGet<number>(`topup:${a.key}`)) ?? 0;
+  const topup = (await store.kvGet<number>(`topup:${ownerOf(a.key)}`)) ?? 0;
   return Math.max(0, limit - used) + topup;
 }
 // Charge the AI tokens an analysis used: 10 app tokens per AI API token, for every model asked.
@@ -701,7 +724,7 @@ async function chargeTokens(results: ModelResult[]) {
   await store.kvSet(k, used + fromMonthly);
   const extra = appTokens - fromMonthly;
   if (extra > 0) {
-    const tk = `topup:${a.key}`;
+    const tk = `topup:${ownerOf(a.key)}`;
     await store.kvSet(tk, Math.max(0, ((await store.kvGet<number>(tk)) ?? 0) - extra));
   }
   return appTokens;
@@ -942,6 +965,7 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
   const { fillPrice, qty, feeUsd, platformFeeUsd } = fillBuy(usd, pair.priceUsd, { ...(side ?? { feePct, slipPct: slippagePct + extraSlipPct }), platformPct: platformFeePct() });
   state.cash -= usd;
   const existing = state.positions.find((p) => p.pool === pair.pool && p.source === source && (source !== "bot" || (p.botId ?? "1") === (plan?.botId ?? "1")));
+  const positionId = existing?.id ?? uid();
   if (existing) {
     const totalQty = existing.qty + qty;
     existing.entryPrice = (existing.entryPrice * existing.qty + fillPrice * qty) / totalQty;
@@ -949,11 +973,12 @@ export function buy(pair: PairInfo, usd: number, source: "manual" | "bot", reaso
     existing.costUsd += usd;
     Object.assign(existing, plan);
   } else {
-    state.positions.push({ id: uid(), chain: pair.chain, pool: pair.pool, symbol: pair.symbol, ...(pair.imageUrl ? { imageUrl: pair.imageUrl } : {}), qty, entryPrice: fillPrice, costUsd: usd, openedAt: Date.now(), source, lastPrice: pair.priceUsd, ...plan });
+    state.positions.push({ id: positionId, chain: pair.chain, pool: pair.pool, symbol: pair.symbol, ...(pair.imageUrl ? { imageUrl: pair.imageUrl } : {}), qty, entryPrice: fillPrice, costUsd: usd, openedAt: Date.now(), source, lastPrice: pair.priceUsd, ...plan });
   }
   const t: Trade = { id: uid(), time: Date.now(), side: "BUY", symbol: pair.symbol, pool: pair.pool, price: fillPrice, qty, usd, feeUsd, platformFeeUsd, reason, source, ...(source === "bot" ? { botId: plan?.botId ?? "1" } : {}) };
   state.trades.unshift(t);
   recTrade(t);
+  if (source === "bot") mirror({ side: "BUY", positionId, mint: plan?.tokenMint ?? existing?.tokenMint ?? state.bot.config?.mint, symbol: pair.symbol, chain: pair.chain, usd, price: pair.priceUsd });
   noteCommunity(pair);
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES; // keep the newest only
   recordEquity();
@@ -973,7 +998,8 @@ export function sell(positionId: string, price: number, fraction: number, reason
   state.cash += net;
   p.qty -= qty;
   p.costUsd -= costPart;
-  if (f >= 0.999 || p.qty * price < 0.01) {
+  const closed = f >= 0.999 || p.qty * price < 0.01;
+  if (closed) {
     state.positions = state.positions.filter((x) => x.id !== p.id);
     acct().backupSince?.delete(p.id);
     state.orders = (state.orders ?? []).filter((o) => o.positionId !== p.id); // its limit sells go with it
@@ -982,6 +1008,7 @@ export function sell(positionId: string, price: number, fraction: number, reason
   const t: Trade = { id: uid(), time: Date.now(), side: "SELL", symbol: p.symbol, pool: p.pool, price: fillPrice, qty, usd: net, feeUsd, pnlUsd: net - costPart, platformFeeUsd, reason, source: p.source, ...(p.source === "bot" ? { botId: p.botId ?? "1" } : {}) };
   state.trades.unshift(t);
   recTrade(t);
+  if (p.source === "bot") mirror({ side: "SELL", positionId: p.id, mint: p.tokenMint, symbol: p.symbol, chain: p.chain, usd: net, price, fraction: f, closed });
   if (state.trades.length > MAX_TRADES) state.trades.length = MAX_TRADES;
   recordEquity();
   save();

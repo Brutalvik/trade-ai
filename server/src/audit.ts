@@ -22,6 +22,13 @@ export type AuditType =
   | "trade.real" // a real swap from the user's own wallet (signature on-chain)
   | "wallet.send" // crypto sent from the customer's own wallet to another address
   | "wallet.send_failed"
+  | "autopilot.allow" // the real auto-pilot was allowed to sign for the customer's wallet (MoonPay signer)
+  | "autopilot.revoke" // that permission was withdrawn
+  | "autopilot.limits" // its limits changed
+  | "autopilot.start"
+  | "autopilot.stop"
+  | "autopilot.pause" // paused for the day (the day's loss limit)
+  | "autopilot.skip" // a trade of its agent not copied with real money, and why
   | "trade.real_failed"
   | "account.signup"
   | "account.signin"

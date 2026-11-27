@@ -36,6 +36,8 @@ export type RealTrade = {
   t: number; side: "BUY" | "SELL"; symbol: string; mint: string; pay: Pay; status: "Success" | "Failed";
   signature: string | null; inAmount: number; outAmount: number; inSymbol: string; outSymbol: string;
   usd: number | null; feeBps: number; error?: string;
+  auto?: true; // made by the real auto-pilot (autopilot.ts), not by hand
+  inRaw?: string; outRaw?: string; // the amounts in the coins' smallest units (the auto-pilot sells exactly what it bought)
 };
 
 const ui = (raw: string | bigint, dec: number) => Number(BigInt(raw)) / 10 ** dec;
@@ -86,7 +88,9 @@ function checkUser(u: RealUser) {
   return u.solanaAddress;
 }
 
-export async function realQuote(u: RealUser, body: any) {
+// opts (the server's own callers only, never a request's body): rawAmount = sell exactly this many
+// of the coin's smallest units (no more than the wallet holds), as the auto-pilot does.
+export async function realQuote(u: RealUser, body: any, opts: { rawAmount?: bigint } = {}) {
   const owner = checkUser(u);
   const side: "BUY" | "SELL" = body?.side === "SELL" ? "SELL" : "BUY";
   const pay: Pay = body?.pay === "USDC" ? "USDC" : "SOL";
@@ -119,10 +123,10 @@ export async function realQuote(u: RealUser, body: any) {
     outDec = await tokenDecimals(mint);
   } else {
     const pct = Number(body?.pct);
-    if (!(pct > 0 && pct <= 100)) throw new Error("Pick how much to sell.");
+    if (opts.rawAmount === undefined && !(pct > 0 && pct <= 100)) throw new Error("Pick how much to sell.");
     const bal = await balanceRaw(owner, mint);
     if (bal.raw === 0n) throw new Error(`You don't hold any ${symbol} in your wallet.`);
-    amountRaw = pct >= 100 ? bal.raw : (bal.raw * BigInt(Math.round(pct * 100))) / 10_000n;
+    amountRaw = opts.rawAmount !== undefined ? (opts.rawAmount < bal.raw ? opts.rawAmount : bal.raw) : pct >= 100 ? bal.raw : (bal.raw * BigInt(Math.round(pct * 100))) / 10_000n;
     if (amountRaw === 0n) throw new Error("That amount is too small to sell.");
     inDec = bal.decimals;
     usd = tokenPx ? ui(amountRaw, inDec) * tokenPx : null;
@@ -189,7 +193,7 @@ function messageOf(b: Buffer) {
   return b.subarray(i + 64 * n);
 }
 
-export async function realExecute(u: RealUser, body: any) {
+export async function realExecute(u: RealUser, body: any, opts: { auto?: boolean } = {}) {
   checkUser(u);
   const requestId = String(body?.requestId ?? "");
   const signed = String(body?.signedTransaction ?? "");
@@ -220,7 +224,7 @@ export async function realExecute(u: RealUser, body: any) {
     signature: j.signature ?? null,
     inAmount: ui(String(inRaw), p.inDec), outAmount: ui(String(outRaw), p.outDec),
     inSymbol: p.side === "BUY" ? p.pay : p.symbol, outSymbol: p.side === "BUY" ? p.symbol : p.pay,
-    usd: p.usd, feeBps: p.feeBps,
+    usd: p.usd, feeBps: p.feeBps, ...(opts.auto ? { auto: true as const } : {}), inRaw: String(inRaw), outRaw: String(outRaw),
     ...(ok ? {} : { error: String(j.error ?? j.errorMessage ?? j.code ?? `Jupiter ${r.status}`).slice(0, 200) }),
   };
   try {
@@ -229,7 +233,7 @@ export async function realExecute(u: RealUser, body: any) {
     console.error("[real] history write failed:", e);
   }
   const what = `${trade.side === "BUY" ? "Bought" : "Sold"} ${trade.side === "BUY" ? trade.outAmount : trade.inAmount} ${trade.symbol} for ${trade.side === "BUY" ? trade.inAmount : trade.outAmount} ${trade.pay}`;
-  await audit(u.key, ok ? "trade.real" : "trade.real_failed", ok ? `Real: ${what}` : `Real ${trade.side.toLowerCase()} of ${trade.symbol} failed: ${trade.error}`, trade as unknown as Record<string, unknown>);
+  await audit(u.key, ok ? "trade.real" : "trade.real_failed", ok ? `Real${opts.auto ? " (auto-pilot)" : ""}: ${what}` : `Real${opts.auto ? " auto-pilot" : ""} ${trade.side.toLowerCase()} of ${trade.symbol} failed: ${trade.error}`, trade as unknown as Record<string, unknown>);
   if (ok && p.side === "BUY") await noteCommunityBuy(u.key, { chain: "solana", tokenAddress: p.mint, symbol: p.symbol, pool: "" });
   if (ok) {
     const k = `real-count:${u.key}:${month()}`;

@@ -4,11 +4,12 @@
 // moonwallet.ts): nothing about who someone is, or which wallet is theirs, is taken from here.
 // Loaded only when the server has MoonPay's wallet keys (appMain.tsx): MoonPay's kit is large.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { MoonXProvider, useMoonX } from "@moon-x/react-sdk";
+import { MoonXProvider, useEphemeralSigner, useMoonX } from "@moon-x/react-sdk";
 import { useCashOutWallet as useSolanaCashOut, useSignTransaction, useWallets } from "@moon-x/react-sdk/solana";
 import { useCashOutWallet as useEvmCashOut, useSendTransaction as useEvmSend, useWallets as useEvmWallets } from "@moon-x/react-sdk/ethereum";
 import { useCashOutWallet as useTronCashOut, useSendTransaction as useTronSend, useWallets as useTronWallets } from "@moon-x/react-sdk/tron";
 import { WalletActionsContext, type WalletActions } from "./walletActions";
+import { AutopilotGrantContext, type AutopilotGrant } from "./autopilotGrant";
 import "@moon-x/react-sdk/style.css";
 import { api, MOONPAY_WALLET_EVENT, SIGNIN_EVENT, WALLET_KINDS, type User, type WalletChain } from "./api";
 import { Avatar, MoonPaySigner, MoonPayUI, ProfileModal, SetupProfileModal, SIGNIN_PENDING, type AccountButtonProps, type TxSigner } from "./Account";
@@ -42,14 +43,15 @@ export function MoonPayRoot({ publishableKey, children }: { publishableKey: stri
     >
       <SignerBridge>
         <ActionsBridge>
-          <MoonPayUI.Provider value={UI}>{children}</MoonPayUI.Provider>
+          <GrantBridge>
+            <MoonPayUI.Provider value={UI}>{children}</MoonPayUI.Provider>
+          </GrantBridge>
         </ActionsBridge>
       </SignerBridge>
     </MoonXProvider>
   );
 }
 
-// Lets the trade screen sign with the MoonPay wallet (only the one the server names for a trade).
 // Sending on Ethereum & EVM and Tron, and cashing out, for the wallet window (MoonPay.tsx). Each
 // transfer is signed by the person in MoonPay's own window; nothing is sent without them.
 function ActionsBridge({ children }: { children: ReactNode }) {
@@ -84,6 +86,32 @@ function ActionsBridge({ children }: { children: ReactNode }) {
   return <WalletActionsContext.Provider value={value}>{children}</WalletActionsContext.Provider>;
 }
 
+// The real auto-pilot's permission (Autopilot.tsx): MoonPay lets a key the server holds sign for
+// the person's Solana wallet (that wallet only, until a date), and revokes it again.
+function GrantBridge({ children }: { children: ReactNode }) {
+  const mx = useMoonX();
+  const signer = useEphemeralSigner();
+  const { wallets } = useWallets();
+  const value = useMemo<AutopilotGrant>(() => ({
+    signedIn: mx.ready && mx.isAuthenticated,
+    signIn: () => window.dispatchEvent(new Event(SIGNIN_EVENT)),
+    grant: async (apiPubHex, address, expiresAt) => {
+      if (!mx.isAuthenticated) throw new Error("Sign in with MoonPay first (your email), then allow it.");
+      const w = wallets.find((x) => x.public_address === address);
+      if (!w) throw new Error("Your Solana wallet isn't open in this browser. Sign in with MoonPay again, then allow it.");
+      await signer.provision({ walletIds: [w.id], expiresAt: new Date(expiresAt), label: "TRADING//RUST auto-pilot", apiPubHex });
+      const t = await mx.getSessionTokens();
+      if (!t) throw new Error("Your MoonPay sign-in expired. Please sign in again.");
+      return { walletId: w.id, accessToken: t.accessToken, identityToken: t.identityToken };
+    },
+    revoke: async (apiPubHex) => {
+      await signer.revoke({ apiPubHex });
+    },
+  }), [mx, signer, wallets]);
+  return <AutopilotGrantContext.Provider value={value}>{children}</AutopilotGrantContext.Provider>;
+}
+
+// Lets the trade screen sign with the MoonPay wallet (only the one the server names for a trade).
 function SignerBridge({ children }: { children: ReactNode }) {
   const { wallets } = useWallets();
   const { signTransaction } = useSignTransaction();
